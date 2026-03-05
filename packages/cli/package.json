@@ -1,0 +1,35 @@
+{
+    "name": "@santh/invariant",
+    "version": "1.0.0",
+    "private": false,
+    "description": "INVARIANT — Full-stack automated defense. One command to protect your application.",
+    "type": "module",
+    "main": "./dist/index.js",
+    "bin": {
+        "invariant": "./dist/index.js"
+    },
+    "files": [
+        "dist"
+    ],
+    "scripts": {
+        "build": "tsc",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {
+        "@santh/agent": "1.0.0",
+        "@santh/dashboard": "1.0.0",
+        "better-sqlite3": "^11.0.0"
+    },
+    "devDependencies": {
+        "typescript": "^5.7.0"
+    },
+    "keywords": [
+        "security",
+        "invariant",
+        "defense",
+        "waf",
+        "rasp",
+        "automated"
+    ],
+    "license": "MIT"
+}

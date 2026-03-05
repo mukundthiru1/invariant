@@ -1,0 +1,21 @@
+name = "invariant-sensor"
+main = "src/index.ts"
+compatibility_date = "2026-03-03"
+
+# Scheduled: flush signals + rule sync
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+SANTH_INGEST_URL = "https://intel.santh.io/v1/signals"
+SIGNAL_BATCH_SIZE = "50"
+DEFENSE_MODE = "monitor"
+
+# Workers AI — L9 AI classification
+[ai]
+binding = "AI"
+
+# KV — persistent sensor state across cold starts
+[[kv_namespaces]]
+binding = "SENSOR_STATE"
+id = "placeholder"
