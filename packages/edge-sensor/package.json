@@ -11,7 +11,7 @@
         "test": "vitest run"
     },
     "dependencies": {
-        "@santh/invariant-engine": "workspace:*"
+        "@santh/invariant-engine": "*"
     },
     "devDependencies": {
         "@cloudflare/workers-types": "^4.20250224.0",

@@ -43,8 +43,8 @@ describe('MITRE ATT&CK Mapper', () => {
         expect(cmdClasses.length).toBe(3)
     })
 
-    it('should cover all 46 invariant classes', () => {
-        // Total count of all mapped classes
+    it('should cover all 41 invariant classes', () => {
+        // Total count matching the InvariantClass type in invariant-engine.ts
         const allClasses = [
             // SQL (7)
             'sql_tautology', 'sql_string_termination', 'sql_union_extraction',
@@ -55,31 +55,30 @@ describe('MITRE ATT&CK Mapper', () => {
             'xss_template_expression', 'xss_attribute_escape',
             // CMD (3)
             'cmd_separator', 'cmd_substitution', 'cmd_argument_injection',
-            // Path (4)
+            // Path (3)
             'path_dotdot_escape', 'path_null_terminate', 'path_encoding_bypass',
-            'path_normalization_bypass',
             // SSRF (3)
             'ssrf_internal_reach', 'ssrf_cloud_metadata', 'ssrf_protocol_smuggle',
             // SSTI (2)
             'ssti_jinja_twig', 'ssti_el_expression',
             // NoSQL (2)
             'nosql_operator_injection', 'nosql_js_injection',
-            // XXE (1)
-            'xxe_entity_expansion',
-            // Auth (4)
-            'auth_none_algorithm', 'auth_header_spoof', 'cors_origin_abuse', 'mass_assignment',
+            // XXE (2)
+            'xxe_entity_expansion', 'xml_injection',
+            // Auth (2)
+            'auth_none_algorithm', 'auth_header_spoof',
             // Deser (3)
             'deser_java_gadget', 'deser_php_object', 'deser_python_pickle',
-            // CRLF (2)
-            'crlf_header_injection', 'crlf_log_injection',
-            // HTTP Smuggling (2)
-            'http_smuggle_cl_te', 'http_smuggle_h2',
+            // CRLF (1)
+            'crlf_header_injection',
             // Log4Shell (1)
             'log_jndi_lookup',
             // Proto Pollution (1)
             'proto_pollution',
             // Open Redirect (1)
             'open_redirect_bypass',
+            // Mass Assignment (1)
+            'mass_assignment',
             // LDAP (1)
             'ldap_filter_injection',
             // GraphQL (2)
@@ -87,9 +86,9 @@ describe('MITRE ATT&CK Mapper', () => {
             // ReDoS (1)
             'regex_dos',
         ]
-        expect(allClasses.length).toBe(46)
+        expect(allClasses.length).toBe(41)
         // Verify no duplicates
-        expect(new Set(allClasses).size).toBe(46)
+        expect(new Set(allClasses).size).toBe(41)
     })
 })
 
@@ -209,10 +208,17 @@ describe('Multi-Dimensional Risk Surface', () => {
     })
 
     it('should classify critical threats correctly', () => {
+        // To reach composite >= 70, we need high scores across ALL axes
+        // since the formula is weighted: security(40%) + privacy(20%) + compliance(25%) + operational(15%).
         const result = calculateRisk(
-            ['sql_injection', 'xss', 'sql_injection'],
-            [1.0, 1.0, 1.0],
-            ['critical', 'critical', 'critical'],
+            [
+                'sql_injection', 'sql_injection', 'sql_injection', 'xss',     // security
+                'tracker_detected', 'tracker_detected', 'tracker_detected',   // privacy
+                'header_anomaly', 'header_anomaly', 'header_anomaly',         // compliance
+                'rate_anomaly', 'rate_anomaly', 'rate_anomaly',               // operational
+            ],
+            [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+            ['critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical', 'critical'],
             10,
             true,
         )

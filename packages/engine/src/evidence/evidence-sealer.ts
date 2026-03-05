@@ -245,7 +245,15 @@ export class EvidenceSealer {
     }
 
     private async generateSealId(): Promise<string> {
-        const entropy = `${this.sensorId}:${Date.now()}:${Math.random()}`
+        // Use crypto.getRandomValues for CSPRNG entropy
+        // Prevents prediction of seal IDs by nation-state actors
+        const randomBytes = new Uint8Array(16)
+        crypto.getRandomValues(randomBytes)
+        const randomHex = Array.from(randomBytes)
+            .map(b => b.toString(16).padStart(2, '0'))
+            .join('')
+        
+        const entropy = `${this.sensorId}:${Date.now()}:${randomHex}`
         const hash = await sha256(entropy)
         return `seal_${hash.slice(0, 16)}`
     }

@@ -88,26 +88,49 @@ export class IOCCorrelator {
                 case 'payload_hash':
                     this.payloadHashes.set(entry.value.toLowerCase(), entry)
                     break
-                case 'user_agent_sig':
-                    try {
-                        this.uaSignatures.push({
-                            pattern: new RegExp(entry.value, 'i'),
-                            entry,
-                        })
-                    } catch { /* invalid regex — skip */ }
+                case 'user_agent_sig': {
+                    // SECURITY (SAA-042): Validate regex before accepting into hot path.
+                    // Malicious IOC feed entry with ReDoS regex runs on every request.
+                    const safeRegex = this.compileRegexSafe(entry.value)
+                    if (safeRegex) {
+                        this.uaSignatures.push({ pattern: safeRegex, entry })
+                    }
                     break
-                case 'cve_pattern':
-                    try {
-                        this.cvePatterns.push({
-                            pattern: new RegExp(entry.value, 'i'),
-                            entry,
-                        })
-                    } catch { /* invalid regex — skip */ }
+                }
+                case 'cve_pattern': {
+                    const safeRegex = this.compileRegexSafe(entry.value)
+                    if (safeRegex) {
+                        this.cvePatterns.push({ pattern: safeRegex, entry })
+                    }
                     break
+                }
             }
         }
 
         this.lastSync = now
+    }
+
+    /**
+     * Compile regex with safety checks.
+     * Rejects patterns that:
+     *   - Fail to compile
+     *   - Are excessively long (> 200 chars — no legitimate IOC needs this)
+     *   - Contain catastrophic backtracking patterns
+     */
+    private compileRegexSafe(pattern: string): RegExp | null {
+        // Length limit — legitimate IOC patterns are short
+        if (pattern.length > 200) return null
+
+        // Reject common catastrophic backtracking constructs
+        // Nested quantifiers: (a+)+, (a*)+, (a+)*, etc.
+        if (/([+*])\)[\+\*]/.test(pattern)) return null
+        if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern)) return null
+
+        try {
+            return new RegExp(pattern, 'i')
+        } catch {
+            return null
+        }
     }
 
     /**

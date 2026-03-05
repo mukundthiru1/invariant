@@ -27,22 +27,77 @@ export interface FsViolation {
     timestamp: string
 }
 
+/**
+ * Deep decode a path to catch encoded traversal attempts
+ */
+function deepDecodePath(input: string): string {
+    let decoded = input
+    let previous = ''
+    
+    // Keep decoding until no more changes
+    while (decoded !== previous) {
+        previous = decoded
+        try {
+            decoded = decodeURIComponent(decoded)
+        } catch {
+            // Invalid encoding, keep as is
+        }
+        // Decode other common encodings
+        decoded = decoded
+            .replace(/%2e/gi, '.')
+            .replace(/%2f/gi, '/')
+            .replace(/%5c/gi, '\\')
+            .replace(/\\x2e/gi, '.')
+            .replace(/\\x2f/gi, '/')
+            .replace(/\\x5c/gi, '\\')
+    }
+    
+    return decoded
+}
+
+/**
+ * Normalize path separators for consistent detection
+ */
+function normalizeSeparators(input: string): string {
+    return input.replace(/\\/g, '/')
+}
+
 const PATH_INVARIANTS = [
     {
         id: 'path_traversal',
-        test: (inputPath: string) => /(?:\.\.[/\\]){2,}/.test(inputPath),
+        test: (inputPath: string) => {
+            // Check both raw and decoded path
+            const normalized = normalizeSeparators(inputPath)
+            const decoded = deepDecodePath(normalized)
+            
+            // Detect .. sequences in various forms
+            return /(?:\.\.\/){2,}|(?:\.\.\\){2,}/.test(normalized) ||
+                   /(?:\.\.\/){2,}|(?:\.\.\\){2,}/.test(decoded) ||
+                   /\.\.[/\\]/.test(decoded)
+        },
+        severity: 'high' as Severity,
+    },
+    {
+        id: 'path_traversal_encoded',
+        test: (inputPath: string) => {
+            const normalized = normalizeSeparators(inputPath)
+            // Detect encoded traversal sequences
+            return /%(?:2e|252e).*%(?:2e|252e).*%(?:2f|252f|5c|255c)/i.test(normalized) ||
+                   /%c0%ae|%c0%af|%e0%80%ae/i.test(normalized) ||
+                   /\.{2,}/.test(deepDecodePath(normalized))
+        },
         severity: 'high' as Severity,
     },
     {
         id: 'path_null_byte',
-        test: (inputPath: string) => /\x00|%00/.test(inputPath),
+        test: (inputPath: string) => /\x00|%00|\\x00/.test(inputPath),
         severity: 'critical' as Severity,
     },
     {
         id: 'path_sensitive_file',
         test: (inputPath: string) => {
-            const resolved = inputPath.toLowerCase()
-            return /(?:\/etc\/(?:passwd|shadow|hosts)|\/proc\/self\/|\.env|\.git\/|\.ssh\/|id_rsa|\.htpasswd|web\.config)/.test(resolved)
+            const resolved = deepDecodePath(inputPath).toLowerCase()
+            return /(?:\/etc\/(?:passwd|shadow|hosts|issue)|\/proc\/self\/|\.env|\.git\/|\.ssh\/|id_rsa|\.htpasswd|web\.config|phpinfo\.php|\.htaccess)/.test(resolved)
         },
         severity: 'critical' as Severity,
     },

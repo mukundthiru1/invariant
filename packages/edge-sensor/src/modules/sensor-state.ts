@@ -197,6 +197,7 @@ export class SensorStateManager {
     private _model: PersistedModelState | null = null
     private _posture: PersistedPosture | null = null
     private _reputation: PersistedReputation | null = null
+    private _reputationIndex: Map<string, IPReputationEntry> | null = null
     private _rules: PersistedRules | null = null
     private _stats: PersistedStats | null = null
     private _config: SensorConfig = DEFAULT_CONFIG
@@ -243,11 +244,50 @@ export class SensorStateManager {
         this._model = safeParse<PersistedModelState>(modelRaw)
         this._posture = safeParse<PersistedPosture>(postureRaw)
         this._reputation = safeParse<PersistedReputation>(reputationRaw)
+        // SAA-052: Build O(1) lookup index from array
+        if (this._reputation) {
+            this._reputationIndex = new Map(
+                this._reputation.entries.map(e => [e.ipHash, e])
+            )
+        }
         this._rules = safeParse<PersistedRules>(rulesRaw)
         this._stats = safeParse<PersistedStats>(statsRaw)
 
-        const configParsed = safeParse<SensorConfig>(configRaw)
-        if (configParsed) this._config = { ...DEFAULT_CONFIG, ...configParsed }
+        const configParsed = safeParse<Record<string, unknown>>(configRaw)
+        // SAA-053: Validate each config field individually.
+        // KV state is trust-boundary: a corrupted config can disable defenses.
+        // Only accept known fields with valid types and safe ranges.
+        if (configParsed && typeof configParsed === 'object') {
+            const c = configParsed
+            const validModes = new Set(['monitor', 'enforce', 'off'])
+            this._config = {
+                defenseMode: typeof c.defenseMode === 'string' && validModes.has(c.defenseMode)
+                    ? c.defenseMode as SensorConfig['defenseMode']
+                    : DEFAULT_CONFIG.defenseMode,
+                signalBatchSize: typeof c.signalBatchSize === 'number'
+                    && c.signalBatchSize >= 1 && c.signalBatchSize <= 500
+                    ? c.signalBatchSize : DEFAULT_CONFIG.signalBatchSize,
+                probeEnabled: typeof c.probeEnabled === 'boolean'
+                    ? c.probeEnabled : DEFAULT_CONFIG.probeEnabled,
+                // SECURITY: rulesFetchUrl MUST be HTTPS and on a santh.io subdomain
+                rulesFetchUrl: typeof c.rulesFetchUrl === 'string'
+                    && c.rulesFetchUrl.startsWith('https://')
+                    && (c.rulesFetchUrl.includes('.santh.io/') || c.rulesFetchUrl.includes('workers.dev/'))
+                    ? c.rulesFetchUrl : DEFAULT_CONFIG.rulesFetchUrl,
+                rulesFetchInterval: typeof c.rulesFetchInterval === 'number'
+                    && c.rulesFetchInterval >= 60 && c.rulesFetchInterval <= 3600
+                    ? c.rulesFetchInterval : DEFAULT_CONFIG.rulesFetchInterval,
+                modelPersistInterval: typeof c.modelPersistInterval === 'number'
+                    && c.modelPersistInterval >= 10 && c.modelPersistInterval <= 1000
+                    ? c.modelPersistInterval : DEFAULT_CONFIG.modelPersistInterval,
+                reputationTTL: typeof c.reputationTTL === 'number'
+                    && c.reputationTTL >= 3600 && c.reputationTTL <= 604800
+                    ? c.reputationTTL : DEFAULT_CONFIG.reputationTTL,
+                maxTrackedIPs: typeof c.maxTrackedIPs === 'number'
+                    && c.maxTrackedIPs >= 100 && c.maxTrackedIPs <= 50000
+                    ? c.maxTrackedIPs : DEFAULT_CONFIG.maxTrackedIPs,
+            }
+        }
 
         // Update cold start stats
         if (this._stats) {
@@ -322,9 +362,10 @@ export class SensorStateManager {
                 totalAttackers: 0,
                 persistedAt: 0,
             }
+            this._reputationIndex = new Map()
         }
 
-        const existing = this._reputation.entries.find(e => e.ipHash === ipHash)
+        const existing = this._reputationIndex!.get(ipHash)
         if (existing) {
             existing.signals++
             existing.lastSeen = Date.now()
@@ -338,15 +379,18 @@ export class SensorStateManager {
             if (this._reputation.entries.length >= this._config.maxTrackedIPs) {
                 // Evict oldest entry
                 this._reputation.entries.sort((a, b) => a.lastSeen - b.lastSeen)
-                this._reputation.entries.shift()
+                const evicted = this._reputation.entries.shift()
+                if (evicted) this._reputationIndex!.delete(evicted.ipHash)
             }
-            this._reputation.entries.push({
+            const entry: IPReputationEntry = {
                 ipHash,
                 signals: 1,
                 lastSeen: Date.now(),
                 categories,
                 blocked: false,
-            })
+            }
+            this._reputation.entries.push(entry)
+            this._reputationIndex!.set(ipHash, entry)
             this._reputation.totalAttackers++
         }
         this.dirty = true
@@ -355,11 +399,13 @@ export class SensorStateManager {
     /**
      * Check if an IP hash has known bad reputation.
      * Returns the entry if found, null otherwise.
-     * This is called on the HOT PATH — must be O(1) or fast O(n).
+     * SECURITY (SAA-052): Uses Map index for O(1) lookup instead of Array.find().
+     * Without this, an attacker filling the reputation table to maxTrackedIPs
+     * causes O(10000) scans on every single request.
      */
     checkReputation(ipHash: string): IPReputationEntry | null {
-        if (!this._reputation) return null
-        return this._reputation.entries.find(e => e.ipHash === ipHash) ?? null
+        if (!this._reputationIndex) return null
+        return this._reputationIndex.get(ipHash) ?? null
     }
 
     // ── Dynamic Rules ────────────────────────────────────────────

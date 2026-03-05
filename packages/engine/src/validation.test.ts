@@ -34,9 +34,9 @@ describe('DefenseValidator — Self-Test', () => {
         }
 
         // Variant generators intentionally include edge cases that probe for defense gaps.
-        // The validator's job is to FIND these gaps. 60%+ pass rate means core classes work,
-        // and logged evasions above show where detection patterns need strengthening.
-        expect(report.passRate).toBeGreaterThanOrEqual(0.6)
+        // The validator's job is to FIND these gaps. 85%+ pass rate required.
+        // auth_header_spoof is excluded (header-only class, can't test via input string).
+        expect(report.passRate).toBeGreaterThanOrEqual(0.85)
     })
 
     it('has zero false positives on benign inputs', () => {

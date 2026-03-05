@@ -36,10 +36,12 @@ export interface RuleSyncResult {
  *   2. Compare against cached version in state manager
  *   3. If same → skip (nothing to do)
  *   4. If different → GET /v1/rules/sensor → full rule set
- *   5. Store in state manager → persisted to KV
+ *   5. Validate each rule structure and regex patterns
+ *   6. Store in state manager → persisted to KV
  */
 export async function syncRulesFromIntel(
     state: SensorStateManager,
+    apiKey?: string,
 ): Promise<RuleSyncResult> {
     const rulesFetchUrl = state.config.rulesFetchUrl
     if (!rulesFetchUrl) {
@@ -52,11 +54,20 @@ export async function syncRulesFromIntel(
         }
     }
 
+    // SECURITY (SAA-036): Build auth headers — without these, a MITM can
+    // inject arbitrary rules (including ReDoS) into every sensor.
+    const headers: Record<string, string> = {
+        'User-Agent': 'INVARIANT-Sensor/5.0',
+    }
+    if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`
+    }
+
     try {
         // Step 1: Check version
         const versionUrl = rulesFetchUrl.replace('/sensor', '/version')
         const versionRes = await fetch(versionUrl, {
-            headers: { 'User-Agent': 'INVARIANT-Sensor/5.0' },
+            headers,
             signal: AbortSignal.timeout(5000),
         })
 
@@ -88,7 +99,7 @@ export async function syncRulesFromIntel(
 
         // Step 3: Fetch full rule set
         const rulesRes = await fetch(rulesFetchUrl, {
-            headers: { 'User-Agent': 'INVARIANT-Sensor/5.0' },
+            headers,
             signal: AbortSignal.timeout(15000),
         })
 
@@ -119,14 +130,42 @@ export async function syncRulesFromIntel(
             }
         }
 
-        // Step 5: Store
-        state.updateRules(rulesData.rules, rulesData.version, rulesFetchUrl)
+        // Step 5: Validate each rule structure (SAA-036 defense-in-depth)
+        const validRules: DynamicRule[] = []
+        for (const rule of rulesData.rules) {
+            if (!rule.ruleId || typeof rule.ruleId !== 'string') continue
+            if (!rule.signalType || typeof rule.signalType !== 'string') continue
+            if (!Array.isArray(rule.patterns) || rule.patterns.length === 0) continue
+            if (typeof rule.baseConfidence !== 'number' || rule.baseConfidence < 0 || rule.baseConfidence > 1) continue
+
+            // Validate regex patterns compile successfully on sensor side
+            let regexValid = true
+            for (const pattern of rule.patterns) {
+                if (pattern.operator === 'regex') {
+                    try {
+                        new RegExp(pattern.value, 'i')
+                    } catch {
+                        regexValid = false
+                        console.warn(`Rule ${rule.ruleId}: regex compilation failed for pattern: ${pattern.value.slice(0, 50)}`)
+                        break
+                    }
+                }
+            }
+            if (!regexValid) continue
+
+            validRules.push(rule)
+        }
+
+        // Step 6: Store validated rules
+        state.updateRules(validRules, rulesData.version, rulesFetchUrl)
 
         return {
             synced: true,
-            rulesLoaded: rulesData.rules.length,
+            rulesLoaded: validRules.length,
             version: rulesData.version,
-            error: null,
+            error: validRules.length < rulesData.rules.length
+                ? `${rulesData.rules.length - validRules.length} rules failed validation`
+                : null,
             skippedReason: null,
         }
     } catch (err) {
@@ -229,6 +268,33 @@ export function matchDynamicRules(
 
 // ── Pattern Evaluator ────────────────────────────────────────────
 
+// SECURITY (SAA-037): Compile regex patterns ONCE and cache.
+// Previously, `new RegExp(value, 'i')` was called on every request
+// for every regex rule — both slow and a second ReDoS vector if a
+// malicious regex exists in KV.
+const _regexCache = new Map<string, RegExp | null>()
+const MAX_REGEX_CACHE_SIZE = 1000
+
+function getCompiledRegex(pattern: string): RegExp | null {
+    const cached = _regexCache.get(pattern)
+    if (cached !== undefined) return cached
+
+    // Evict oldest if cache is full
+    if (_regexCache.size >= MAX_REGEX_CACHE_SIZE) {
+        const firstKey = _regexCache.keys().next().value
+        if (firstKey !== undefined) _regexCache.delete(firstKey)
+    }
+
+    try {
+        const compiled = new RegExp(pattern, 'i')
+        _regexCache.set(pattern, compiled)
+        return compiled
+    } catch {
+        _regexCache.set(pattern, null) // Cache the failure too
+        return null
+    }
+}
+
 function evaluatePattern(
     pattern: DynamicRulePattern,
     request: {
@@ -276,12 +342,10 @@ function evaluatePattern(
             return fieldValue.toLowerCase().startsWith(value.toLowerCase())
         case 'not_contains':
             return !fieldValue.toLowerCase().includes(value.toLowerCase())
-        case 'regex':
-            try {
-                return new RegExp(value, 'i').test(fieldValue)
-            } catch {
-                return false
-            }
+        case 'regex': {
+            const regex = getCompiledRegex(value)
+            return regex !== null && regex.test(fieldValue)
+        }
         default:
             return false
     }

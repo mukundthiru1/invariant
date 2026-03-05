@@ -14,9 +14,9 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest'
-import { InvariantEngine } from '../../../engine/src/invariant-engine'
-import { runL2Evaluators, mergeL2Results } from '../../../engine/src/evaluators/evaluator-bridge'
-import { ChainCorrelator } from '../../../engine/src/chain-detector'
+import { InvariantEngine } from '../../../engine/src/invariant-engine.js'
+import { runL2Evaluators, mergeL2Results } from '../../../engine/src/evaluators/evaluator-bridge.js'
+import { ChainCorrelator } from '../../../engine/src/chain-detector.js'
 import {
     analyzeRequestBody,
     extractFromJson,
@@ -35,7 +35,7 @@ import {
     PrivilegeGraph,
     PathEnumerator,
     BlastRadiusEngine,
-} from '../src/modules/index'
+} from '../src/modules/index.js'
 
 
 // ══════════════════════════════════════════════════════════════════

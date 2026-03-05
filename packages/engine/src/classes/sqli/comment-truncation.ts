@@ -1,0 +1,56 @@
+/**
+ * sql_comment_truncation — SQL comment truncation
+ *
+ * Two-phase detection:
+ *   Phase 1: Check RAW input for SQL comment syntax
+ *   Phase 2: Check DECODED input for SQL keywords
+ */
+import type { InvariantClassModule } from '../types.js'
+import { deepDecode } from '../encoding.js'
+
+const COMMENT_SYNTAX = /\/\*|--\s|--$|#/
+const SQL_KEYWORDS = /\b(?:SELECT|UNION|FROM|WHERE|AND|OR|INSERT|UPDATE|DELETE|DROP|TABLE|DATABASE|EXEC|INTO|CREATE|ALTER|GRANT|REVOKE)\b/i
+const TERMINATE_COMMENT = /['"`]\s*(?:--|#|\/\*)/
+
+export const sqlCommentTruncation: InvariantClassModule = {
+    id: 'sql_comment_truncation',
+    description: 'SQL comment syntax to truncate the remainder of a query',
+    category: 'sqli',
+    severity: 'medium',
+    calibration: { baseConfidence: 0.75 },
+
+    mitre: ['T1190'],
+    cwe: 'CWE-89',
+
+    knownPayloads: [
+        "admin'--",
+        "admin'#",
+        "admin'/*",
+        "' OR 1=1-- comment",
+        "' UNION/**/SELECT/**/1,2,3--",
+    ],
+
+    knownBenign: [
+        "hello world",
+        "it's a test",
+        "price is $5.00",
+        "C++ programming",
+        "color: #ff0000",
+    ],
+
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        const hasComment = COMMENT_SYNTAX.test(input) || COMMENT_SYNTAX.test(d)
+        if (!hasComment) return false
+        return SQL_KEYWORDS.test(d) || TERMINATE_COMMENT.test(input)
+    },
+    generateVariants: (count: number): string[] => {
+        const v = [
+            "' OR 1=1-- comment", "' UNION/**/SELECT/**/1,2,3--",
+            "' AND 1=1/*bypass*/--", "admin'--", "admin'/*", "admin'-- -", "admin'#",
+        ]
+        const r: string[] = []
+        for (let i = 0; i < count; i++) r.push(v[i % v.length])
+        return r
+    },
+}

@@ -261,6 +261,18 @@
     let state = { status: null, findings: [], signals: [], timeline: [], topPaths: [], distribution: [], postureHistory: [] };
     let activeTab = 'overview';
 
+    // SECURITY: HTML escape function to prevent XSS
+    function escapeHtml(text) {
+        if (text === null || text === undefined) return '';
+        const str = String(text);
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
     async function fetchAll() {
         try {
             const [statusR, findingsR, signalsR, timelineR, pathsR, distR, postureR] = await Promise.allSettled([
@@ -283,8 +295,8 @@
         render();
     }
 
-    function sev(s) { return `<span class="severity-badge badge-${s}">${s}</span>`; }
-    function act(a) { return `<span class="action-badge action-${a}">${a}</span>`; }
+    function sev(s) { const e = escapeHtml(s); return `<span class="severity-badge badge-${e}">${e}</span>`; }
+    function act(a) { const e = escapeHtml(a); return `<span class="action-badge action-${e}">${e}</span>`; }
     function ago(ts) {
         if (!ts) return '—';
         const d = Date.now() - new Date(ts).getTime();
@@ -309,7 +321,7 @@
             <div class="timeline-chart">${data.map(d => {
                 const h = Math.max(2, (d.total / max) * 90);
                 const bh = Math.max(0, (d.blocked / max) * 90);
-                const hour = d.hour.split('T')[1]?.slice(0,5) || '';
+                const hour = escapeHtml((d.hour.split('T')[1]?.slice(0,5) || ''));
                 return `<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;gap:1px;height:100px;justify-content:flex-end" title="${hour}: ${d.total} total, ${d.blocked} blocked">
                     <div class="bar-monitored" style="height:${h - bh}px;border-radius:2px 2px 0 0"></div>
                     ${bh > 0 ? `<div class="bar-blocked" style="height:${bh}px"></div>` : ''}
@@ -326,7 +338,7 @@
                 <div class="chart-title" style="margin-bottom:12px">Invariant Classes</div>
                 ${(data || []).slice(0, 10).map(d => `
                     <div class="dist-bar-wrap">
-                        <div class="dist-label">${d.type}</div>
+                        <div class="dist-label">${escapeHtml(d.type)}</div>
                         <div style="flex:1"><div class="dist-bar" style="width:${(d.count/maxD)*100}%"></div></div>
                         <div class="dist-count">${d.count}</div>
                     </div>
@@ -336,7 +348,7 @@
                 <div class="chart-title" style="margin-bottom:12px">Top Attacked Paths</div>
                 ${(topPaths || []).slice(0, 10).map(d => `
                     <div class="dist-bar-wrap">
-                        <div class="dist-label" title="${d.path}">${d.path}</div>
+                        <div class="dist-label" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</div>
                         <div style="flex:1"><div class="dist-bar" style="width:${(d.count/maxP)*100}%;background:${d.blocked > 0 ? 'var(--critical)' : 'var(--low)'}"></div></div>
                         <div class="dist-count">${d.count}</div>
                     </div>
@@ -350,11 +362,11 @@
             return '<div class="empty"><div class="empty-icon">✓</div>No findings. Run a scan or wait for detection.</div>';
         return findings.map(f => `<tr>
             <td>${sev(f.severity)}</td>
-            <td style="max-width:350px">${f.title}</td>
-            <td class="mono truncate">${f.location || '—'}</td>
-            <td class="mono">${f.type}</td>
+            <td style="max-width:350px">${escapeHtml(f.title)}</td>
+            <td class="mono truncate">${escapeHtml(f.location) || '—'}</td>
+            <td class="mono">${escapeHtml(f.type)}</td>
             <td class="mono">${f.rasp_active ? '🛡️' : '—'}</td>
-            <td><span class="mono" style="color:${f.status === 'open' ? 'var(--accent)' : 'var(--success)'}">${f.status}</span></td>
+            <td><span class="mono" style="color:${f.status === 'open' ? 'var(--accent)' : 'var(--success)'}">${escapeHtml(f.status)}</span></td>
             <td class="mono">${ago(f.last_seen)}</td>
         </tr>`).join('');
     }
@@ -365,9 +377,9 @@
         return signals.map(s => `<tr>
             <td>${sev(s.severity)}</td>
             <td>${act(s.action)}</td>
-            <td class="mono">${s.type}${s.subtype ? `<span style="color:var(--text-muted)">/${s.subtype}</span>` : ''}</td>
-            <td class="mono truncate">${s.path}</td>
-            <td class="mono">${s.method}</td>
+            <td class="mono">${escapeHtml(s.type)}${s.subtype ? `<span style="color:var(--text-muted)">/${escapeHtml(s.subtype)}</span>` : ''}</td>
+            <td class="mono truncate">${escapeHtml(s.path)}</td>
+            <td class="mono">${escapeHtml(s.method)}</td>
             <td>${s.is_novel ? '<span style="color:var(--novel)">✦</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
             <td class="mono">${ago(s.timestamp)}</td>
         </tr>`).join('');
@@ -380,16 +392,17 @@
             return;
         }
 
-        const g = s.posture?.grade ?? '—';
+        const g = escapeHtml(String(s.posture?.grade ?? '—'));
         const gc = g !== '—' ? `grade-${g}` : '';
-        const score = s.posture?.score ?? 0;
+        const score = Number(s.posture?.score) || 0;
+        const mode = escapeHtml(String(s.mode || ''));
 
         document.getElementById('app').innerHTML = `
         <div class="header">
             <div class="header-left">
                 <div class="logo">INVARIANT</div>
                 <span class="version">v1.0</span>
-                <div class="mode-badge mode-${s.mode}">${s.mode}</div>
+                <div class="mode-badge mode-${mode}">${mode}</div>
             </div>
             <div class="header-right">
                 <div class="last-update">${new Date().toLocaleTimeString()}</div>
@@ -493,10 +506,12 @@
                     <div class="chart-title" style="margin-bottom:12px">Posture History</div>
                     <div style="display:flex;align-items:flex-end;gap:8px;height:80px">
                         ${(state.postureHistory || []).reverse().map(p => {
-                            const color = p.grade === 'A' ? 'var(--success)' : p.grade === 'B' ? '#8BC34A' : p.grade === 'C' ? 'var(--medium)' : p.grade === 'D' ? 'var(--high)' : 'var(--critical)';
+                            const g = String(p.grade || '');
+                            const color = (g === 'A' ? 'var(--success)' : g === 'B' ? '#8BC34A' : g === 'C' ? 'var(--medium)' : g === 'D' ? 'var(--high)' : 'var(--critical)');
+                            const scoreNum = Number(p.score) || 0;
                             return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
-                                <div style="font-size:10px;color:var(--text-muted);font-family:var(--mono)">${p.score}</div>
-                                <div style="width:100%;height:${Math.max(4, p.score * 0.7)}px;background:${color};border-radius:3px;transition:height 0.3s"></div>
+                                <div style="font-size:10px;color:var(--text-muted);font-family:var(--mono)">${scoreNum}</div>
+                                <div style="width:100%;height:${Math.max(4, scoreNum * 0.7)}px;background:${color};border-radius:3px;transition:height 0.3s"></div>
                             </div>`;
                         }).join('') || '<div class="empty" style="padding:20px">No posture history</div>'}
                     </div>

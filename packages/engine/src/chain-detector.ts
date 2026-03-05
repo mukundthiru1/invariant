@@ -464,13 +464,18 @@ export class ChainCorrelator {
     private readonly maxSignalsPerSource: number
     private readonly chainDefs: ChainDefinition[]
     private lastPrune: number = Date.now()
+    // SECURITY (SAA-044): Cap source count to prevent memory exhaustion
+    // under distributed botnet attacks (10k+ unique IPs)
+    private readonly maxSources: number
 
     constructor(
         chains: ChainDefinition[] = ATTACK_CHAINS,
         maxSignalsPerSource = 200,
+        maxSources = 5_000,
     ) {
         this.chainDefs = chains
         this.maxSignalsPerSource = maxSignalsPerSource
+        this.maxSources = maxSources
     }
 
     /**
@@ -497,6 +502,24 @@ export class ChainCorrelator {
         // Periodic prune of stale sources (every 60s)
         if (Date.now() - this.lastPrune > 60_000) {
             this.pruneStaleWindows()
+        }
+
+        // Hard cap: if sources exceed max, force prune + evict oldest
+        if (this.sourceWindows.size > this.maxSources) {
+            this.pruneStaleWindows()
+            // If still over, evict oldest sources
+            if (this.sourceWindows.size > this.maxSources) {
+                const sortedSources = [...this.sourceWindows.entries()]
+                    .map(([key, signals]) => ({
+                        key,
+                        latest: signals[signals.length - 1]?.timestamp ?? 0,
+                    }))
+                    .sort((a, b) => a.latest - b.latest)
+                const evictCount = this.sourceWindows.size - this.maxSources
+                for (let i = 0; i < evictCount; i++) {
+                    this.sourceWindows.delete(sortedSources[i].key)
+                }
+            }
         }
 
         // Evaluate all chains against this source's signals

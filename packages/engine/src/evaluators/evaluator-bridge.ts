@@ -53,7 +53,7 @@
  *   - Novel variant identification (L2 catches that L1 missed)
  */
 
-import type { InvariantMatch, InvariantClass } from '../invariant-engine'
+import type { InvariantMatch, InvariantClass } from '../classes/types.js'
 import { detectTautologies } from './sql-expression-evaluator'
 import { detectSqlStructural, type SqlStructuralDetection } from './sql-structural-evaluator'
 import { detectXssVectors } from './xss-context-evaluator'

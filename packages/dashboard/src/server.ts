@@ -57,7 +57,7 @@ const API_ROUTES: Record<string, ApiHandler> = {
     '/api/findings/resolve': (db, params, body) => {
         const id = parseInt(params.get('id') ?? '0')
         if (!id) return { error: 'Missing id parameter' }
-        const parsed = body ? JSON.parse(body) : {}
+        const parsed = body ? safeParseJson(body) as Record<string, unknown> : {}
         const status = parsed.status ?? 'resolved'
         const notes = parsed.notes ?? null
         db.updateFindingStatus(id, status, notes)
@@ -101,7 +101,7 @@ const API_ROUTES: Record<string, ApiHandler> = {
 
     '/api/config/mode': (db, _params, body) => {
         if (!body) return { error: 'Missing body' }
-        const parsed = JSON.parse(body)
+        const parsed = safeParseJson(body) as Record<string, unknown>
         const mode = parsed.mode
         if (!['observe', 'sanitize', 'defend', 'lockdown'].includes(mode)) {
             return { error: `Invalid mode: ${mode}` }
@@ -134,6 +134,23 @@ function readBody(req: IncomingMessage): Promise<string> {
         req.on('end', () => resolve(data))
         req.on('error', reject)
     })
+}
+
+/** Strip __proto__ and constructor to prevent prototype pollution when parsing untrusted JSON. */
+function stripPrototypePollution(value: unknown): unknown {
+    if (value === null || typeof value !== 'object') return value
+    if (Array.isArray(value)) return value.map(stripPrototypePollution)
+    const obj = value as Record<string, unknown>
+    const out: Record<string, unknown> = {}
+    for (const key of Object.keys(obj)) {
+        if (key === '__proto__' || key === 'constructor') continue
+        out[key] = stripPrototypePollution(obj[key])
+    }
+    return out
+}
+
+function safeParseJson(str: string): unknown {
+    return stripPrototypePollution(JSON.parse(str))
 }
 
 // ── Server ───────────────────────────────────────────────────────

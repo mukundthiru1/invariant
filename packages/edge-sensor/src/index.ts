@@ -75,566 +75,15 @@ import {
     RiskSurfaceCalculator,
 } from './modules/index.js'
 
-
-// ── Environment ───────────────────────────────────────────────────
-
-interface Env {
-    SANTH_INGEST_URL: string
-    SIGNAL_BATCH_SIZE: string
-    DEFENSE_MODE: string           // "monitor" | "enforce" | "off"
-    SENSOR_STATE: KVNamespace      // KV binding for persistent state
-    SENSOR_ID: string              // Unique sensor identifier
-    PROBE_ENABLED: string          // "true" | "false"
-    AI?: Ai                        // Optional Workers AI binding
-}
-
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface Signal {
-    type: string
-    subtype: string | null
-    confidence: number
-    severity: 'critical' | 'high' | 'medium' | 'low' | 'info'
-    path: string
-    method: string
-    sourceHash: string
-    country: string | null
-    matchedRules: string[]
-    invariantClasses: string[]
-    isNovelVariant: boolean
-    targetTech: string | null
-    clientClass: string
-    requestSize: number | null
-    headerAnomaly: boolean
-    defenseAction: 'blocked' | 'monitored' | 'passed'
-    threatScore: number
-    chainIndicators: string[]
-    timestamp: string
-    // MITRE ATT&CK enrichment (from Axiom Drift merge)
-    mitreTechniques?: string[]
-    mitreKillChainPhase?: string
-    // Multi-dimensional risk surface (from Axiom Drift merge)
-    riskSurface?: {
-        security: number
-        privacy: number
-        compliance: number
-        operational: number
-        dominantAxis: string
-    }
-}
-
-interface SignatureRule {
-    id: string
-    type: string
-    subtype: string | null
-    severity: Signal['severity']
-    confidence: number
-    check: (ctx: RequestContext) => boolean
-}
-
-interface RequestContext {
-    url: URL
-    path: string
-    query: string
-    decodedPath: string
-    decodedQuery: string
-    fullDecoded: string
-    method: string
-    headers: Headers
-    ua: string
-    contentType: string
-    bodyText: string | null
-    bodyValues: string[]
-}
-
-
-// ── Encoding Helpers ──────────────────────────────────────────────
-
-function safeDecode(input: string): string {
-    try { return decodeURIComponent(input) }
-    catch { return input }
-}
-
-function deepDecode(input: string, depth = 0): string {
-    if (depth > 3) return input
-    let decoded = input
-    try {
-        const d = decodeURIComponent(decoded)
-        if (d !== decoded) decoded = deepDecode(d, depth + 1)
-    } catch { /* invalid encoding */ }
-    decoded = decoded
-        .replace(/&#x([0-9a-f]+);?/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
-        .replace(/&#(\d+);?/g, (_, dec: string) => String.fromCharCode(parseInt(dec)))
-        .replace(/\\u([0-9a-f]{4})/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)))
-    decoded = decoded.replace(/\/\*.*?\*\//g, ' ')
-    return decoded
-}
-
-
-// ── IP Hashing ────────────────────────────────────────────────────
-
-async function hashSource(ip: string): Promise<string> {
-    const today = new Date().toISOString().split('T')[0]
-    const data = new TextEncoder().encode(`${ip}:${today}:invariant-v7`)
-    const hash = await crypto.subtle.digest('SHA-256', data)
-    return Array.from(new Uint8Array(hash).slice(0, 16))
-        .map(b => b.toString(16).padStart(2, '0'))
-        .join('')
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// LAYER 1: SIGNATURE DETECTION
-// Static pattern matching — high confidence, low false positives
-// ══════════════════════════════════════════════════════════════════
-
-const SIGNATURES: SignatureRule[] = [
-    // SQL Injection
-    {
-        id: 'sqli-union', type: 'sql_injection', subtype: 'union_based', severity: 'high', confidence: 0.9,
-        check: ctx => /union\s+(all\s+)?select\s/i.test(ctx.fullDecoded),
-    },
-    {
-        id: 'sqli-blind', type: 'sql_injection', subtype: 'boolean_blind', severity: 'high', confidence: 0.8,
-        check: ctx => /'\s*(or|and)\s+['"]?\d+['"]?\s*=\s*['"]?\d+/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'sqli-stacked', type: 'sql_injection', subtype: 'stacked_queries', severity: 'critical', confidence: 0.9,
-        check: ctx => /;\s*(drop|delete|insert|update|alter|create|exec|execute)\s+/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'sqli-time', type: 'sql_injection', subtype: 'time_blind', severity: 'high', confidence: 0.85,
-        check: ctx => /(?:sleep\s*\(|waitfor\s+delay|benchmark\s*\(|pg_sleep)/i.test(ctx.fullDecoded),
-    },
-    {
-        id: 'sqli-error', type: 'sql_injection', subtype: 'error_based', severity: 'high', confidence: 0.8,
-        check: ctx => /(?:extractvalue|updatexml|xmltype|convert\s*\(.*using)/i.test(ctx.fullDecoded),
-    },
-
-    // XSS
-    {
-        id: 'xss-script', type: 'xss', subtype: 'reflected', severity: 'high', confidence: 0.9,
-        check: ctx => /<script[\s>]/i.test(ctx.decodedQuery) || /javascript\s*:/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'xss-event', type: 'xss', subtype: 'event_handler', severity: 'high', confidence: 0.8,
-        check: ctx => /\bon(?:error|load|click|mouseover|focus|blur|submit|change|input)\s*=/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'xss-svg', type: 'xss', subtype: 'svg_injection', severity: 'high', confidence: 0.85,
-        check: ctx => /<svg[\s/].*?on\w+\s*=/i.test(ctx.decodedQuery),
-    },
-
-    // Path Traversal
-    {
-        id: 'lfi-traversal', type: 'path_traversal', subtype: 'directory_traversal', severity: 'high', confidence: 0.85,
-        check: ctx => /(?:\.\.[\\/]){2,}/.test(ctx.fullDecoded) || /(?:%2e%2e[\\/]|\.\.%2f|%2e%2e%5c){2,}/i.test(ctx.path + ctx.query),
-    },
-    {
-        id: 'lfi-sensitive', type: 'path_traversal', subtype: 'sensitive_file', severity: 'critical', confidence: 0.95,
-        check: ctx => /\/etc\/(?:passwd|shadow|hosts)|\/proc\/self\/(?:environ|cmdline)|\/windows\/(?:system32|win\.ini)/i.test(ctx.fullDecoded),
-    },
-
-    // Command Injection
-    {
-        id: 'cmdi-shell', type: 'command_injection', subtype: 'shell_command', severity: 'critical', confidence: 0.85,
-        check: ctx => /[;|`]\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|bash|sh|python|perl|ruby|php)\b/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'cmdi-subshell', type: 'command_injection', subtype: 'subshell', severity: 'critical', confidence: 0.8,
-        check: ctx => /\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^)]*\)/.test(ctx.decodedQuery),
-    },
-
-    // SSRF
-    {
-        id: 'ssrf-internal', type: 'ssrf', subtype: 'internal_network', severity: 'high', confidence: 0.85,
-        check: ctx => /https?:\/\/(?:127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+)/i.test(ctx.decodedQuery),
-    },
-    {
-        id: 'ssrf-metadata', type: 'ssrf', subtype: 'cloud_metadata', severity: 'critical', confidence: 0.95,
-        check: ctx => /169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200/i.test(ctx.fullDecoded),
-    },
-
-    // SSTI
-    {
-        id: 'ssti-jinja', type: 'ssti', subtype: 'jinja_twig', severity: 'critical', confidence: 0.85,
-        check: ctx => /\{\{[^}]*(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|config\.|request\.)/.test(ctx.fullDecoded),
-    },
-    {
-        id: 'ssti-el', type: 'ssti', subtype: 'expression_language', severity: 'critical', confidence: 0.85,
-        check: ctx => /\$\{[^}]*(?:Runtime|ProcessBuilder|getRuntime|exec\(|Class\.forName)/i.test(ctx.fullDecoded),
-    },
-
-    // Deserialization
-    {
-        id: 'deser-java', type: 'deserialization', subtype: 'java_object', severity: 'critical', confidence: 0.9,
-        check: ctx => ctx.contentType.includes('application/x-java-serialized-object') || /aced0005|rO0ABX/i.test(ctx.query),
-    },
-    {
-        id: 'deser-php', type: 'deserialization', subtype: 'php_object', severity: 'high', confidence: 0.85,
-        check: ctx => /O:\d+:"[^"]+"/i.test(ctx.decodedQuery),
-    },
-
-    // Header Injection
-    {
-        id: 'header-crlf', type: 'header_injection', subtype: 'crlf', severity: 'high', confidence: 0.85,
-        check: ctx => /%0[da]|%0[DA]/i.test(ctx.path + ctx.query),
-    },
-
-    // XXE
-    {
-        id: 'xxe-entity', type: 'xxe', subtype: 'entity_injection', severity: 'critical', confidence: 0.9,
-        check: ctx => /<!(?:ENTITY|DOCTYPE)\s/i.test(ctx.fullDecoded) && /(?:SYSTEM|PUBLIC)\s/i.test(ctx.fullDecoded),
-    },
-
-    // Log4Shell
-    {
-        id: 'log4shell', type: 'exploit_payload', subtype: 'log4shell', severity: 'critical', confidence: 0.95,
-        check: ctx => /\$\{(?:jndi|lower|upper|env|sys|java|date):/i.test(ctx.fullDecoded),
-    },
-
-    // Prototype Pollution
-    {
-        id: 'proto-pollution', type: 'exploit_payload', subtype: 'prototype_pollution', severity: 'high', confidence: 0.8,
-        check: ctx => /__proto__|constructor\[prototype\]|constructor\.prototype/i.test(ctx.fullDecoded),
-    },
-
-    // Scanner Detection
-    {
-        id: 'scanner-tools', type: 'scanner', subtype: 'automated', severity: 'info', confidence: 0.9,
-        check: ctx => /nuclei|sqlmap|nmap|nikto|masscan|zap|burp|dirbuster|gobuster|ffuf|wfuzz|feroxbuster|dalfox/i.test(ctx.ua),
-    },
-
-    // Info Disclosure
-    {
-        id: 'enum-sensitive', type: 'information_disclosure', subtype: 'sensitive_files', severity: 'medium', confidence: 0.75,
-        check: ctx => /(?:\.env|\.git\/(?:config|HEAD)|\.htaccess|\.aws\/credentials|wp-config\.php|phpinfo\.php|server-status)/i.test(ctx.path),
-    },
-    {
-        id: 'enum-debug', type: 'information_disclosure', subtype: 'debug_endpoint', severity: 'high', confidence: 0.7,
-        check: ctx => /\/(?:debug|trace|metrics|__debug__|_debug_toolbar|actuator|telescope)/i.test(ctx.path),
-    },
-
-    // Auth Bypass
-    {
-        id: 'jwt-none', type: 'auth_bypass', subtype: 'jwt_none_algorithm', severity: 'critical', confidence: 0.9,
-        check: ctx => {
-            const auth = ctx.headers.get('authorization') ?? ''
-            if (!auth.startsWith('Bearer ')) return false
-            try {
-                const parts = auth.slice(7).split('.')
-                if (parts.length !== 3) return false
-                const header = JSON.parse(atob(parts[0]))
-                return header.alg === 'none' || header.alg === 'None' || header.alg === 'NONE'
-            } catch { return false }
-        },
-    },
-
-    // HTTP Smuggling
-    {
-        id: 'smuggle-te', type: 'http_smuggling', subtype: 'te_obfuscation', severity: 'critical', confidence: 0.85,
-        check: ctx => {
-            const te = ctx.headers.get('transfer-encoding') ?? ''
-            return te.length > 0 && (te.includes(',') || /\schunked|chunked\s/i.test(te) || te.toLowerCase() !== 'chunked') && ctx.headers.has('content-length')
-        },
-    },
-
-    // NoSQL Injection
-    {
-        id: 'nosql-operator', type: 'nosql_injection', subtype: 'operator_injection', severity: 'high', confidence: 0.8,
-        check: ctx => /\$(?:gt|gte|lt|lte|ne|eq|in|nin|regex|where|exists|type|or|and|not|nor|elemMatch)\b/i.test(ctx.fullDecoded),
-    },
-
-    // Open Redirect
-    {
-        id: 'open-redirect', type: 'open_redirect', subtype: 'url_redirect', severity: 'medium', confidence: 0.7,
-        check: ctx => /(?:redirect|next|url|return|continue|goto|target|dest|destination|redir|forward)=(?:https?:\/\/|\/\/)/i.test(ctx.query),
-    },
-
-    // LDAP Injection
-    {
-        id: 'ldap-injection', type: 'ldap_injection', subtype: 'filter_injection', severity: 'high', confidence: 0.85,
-        check: ctx => /[)(|*]\s*(?:\(|\)|\||&|!|=|~=|>=|<=)/i.test(ctx.fullDecoded) && /(?:uid|cn|sn|ou|dc|objectClass|member)/i.test(ctx.fullDecoded),
-    },
-]
-
-
-// ══════════════════════════════════════════════════════════════════
-// LAYER 2: BEHAVIORAL ANALYSIS
-// ══════════════════════════════════════════════════════════════════
-
-class BehaviorTracker {
-    private ipCounts = new Map<string, { count: number; firstSeen: number; paths: Set<string>; methods: Set<string>; statusCodes: Map<number, number> }>()
-    private readonly WINDOW_MS = 60_000
-    private readonly BURST_THRESHOLD = 30
-    private readonly PATH_SPRAY_THRESHOLD = 15
-    private readonly METHOD_DIVERSITY_THRESHOLD = 4
-    private readonly UNUSUAL_METHODS = new Set(['TRACE', 'TRACK', 'CONNECT', 'PROPFIND', 'PROPPATCH', 'MKCOL', 'COPY', 'MOVE', 'LOCK', 'UNLOCK', 'PATCH'])
-    private readonly MAX_ENTRIES = 10_000
-
-    track(sourceHash: string, path: string, method: string): string | null {
-        const now = Date.now()
-        let entry = this.ipCounts.get(sourceHash)
-
-        if (!entry || (now - entry.firstSeen) > this.WINDOW_MS) {
-            entry = { count: 0, firstSeen: now, paths: new Set(), methods: new Set(), statusCodes: new Map() }
-            this.ipCounts.set(sourceHash, entry)
-        }
-
-        entry.count++
-        entry.paths.add(path)
-        entry.methods.add(method)
-
-        if (this.ipCounts.size > this.MAX_ENTRIES) {
-            const cutoff = now - this.WINDOW_MS
-            for (const [key, val] of this.ipCounts) {
-                if (val.firstSeen < cutoff) this.ipCounts.delete(key)
-            }
-        }
-
-        if (entry.count > this.BURST_THRESHOLD) return 'rate_anomaly'
-        if (entry.paths.size > this.PATH_SPRAY_THRESHOLD) return 'path_enumeration'
-        // Method diversity: legitimate users don't use 4+ HTTP methods in 60s
-        if (entry.methods.size >= this.METHOD_DIVERSITY_THRESHOLD) return 'method_probing'
-        // Unusual methods: TRACE, TRACK, WebDAV, etc.
-        if (this.UNUSUAL_METHODS.has(method.toUpperCase())) return 'unusual_method'
-        return null
-    }
-
-    recordResponseCode(sourceHash: string, status: number): void {
-        const entry = this.ipCounts.get(sourceHash)
-        if (entry) {
-            entry.statusCodes.set(status, (entry.statusCodes.get(status) ?? 0) + 1)
-        }
-    }
-
-    getRequestCount(sourceHash: string): number {
-        return this.ipCounts.get(sourceHash)?.count ?? 0
-    }
-
-    /** Check if source is exhibiting scanner-like error ratio */
-    hasHighErrorRate(sourceHash: string): boolean {
-        const entry = this.ipCounts.get(sourceHash)
-        if (!entry || entry.count < 5) return false
-        let errorCount = 0
-        for (const [code, count] of entry.statusCodes) {
-            if (code >= 400) errorCount += count
-        }
-        return (errorCount / entry.count) > 0.5
-    }
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// LAYER 3: CLIENT FINGERPRINTING
-// ══════════════════════════════════════════════════════════════════
-
-type ClientClass = 'browser' | 'mobile_browser' | 'bot' | 'crawler' | 'scanner' | 'api_client' | 'cli_tool' | 'empty' | 'suspicious'
-
-function classifyClient(headers: Headers): ClientClass {
-    const ua = (headers.get('user-agent') ?? '').toLowerCase()
-    if (!ua || ua.length === 0) return 'empty'
-    if (ua.length < 15) return 'suspicious'
-    if (/nuclei|sqlmap|nmap|nikto|masscan|zap|burp|dirbuster|gobuster|ffuf|wfuzz|feroxbuster|acunetix/i.test(ua)) return 'scanner'
-    if (/googlebot|bingbot|yandexbot|baiduspider|duckduckbot|slurp|facebookexternalhit|twitterbot/i.test(ua)) return 'crawler'
-    if (/curl|wget|python|go-http|java\/|okhttp|axios|node-fetch|httpie|libwww|scrapy|aiohttp|requests/i.test(ua)) return 'cli_tool'
-    if (/postman|insomnia|paw\//i.test(ua)) return 'api_client'
-    if (/mobile|android|iphone|ipad/i.test(ua) && /chrome|safari|firefox/i.test(ua)) return 'mobile_browser'
-    if (/chrome|firefox|safari|edge|opera/i.test(ua)) {
-        if (!headers.has('accept-language') && !headers.has('accept-encoding')) return 'suspicious'
-        return 'browser'
-    }
-    if (/bot|crawl|spider|scrape|fetch/i.test(ua)) return 'bot'
-    return 'suspicious'
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// LAYER 4: TECHNOLOGY DETECTION
-// ══════════════════════════════════════════════════════════════════
-
-function detectTechnology(path: string, headers: Headers): string | null {
-    const p = path.toLowerCase()
-    const poweredBy = (headers.get('x-powered-by') ?? '').toLowerCase()
-    const server = (headers.get('server') ?? '').toLowerCase()
-    const via = (headers.get('via') ?? '').toLowerCase()
-
-    // CMS detection (path-based)
-    if (p.includes('/wp-') || p.includes('/wordpress')) return 'wordpress'
-    if (p.includes('/sites/default/') || p.includes('/core/misc/drupal')) return 'drupal'
-    if (p.includes('/administrator/') && p.includes('/joomla')) return 'joomla'
-
-    // Framework detection (path-based)
-    if (p.includes('/_next/') || p.includes('/__nextjs')) return 'nextjs'
-    if (p.includes('/_nuxt/')) return 'nuxt'
-    if (p.includes('/actuator/') || p.includes('/spring')) return 'spring'
-    if (p.includes('/__debug__') || p.includes('/_debug_toolbar')) return 'django'
-    if (p.includes('/telescope/') || p.includes('/laravel')) return 'laravel'
-    if (p.includes('/rails/') || p.endsWith('.rb')) return 'rails'
-
-    // Language detection (extension-based)
-    if (p.endsWith('.php') || p.includes('.php?') || p.includes('.phtml')) return 'php'
-    if (p.endsWith('.aspx') || p.endsWith('.asp') || p.endsWith('.ashx')) return 'aspnet'
-    if (p.endsWith('.jsp') || p.endsWith('.do') || p.endsWith('.action')) return 'java'
-    if (p.endsWith('.py') || p.includes('/cgi-bin/')) return 'python'
-
-    // Framework detection (header-based)
-    if (poweredBy.includes('express')) return 'express'
-    if (poweredBy.includes('next.js')) return 'nextjs'
-    if (poweredBy.includes('php')) return 'php'
-    if (poweredBy.includes('asp.net')) return 'aspnet'
-    if (poweredBy.includes('django')) return 'django'
-    if (poweredBy.includes('flask')) return 'python'
-    if (poweredBy.includes('laravel')) return 'laravel'
-    if (poweredBy.includes('rails') || poweredBy.includes('phusion')) return 'rails'
-
-    // Server detection (server header)
-    if (server.includes('nginx')) return 'nginx'
-    if (server.includes('apache')) return 'apache'
-    if (server.includes('cloudflare')) return 'cloudflare'
-    if (server.includes('microsoft-iis')) return 'aspnet'
-    if (server.includes('gunicorn') || server.includes('uvicorn')) return 'python'
-    if (server.includes('openresty')) return 'nginx'
-
-    // CDN/proxy detection
-    if (via.includes('cloudflare') || headers.has('cf-ray')) return 'cloudflare'
-
-    // API detection
-    if (p.startsWith('/api/') || p.startsWith('/v1/') || p.startsWith('/v2/') || p.startsWith('/v3/')) return 'rest-api'
-    if (p.includes('/graphql')) return 'graphql'
-
-    return null
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// SIGNAL BUFFER
-// ══════════════════════════════════════════════════════════════════
-
-class SignalBuffer {
-    private signals: Signal[] = []
-    private readonly batchSize: number
-    private readonly ingestUrl: string
-    private dedup = new Map<string, { count: number; lastSeen: number }>()
-    private static readonly MAX_BUFFER = 500
-    private static readonly DEDUP_WINDOW_MS = 60_000
-
-    constructor(batchSize: number, ingestUrl: string) {
-        this.batchSize = batchSize
-        this.ingestUrl = ingestUrl
-    }
-
-    add(signal: Signal): void {
-        const now = Date.now()
-        const dedupKey = `${signal.sourceHash}:${signal.type}:${signal.method}:${signal.path}`
-        const existing = this.dedup.get(dedupKey)
-
-        if (existing && (now - existing.lastSeen) < SignalBuffer.DEDUP_WINDOW_MS) {
-            existing.count++
-            existing.lastSeen = now
-            return
-        }
-
-        this.dedup.set(dedupKey, { count: 1, lastSeen: now })
-
-        if (this.signals.length >= SignalBuffer.MAX_BUFFER) {
-            this.signals.shift()
-        }
-
-        this.signals.push(signal)
-    }
-
-    shouldFlush(): boolean {
-        return this.signals.length >= this.batchSize
-    }
-
-    async flush(): Promise<void> {
-        if (this.signals.length === 0 || !this.ingestUrl) return
-
-        const batch = this.signals.splice(0, this.batchSize)
-
-        try {
-            await fetch(this.ingestUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ signals: batch, sensorVersion: '7.0.0', timestamp: new Date().toISOString() }),
-            })
-        } catch {
-            // Re-add failed signals to front of buffer
-            this.signals.unshift(...batch.slice(0, 50))
-        }
-
-        // Clean old dedup entries
-        const cutoff = Date.now() - SignalBuffer.DEDUP_WINDOW_MS
-        for (const [key, val] of this.dedup) {
-            if (val.lastSeen < cutoff) this.dedup.delete(key)
-        }
-    }
-
-    getCount(): number { return this.signals.length }
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// HEADER ANOMALY DETECTION
-// ══════════════════════════════════════════════════════════════════
-
-function detectHeaderAnomalies(headers: Headers): boolean {
-    const ua = headers.get('user-agent') ?? ''
-    if (ua.length > 500) return true
-    if (!headers.has('host')) return true
-    const accept = headers.get('accept') ?? ''
-    if (accept.length > 400) return true
-    if (headers.has('x-forwarded-for') && headers.has('x-real-ip')) {
-        const xff = headers.get('x-forwarded-for') ?? ''
-        const xri = headers.get('x-real-ip') ?? ''
-        if (xff.split(',').length > 5 && xri !== xff.split(',')[0].trim()) return true
-    }
-    return false
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// BLOCK RESPONSE
-// ══════════════════════════════════════════════════════════════════
-
-function blockResponse(severity: string, requestOrigin?: string | null): Response {
-    return new Response(JSON.stringify({
-        error: 'Request blocked by security policy',
-        code: 'INVARIANT_DEFENSE',
-        severity,
-    }), {
-        status: 403,
-        headers: {
-            'Content-Type': 'application/json',
-            'X-Invariant-Action': 'blocked',
-            'Cache-Control': 'no-store',
-            // CORS safety: ensure block doesn't break legitimate CORS frontends
-            ...(requestOrigin ? {
-                'Access-Control-Allow-Origin': requestOrigin,
-                'Access-Control-Allow-Credentials': 'true',
-            } : {}),
-        },
-    })
-}
-
-
-// ══════════════════════════════════════════════════════════════════
-// PATH NORMALIZATION
-// ══════════════════════════════════════════════════════════════════
-
-function normalizePath(path: string): string {
-    return path
-        .toLowerCase()
-        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g, '{uuid}')
-        .replace(/[0-9a-f]{32,64}/g, '{hash}')
-        .replace(/\/\d{4,}/g, '/{id}')
-        .replace(/\/\d+(?=\/|$)/g, '/{id}')
-        .replace(/=([^&]+)/g, '={val}')
-        .replace(/\/$/, '')
-        || '/'
-}
+// ── Extracted Layer Modules ───────────────────────────────────────
+import type { Env, Signal, RequestContext } from './layers/types.js'
+import { safeDecode, deepDecode } from './layers/encoding.js'
+import { SIGNATURES } from './layers/l1-signatures.js'
+import { BehaviorTracker } from './layers/l2-behavior.js'
+import { classifyClient } from './layers/l3-fingerprint.js'
+import { detectTechnology } from './layers/l4-tech-detect.js'
+import { SignalBuffer } from './layers/signal-buffer.js'
+import { hashSource, detectHeaderAnomalies, blockResponse, normalizePath, timingSafeEqual, setSaltKey } from './layers/utils.js'
 
 
 // ══════════════════════════════════════════════════════════════════
@@ -669,7 +118,10 @@ export default {
             signalBuffer = new SignalBuffer(
                 parseInt(env.SIGNAL_BATCH_SIZE ?? '50'),
                 env.SANTH_INGEST_URL ?? '',
+                env.SENSOR_API_KEY ?? '',
             )
+            // SAA-060: Initialize deterministic salt for cross-isolate IP hash consistency
+            if (env.SENSOR_API_KEY) setSaltKey(env.SENSOR_API_KEY)
         }
 
         if (!stateManager && env.SENSOR_STATE) {
@@ -695,23 +147,32 @@ export default {
         const query = url.search
 
         // ── Introspection endpoints ──────────────────────────────
+        // Require INTROSPECTION_KEY when configured (defense against WAF fingerprinting)
+        if (path === '/__invariant/health' || path === '/__invariant/posture') {
+            if (env.INTROSPECTION_KEY) {
+                const authParam = url.searchParams.get('key')
+                // SECURITY (SAA-035): Constant-time comparison prevents timing
+                // side-channel that would leak the key byte by byte.
+                const keyValid = authParam !== null
+                    && authParam.length === env.INTROSPECTION_KEY.length
+                    && await timingSafeEqual(authParam, env.INTROSPECTION_KEY)
+                if (!keyValid) {
+                    return new Response(JSON.stringify({ error: 'unauthorized' }), {
+                        status: 401,
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                }
+            }
+        }
+
         if (path === '/__invariant/health') {
             return new Response(JSON.stringify({
                 status: 'operational',
                 version: '8.0.0',
                 mode,
                 engine: { classes: engine.classes.length },
-                chainCorrelator: { sources: chainCorrelator.activeSourceCount, signals: chainCorrelator.totalSignals, chains: chainCorrelator.chainCount },
                 signalBuffer: signalBuffer.getCount(),
-                applicationModel: { endpoints: applicationModel.endpointCount },
-                techStack: techTracker.getStack(),
-                probeResults: internalProber.probedCount,
-                responseAudit: responseAuditor.findingCount,
-                // Axiom Drift merge capabilities
-                mitreCoverage: mitreMapper.getCoverageReport().coveredCount,
-                iocIndicators: iocCorrelator.indicatorCount,
-                iocSyncAge: iocCorrelator.syncAge,
-                evidenceSealing: evidenceSealer !== null,
+                // Redacted: no tech stack, IOC counts, or capability details
                 timestamp: new Date().toISOString(),
             }), {
                 headers: { 'Content-Type': 'application/json' },
@@ -726,7 +187,11 @@ export default {
         }
 
         // Skip static assets — comprehensive list of non-executable formats
-        if (/\.(?:css|js|mjs|png|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|map|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|br|wasm)$/i.test(path)) {
+        // SECURITY (SAA-034): Also check for path traversal. An attacker requesting
+        // /../../../etc/passwd.js bypasses all detection if we only check extension.
+        const isStaticAsset = /\.(?:css|js|mjs|png|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|map|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|br|wasm)$/i.test(path)
+        const hasTraversal = /(?:\.\.|%2e%2e|%252e)/i.test(path)
+        if (isStaticAsset && !hasTraversal) {
             return fetch(request)
         }
 
@@ -753,7 +218,11 @@ export default {
         }
 
         // Hash source IP
-        const sourceIp = request.headers.get('cf-connecting-ip') ?? request.headers.get('x-real-ip') ?? '0.0.0.0'
+        // SECURITY (SAA-027): Only trust CF-Connecting-IP (set by Cloudflare, not spoofable).
+        // x-real-ip is client-spoofable — an attacker setting x-real-ip: 1.2.3.4
+        // causes that IP to be blocklisted across the collective, allowing
+        // targeted DoS against arbitrary third parties via the collective defense system.
+        const sourceIp = request.headers.get('cf-connecting-ip') ?? '0.0.0.0'
         const sourceHash = await hashSource(sourceIp)
         const country = request.headers.get('cf-ipcountry') ?? null
 
@@ -1044,8 +513,15 @@ export default {
         }
 
         // ── Application Model (L4b) ──────────────────────────────
-        const authType = detectAuthType(request.headers)
-        applicationModel.recordRequest(path, request.method, authType)
+        // SAA-061: Only record CLEAN requests into the application model.
+        // Monitored/blocked requests are attack attempts and must NOT
+        // influence the behavioral baseline — otherwise an attacker can
+        // poison the model by sending 10K requests to admin endpoints
+        // without auth, making that pattern appear "normal" to drift detection.
+        if (action === 'passed') {
+            const authType = detectAuthType(request.headers)
+            applicationModel.recordRequest(path, request.method, authType)
+        }
 
         // ── State Updates ────────────────────────────────────────
         if (stateManager) {
@@ -1103,7 +579,14 @@ export default {
 
         // ── Block Response ───────────────────────────────────────
         if (action === 'blocked') {
-            return blockResponse(severity, request.headers.get('origin'))
+            // SAA-059: Timing oracle defense. Without jitter, blocked requests
+            // return in ~2ms while origin-proxied requests take 50-200ms.
+            // An attacker can binary-search for the exact evasion threshold
+            // by measuring response latency. Random 5-50ms jitter makes
+            // blocked responses indistinguishable from fast origin responses.
+            const jitterMs = 5 + Math.floor(Math.random() * 45)
+            await new Promise(r => setTimeout(r, jitterMs))
+            return blockResponse(severity)
         }
 
         // ── Origin Fetch ─────────────────────────────────────────
@@ -1141,9 +624,10 @@ export default {
             headers: auditHeaders,
         })
 
-        if (action === 'monitored') {
-            modifiedResponse.headers.set('X-Invariant-Action', 'monitored')
-        }
+        // SAA-062: Do NOT set X-Invariant-Action on proxied responses.
+        // This header leaks sensor presence and detection decisions to attackers.
+        // An attacker iterating payloads can observe when this header appears
+        // to determine exact detection thresholds.
 
         // ── Background persistence ───────────────────────────────
         if (stateManager) {
@@ -1167,7 +651,7 @@ export default {
 
         // Sync rules from intel pipeline
         if (stateManager) {
-            await syncRulesFromIntel(stateManager)
+            await syncRulesFromIntel(stateManager, env.SENSOR_API_KEY)
         }
 
         // L8: Internal probing (if enabled)
@@ -1385,12 +869,19 @@ export default {
             if (signalBuffer) {
                 try {
                     if (!evidenceSealer) {
-                        // Use sensor ID + a secret as signing key
-                        const sealKey = `${env.SENSOR_ID ?? 'default'}_seal_key`
-                        evidenceSealer = new EvidenceSealer(
-                            env.SENSOR_ID ?? 'default',
-                            sealKey,
-                        )
+                        // SECURITY (SAA-033): Seal key MUST come from a secret,
+                        // not derived from SENSOR_ID (which is known/guessable).
+                        // Without a proper secret, anyone who knows the sensor ID
+                        // can forge sealed evidence — Merkle proofs become theater.
+                        const sealSecret = env.SEAL_SECRET ?? env.SENSOR_API_KEY ?? ''
+                        if (sealSecret.length >= 32) {
+                            evidenceSealer = new EvidenceSealer(
+                                env.SENSOR_ID ?? 'default',
+                                sealSecret,
+                            )
+                        } else {
+                            console.warn('Evidence sealer disabled: SEAL_SECRET not configured or too short')
+                        }
                     }
                     // Evidence seal is computed but the sealed batch
                     // would be forwarded with the signal flush in production
