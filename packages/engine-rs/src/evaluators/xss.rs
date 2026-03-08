@@ -1139,6 +1139,120 @@ impl L2Evaluator for XssEvaluator {
             });
         }
 
+        static DOM_XSS_STORAGE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)(?:innerHTML|outerHTML|insertAdjacentHTML|document\.write|document\.writeln|eval|setTimeout|setInterval|new\s+Function|location\.(?:href|replace|assign)|window\.open)\s*(?:=|\.call\s*\(|\.apply\s*\(|\()\s*(?:localStorage|sessionStorage)(?:\.getItem|\[[^\]]*\]|\.[a-zA-Z_$][\w$]*)").unwrap()
+        });
+        if let Some(m) = DOM_XSS_STORAGE_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "dom_xss_storage_sink".into(),
+                confidence: 0.88,
+                detail: "DOM XSS via storage sink".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "localStorage/sessionStorage data passed directly to a dangerous DOM sink (innerHTML, eval, document.write) creates a persistent DOM XSS vulnerability — attacker stores payload once, victim executes it on every page load".into(),
+                    offset: m.start(),
+                    property: "Data retrieved from localStorage/sessionStorage must be sanitized before being assigned to dangerous DOM sinks".into(),
+                }],
+            });
+        }
+
+        static DOM_XSS_WINDOW_NAME_BRACKET_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)(?:innerHTML|outerHTML|document\.write|document\.writeln|eval|setTimeout|setInterval|new\s+Function)\s*(?:=\s*[\(\[]|\.call\s*\(|\.apply\s*\(|\()\s*(?:window|self|top|parent)\s*[\[\(]\s*[\x22\x27]?(?:name|hash)[\x22\x27]?\s*[\]\)]").unwrap()
+        });
+        if let Some(m) = DOM_XSS_WINDOW_NAME_BRACKET_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "dom_xss_window_name_bracket".into(),
+                confidence: 0.85,
+                detail: "DOM XSS via window.name bracket notation".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Bracket notation window[\"name\"] or self[\"name\"] accessing attacker-controlled window properties and passing them to dangerous sinks creates DOM XSS, bypassing dot-notation detection".into(),
+                    offset: m.start(),
+                    property: "window.name and window[\"name\"] must both be treated as untrusted sources and must not be passed to dangerous DOM sinks".into(),
+                }],
+            });
+        }
+
+        static SVG_ANIMATE_JS_TO_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<(?:animate|set|animatemotion|animatetransform)\b[^>]*\b(?:to|values|from)\s*=\s*[\x22\x27]?[^>]*?(?:javascript\s*:|data\s*:\s*text\s*/\s*html)").unwrap()
+        });
+        if let Some(m) = SVG_ANIMATE_JS_TO_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "xss_svg_animate_js_to".into(),
+                confidence: 0.87,
+                detail: "SVG animate/set with javascript: in to= attribute".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "SVG animate/set elements with javascript: or data:text/html in their to/values/from attributes can redirect attribute values to executable JavaScript when the animation completes".into(),
+                    offset: m.start(),
+                    property: "SVG animate element to/values/from attributes must not contain javascript: or data: URI schemes".into(),
+                }],
+            });
+        }
+
+        static MUTATION_XSS_SPECIAL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<(?:noscript|xmp|plaintext)\b[^>]*>[^<]*(?:<[^>]+title\s*=)?[^<]*(?:<script\b|javascript\s*:|on\w+\s*=)").unwrap()
+        });
+        if let Some(m) = MUTATION_XSS_SPECIAL_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "mutation_xss_special_elements".into(),
+                confidence: 0.86,
+                detail: "Mutation XSS via noscript/xmp/plaintext elements".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "noscript, xmp, and plaintext elements cause different parser behaviors depending on scripting context. In scripting-disabled contexts, noscript children are parsed as HTML, enabling filter bypass when the sanitizer differs from the parser context used at execution time".into(),
+                    offset: m.start(),
+                    property: "noscript/xmp/plaintext elements must be rejected from user input as they create parser-context-dependent XSS vectors".into(),
+                }],
+            });
+        }
+
+        static IFRAME_SRCDOC_ENTITY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)<iframe\b[^>]*\bsrcdoc\s*=\s*[\x22\x27][^>]*&(?:#x3[cC]|#60|lt|#x2[fF]|#47|gt|#x27|#39|apos|#x22|#34|quot|amp|#38);").unwrap()
+        });
+        if let Some(m) = IFRAME_SRCDOC_ENTITY_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "xss_srcdoc_entity_encoded".into(),
+                confidence: 0.89,
+                detail: "iframe srcdoc with entity-encoded XSS".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "iframe srcdoc attribute with HTML entity-encoded content is parsed and executed by the browser but may bypass server-side filters that scan for literal < > characters. The browser decodes entities before parsing the srcdoc content".into(),
+                    offset: m.start(),
+                    property: "iframe srcdoc content must be fully sanitized. HTML entities must be decoded before scanning for dangerous patterns".into(),
+                }],
+            });
+        }
+
+        static CSS_EXPRESSION_OBFUSCATED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)(?:\\[0-9a-fA-F]{1,6}\s?){4,}|expression\s*/\*[\s\S]*?\*/\s*\(").unwrap()
+        });
+        if let Some(m) = CSS_EXPRESSION_OBFUSCATED_RE.find(input) {
+            detections.push(L2Detection {
+                detection_type: "css_expression_obfuscated".into(),
+                confidence: 0.86,
+                detail: "CSS expression() with hex/octal escape obfuscation".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "CSS hex escape sequences (\\41 = A) and comments inside expression() calls bypass keyword-based filters while remaining executable by IE and legacy browsers. Four or more sequential CSS hex escapes typically reconstruct dangerous property names".into(),
+                    offset: m.start(),
+                    property: "CSS content must be normalized by decoding hex escapes and removing comments before scanning for expression() or dangerous property names".into(),
+                }],
+            });
+        }
+
         detections
     }
 
@@ -1152,6 +1266,12 @@ impl L2Evaluator for XssEvaluator {
             "attribute_escape" => Some(InvariantClass::XssAttributeEscape),
             "dom_xss" => Some(InvariantClass::XssTagInjection),
             "proto_pollution_xss" => Some(InvariantClass::XssTagInjection),
+            "dom_xss_storage_sink"
+            | "dom_xss_window_name_bracket"
+            | "xss_svg_animate_js_to"
+            | "mutation_xss_special_elements"
+            | "xss_srcdoc_entity_encoded"
+            | "css_expression_obfuscated" => Some(InvariantClass::XssTagInjection),
             _ => None,
         }
     }
@@ -1550,5 +1670,47 @@ mod tests {
         let eval = XssEvaluator;
         let dets = eval.detect("<pre>`${not-a-payload}`</pre>");
         assert!(dets.is_empty());
+    }
+
+    #[test]
+    fn test_dom_xss_storage_sink() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("element.innerHTML = localStorage.getItem(\"payload\")");
+        assert!(has_type(&dets, "dom_xss_storage_sink"));
+    }
+
+    #[test]
+    fn test_dom_xss_window_name_bracket() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("eval(window[\"name\"])");
+        assert!(has_type(&dets, "dom_xss_window_name_bracket"));
+    }
+
+    #[test]
+    fn test_svg_animate_js_to() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<animate to=\"javascript:alert(1)\" />");
+        assert!(has_type(&dets, "xss_svg_animate_js_to"));
+    }
+
+    #[test]
+    fn test_mutation_xss_noscript() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<noscript><p title=\"--!><script>alert(1)</script>\"></noscript>");
+        assert!(has_type(&dets, "mutation_xss_special_elements"));
+    }
+
+    #[test]
+    fn test_srcdoc_entity() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<iframe srcdoc=\"&lt;script&gt;alert(1)&lt;/script&gt;\"></iframe>");
+        assert!(has_type(&dets, "xss_srcdoc_entity_encoded"));
+    }
+
+    #[test]
+    fn test_css_expression_obfuscated() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("expression/*comment*/(alert(1))");
+        assert!(has_type(&dets, "css_expression_obfuscated"));
     }
 }

