@@ -2256,6 +2256,162 @@ impl SqlStructuralEvaluator {
 
         detections
     }
+
+    fn detect_pg_copy_from_program(&self, input: &str) -> Vec<L2Detection> {
+        static COPY_FROM_PROGRAM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bCOPY\b.{0,80}\bFROM\s+PROGRAM\b").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in COPY_FROM_PROGRAM_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_pg_copy_from_program".into(),
+                confidence: 0.94,
+                detail: "PostgreSQL COPY FROM PROGRAM OS command execution pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "PostgreSQL COPY FROM PROGRAM executes OS commands and captures output into a table, equivalent to RCE".into(),
+                    offset: m.start(),
+                    property: "User input must not trigger OS command execution via database primitives".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_zero_width_bypass(&self, input: &str) -> Vec<L2Detection> {
+        static ZERO_WIDTH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?:\u{200B}|\u{200C}|\u{200D}|\u{FEFF}|\u{2060})").unwrap()
+        });
+        
+        let mut detections = Vec::new();
+        if ZERO_WIDTH_RE.is_match(input) {
+            let stripped = ZERO_WIDTH_RE.replace_all(input, "").to_string();
+            // simple check for SQL keywords in stripped vs original
+            let keywords = ["SELECT", "UNION", "INSERT", "UPDATE", "DELETE", "DROP"];
+            for kw in &keywords {
+                let kw_upper = kw.to_uppercase();
+                let stripped_upper = stripped.to_uppercase();
+                let original_upper = input.to_uppercase();
+                
+                if stripped_upper.contains(&kw_upper) {
+                    detections.push(L2Detection {
+                        detection_type: "sql_zero_width_bypass".into(),
+                        confidence: 0.89,
+                        detail: "Zero-width Unicode characters used to obscure SQL keywords".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::EncodingDecode,
+                            matched_input: input.to_string(),
+                            interpretation: "Zero-width Unicode characters injected between SQL keywords bypass WAF/regex detection while remaining executable by the database engine".into(),
+                            offset: 0,
+                            property: "User input must not contain zero-width characters intended to bypass keyword filters".into(),
+                        }],
+                    });
+                    break;
+                }
+            }
+        }
+        detections
+    }
+
+    fn detect_pg_unicode_escape(&self, input: &str) -> Vec<L2Detection> {
+        static PG_UNICODE_ESCAPE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)U&\x27[^\x27]*\x27|U&'[^']*'").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in PG_UNICODE_ESCAPE_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_pg_unicode_escape".into(),
+                confidence: 0.87,
+                detail: "PostgreSQL U& Unicode escape string syntax detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "PostgreSQL U& escape string syntax allows encoding SQL keywords as Unicode code points, bypassing keyword detection".into(),
+                    offset: m.start(),
+                    property: "User input must not utilize alternative database-specific string encodings to bypass filters".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_bitwise_tautology(&self, input: &str) -> Vec<L2Detection> {
+        static BITWISE_TAUTOLOGY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:1\s*[|&^]\s*1\s*=\s*1|1\s*XOR\s*0\s*=\s*1|0\s*XOR\s*0\s*=\s*0|\d+\s*\|\s*\d+\s*=\s*\d+)").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in BITWISE_TAUTOLOGY_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_bitwise_tautology".into(),
+                confidence: 0.82,
+                detail: "Bitwise operator tautology detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Bitwise operator tautologies (1|1=1, XOR) function as boolean always-true conditions in MySQL, bypassing OR/AND tautology filters".into(),
+                    offset: m.start(),
+                    property: "User input must not contain boolean always-true expressions using bitwise operators".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_hex_x_literal(&self, input: &str) -> Vec<L2Detection> {
+        static HEX_X_LITERAL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bX'[0-9a-fA-F]{4,}'").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in HEX_X_LITERAL_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_hex_x_literal".into(),
+                confidence: 0.84,
+                detail: "Standard SQL hex literal string (X'... ') detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Standard SQL hex literal syntax X'...' encodes string payloads that databases decode to executable SQL keywords".into(),
+                    offset: m.start(),
+                    property: "User input must not contain hex-encoded payloads designed to bypass keyword detection".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_sqlite_pragma(&self, input: &str) -> Vec<L2Detection> {
+        static PRAGMA_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bPRAGMA\s+(?:table_info|database_list|integrity_check|writable_schema|journal_mode|temp_store|wal_autocheckpoint|foreign_keys|user_version|application_id|secure_delete)\b").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in PRAGMA_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_sqlite_pragma".into(),
+                confidence: 0.88,
+                detail: "SQLite PRAGMA command injection detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "SQLite PRAGMA injection discloses schema information and can modify database security settings including foreign key enforcement and write-ahead logging".into(),
+                    offset: m.start(),
+                    property: "User input must not trigger SQLite internal configuration or schema commands".into(),
+                }],
+            });
+        }
+        detections
+    }
 }
 
 impl L2Evaluator for SqlStructuralEvaluator {
@@ -2566,6 +2722,42 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            for det in self.detect_pg_copy_from_program(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_zero_width_bypass(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_pg_unicode_escape(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_bitwise_tautology(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_hex_x_literal(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_sqlite_pragma(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
         }
 
         let err_score = detect_error_based_sqli(input);
@@ -2655,6 +2847,12 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "advanced_error_oracle" => Some(InvariantClass::SqlErrorOracle),
             "json_where_abuse" => Some(InvariantClass::SqlUnionExtraction),
             "insert_update_injection" => Some(InvariantClass::SqlStackedExecution),
+            "sql_pg_copy_from_program" => Some(InvariantClass::SqlStackedExecution),
+            "sql_zero_width_bypass" => Some(InvariantClass::SqlUnionExtraction),
+            "sql_pg_unicode_escape" => Some(InvariantClass::SqlUnionExtraction),
+            "sql_bitwise_tautology" => Some(InvariantClass::SqlTautology),
+            "sql_hex_x_literal" => Some(InvariantClass::SqlUnionExtraction),
+            "sql_sqlite_pragma" => Some(InvariantClass::SqlStackedExecution),
             _ => None,
         }
     }
@@ -3500,5 +3698,47 @@ mod tests {
         assert!(dets.iter().any(|d| {
             d.detection_type == "unicode_normalization_sqli" && d.confidence > 0.7
         }));
+    }
+
+    #[test]
+    fn test_copy_from_program() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("COPY results FROM PROGRAM 'id'");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_pg_copy_from_program"));
+    }
+
+    #[test]
+    fn test_zero_width_bypass() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("UNION\u{200B}SELECT");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_zero_width_bypass"));
+    }
+
+    #[test]
+    fn test_pg_unicode_escape() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("U&'\\0073\\0065\\006c\\0065\\0063\\0074'");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_pg_unicode_escape"));
+    }
+
+    #[test]
+    fn test_bitwise_tautology() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("1 OR 1|1=1");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_bitwise_tautology"));
+    }
+
+    #[test]
+    fn test_hex_x_literal() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("X'53454c454354'");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_hex_x_literal"));
+    }
+
+    #[test]
+    fn test_sqlite_pragma() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("PRAGMA table_info(users)");
+        assert!(dets.iter().any(|d| d.detection_type == "sql_sqlite_pragma"));
     }
 }

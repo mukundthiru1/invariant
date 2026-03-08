@@ -2,7 +2,9 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
 use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
 
 pub type L2EvalResult = L2Detection;
 
@@ -313,6 +315,263 @@ fn find_conflicts(entries: &[ParamEntry]) -> (usize, usize, bool, bool, bool, bo
     )
 }
 
+static DOT_NOTATION_POLLUTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[?&;])([a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+)=([^&;]+)")
+        .expect("valid dot-notation pollution regex")
+});
+
+static DOUBLE_ENCODED_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[?&;]([^=]*%25[0-9a-f]{2}[^=]*)=").expect("valid regex"));
+
+static NESTED_JSON_ADMIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\{[^{}]*"[^"]+"\s*:\s*\{[^{}]*"(?:role|admin|permission)""#)
+        .expect("valid nested json regex")
+});
+
+fn extract_query_candidates(input: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let (query, _, _) = parse_http_sections(input);
+    if !query.is_empty() {
+        out.push(query);
+    }
+
+    for line in input.lines() {
+        let mut parts = line.split_whitespace();
+        let _method = parts.next().unwrap_or_default();
+        let path = parts.next().unwrap_or_default();
+        if let Some((_, q)) = path.split_once('?') {
+            let query = q.trim();
+            if !query.is_empty() {
+                out.push(query.to_string());
+            }
+        }
+    }
+
+    if out.is_empty() {
+        if let Some((_, q)) = input.split_once('?') {
+            let query = q
+                .split_whitespace()
+                .next()
+                .unwrap_or_default()
+                .trim_matches('?')
+                .trim();
+            if !query.is_empty() {
+                out.push(query.to_string());
+            }
+        }
+    }
+
+    let mut seen = HashSet::new();
+    out.into_iter()
+        .filter(|q| !q.is_empty())
+        .filter(|q| seen.insert(q.clone()))
+        .collect()
+}
+
+fn extract_cookie_header_values(input: &str, headers: &HashMap<String, String>) -> Vec<String> {
+    let mut values = Vec::new();
+    if let Some(cookie) = headers.get("cookie") {
+        values.push(cookie.clone());
+    }
+
+    for line in input.lines() {
+        if let Some((k, v)) = line.split_once(':') {
+            if k.trim().eq_ignore_ascii_case("cookie") {
+                values.push(v.trim().to_string());
+            }
+        }
+    }
+
+    values
+}
+
+fn detect_cookie_query_collision(input: &str) -> Vec<L2Detection> {
+    let (_, headers, _) = parse_http_sections(input);
+    let query_candidates = extract_query_candidates(input);
+    let mut query_keys = HashSet::new();
+    for query in query_candidates {
+        for entry in parse_pairs(&query, ParamSource::Query) {
+            query_keys.insert(entry.canonical_key);
+        }
+    }
+
+    let mut cookie_keys = HashSet::new();
+    for cookie_line in extract_cookie_header_values(input, &headers) {
+        for token in cookie_line.split(';') {
+            let raw = token.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            let Some((k, _)) = raw.split_once('=') else {
+                continue;
+            };
+            let (canonical, _, _) = canonicalize_key(k.trim());
+            if !canonical.is_empty() {
+                cookie_keys.insert(canonical);
+            }
+        }
+    }
+
+    query_keys
+        .intersection(&cookie_keys)
+        .map(|key| L2Detection {
+            detection_type: "hpp_cookie_query_collision".into(),
+            confidence: 0.88,
+            detail: format!("Cookie/query key collision detected for parameter '{}'", key),
+            position: 0,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: format!("collision_key={}", key),
+                interpretation:
+                    "Same canonical key is present in Cookie and query parameter channels".into(),
+                offset: 0,
+                property: "Same parameter must not appear in both Cookie and query string — server may merge them in undefined order".into(),
+            }],
+        })
+        .collect()
+}
+
+fn detect_dot_notation_pollution(input: &str) -> Vec<L2Detection> {
+    let mut dets = Vec::new();
+    let query_candidates = extract_query_candidates(input);
+    let privileged_values = ["admin", "true", "1", "root", "superuser", "enabled"];
+
+    for query in query_candidates {
+        let with_prefix = format!("?{}", query);
+        for caps in DOT_NOTATION_POLLUTION_RE.captures_iter(&with_prefix) {
+            let raw_key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let raw_value = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+            let value = percent_decode(raw_value).to_ascii_lowercase();
+
+            if privileged_values.iter().any(|p| value == *p) {
+                dets.push(L2Detection {
+                    detection_type: "hpp_dot_notation_pollution".into(),
+                    confidence: 0.84,
+                    detail: format!(
+                        "Dot-notation parameter '{}' carries privileged value '{}'",
+                        raw_key, raw_value
+                    ),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::TypeCoerce,
+                        matched_input: format!("{}={}", raw_key, raw_value),
+                        interpretation:
+                            "Dot-notation keys can be expanded into nested objects by some frameworks".into(),
+                        offset: 0,
+                        property: "Dot-notation keys may be parsed as nested object properties by some frameworks, enabling privilege escalation".into(),
+                    }],
+                });
+            }
+        }
+    }
+
+    dets
+}
+
+fn normalize_key_for_collision(key: &str) -> String {
+    key.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn detect_double_encoded_key(input: &str) -> Vec<L2Detection> {
+    let mut dets = Vec::new();
+    let query_candidates = extract_query_candidates(input);
+
+    for query in query_candidates {
+        let entries = parse_pairs(&query, ParamSource::Query);
+        let existing: HashSet<String> = entries
+            .iter()
+            .map(|e| normalize_key_for_collision(&e.canonical_key))
+            .collect();
+        let with_prefix = format!("?{}", query);
+
+        for caps in DOUBLE_ENCODED_KEY_RE.captures_iter(&with_prefix) {
+            let raw_key = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+            let once_decoded = percent_decode(raw_key);
+            let twice_decoded = percent_decode(&once_decoded);
+            let normalized_twice = normalize_key_for_collision(&twice_decoded);
+
+            if !normalized_twice.is_empty() && existing.contains(&normalized_twice) {
+                dets.push(L2Detection {
+                    detection_type: "hpp_double_encoded_key".into(),
+                    confidence: 0.86,
+                    detail: format!(
+                        "Double-encoded key '{}' resolves to '{}' after two decodes",
+                        raw_key, twice_decoded
+                    ),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::EncodingDecode,
+                        matched_input: format!(
+                            "raw_key={} once={} twice={}",
+                            raw_key, once_decoded, twice_decoded
+                        ),
+                        interpretation:
+                            "Double decoding collapses a disguised key into an existing parameter namespace".into(),
+                        offset: 0,
+                        property: "Double-encoded parameter keys bypass WAF/middleware canonicalization, creating duplicate parameter confusion".into(),
+                    }],
+                });
+            }
+        }
+    }
+
+    dets
+}
+
+fn key_depths(input: &str, key: &str) -> Vec<usize> {
+    let needle = format!("\"{}\"", key);
+    let mut depths = Vec::new();
+    let bytes = input.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth = depth.saturating_add(1),
+            b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        if i + needle_bytes.len() <= bytes.len() && &bytes[i..i + needle_bytes.len()] == needle_bytes
+        {
+            depths.push(depth);
+        }
+        i += 1;
+    }
+    depths
+}
+
+fn detect_nested_json_hpp(input: &str) -> Vec<L2Detection> {
+    let role_depths = key_depths(input, "role");
+    let unique_depths: HashSet<usize> = role_depths.iter().copied().collect();
+    let has_multi_depth_role = role_depths.len() >= 2 && unique_depths.len() >= 2;
+    let has_nested_admin_pattern = NESTED_JSON_ADMIN_RE.is_match(input);
+    let has_privileged_terms = input.contains("\"admin\"")
+        || input.contains("\"permissions\"")
+        || input.contains("\"permission\"");
+
+    if has_multi_depth_role || (has_nested_admin_pattern && has_privileged_terms) {
+        return vec![L2Detection {
+            detection_type: "hpp_nested_json".into(),
+            confidence: 0.83,
+            detail: "Nested JSON key duplication indicates potential merge-order confusion".into(),
+            position: 0,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::SemanticEval,
+                matched_input: input.chars().take(220).collect(),
+                interpretation:
+                    "Privileged JSON keys appear across multiple nesting levels in the same payload".into(),
+                offset: 0,
+                property: "JSON parameter pollution via nested key duplication can confuse server-side object merge logic".into(),
+            }],
+        }];
+    }
+
+    Vec::new()
+}
+
 pub fn evaluate_hpp(input: &str) -> Option<L2EvalResult> {
     let decoded_input = crate::encoding::multi_layer_decode(input).fully_decoded;
     let (mut query, headers, body) = parse_http_sections(input);
@@ -454,12 +713,21 @@ impl L2Evaluator for HppEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        evaluate_hpp(input).into_iter().collect()
+        let mut dets: Vec<L2Detection> = evaluate_hpp(input).into_iter().collect();
+        dets.extend(detect_cookie_query_collision(input));
+        dets.extend(detect_dot_notation_pollution(input));
+        dets.extend(detect_double_encoded_key(input));
+        dets.extend(detect_nested_json_hpp(input));
+        dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
             "http_parameter_pollution" => Some(InvariantClass::HttpParameterPollution),
+            "hpp_cookie_query_collision" => Some(InvariantClass::HttpParameterPollution),
+            "hpp_dot_notation_pollution" => Some(InvariantClass::HttpParameterPollution),
+            "hpp_double_encoded_key" => Some(InvariantClass::HttpParameterPollution),
+            "hpp_nested_json" => Some(InvariantClass::HttpParameterPollution),
             _ => None,
         }
     }
@@ -627,5 +895,44 @@ mod tests {
             eval.map_class("http_parameter_pollution"),
             Some(InvariantClass::HttpParameterPollution)
         );
+    }
+
+    #[test]
+    fn test_cookie_query_collision() {
+        let eval = HppEvaluator;
+        let input = "GET /?user_id=1 HTTP/1.1\r\nHost: ex\r\nCookie: user_id=admin\r\n\r\n";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hpp_cookie_query_collision")
+        );
+    }
+
+    #[test]
+    fn test_dot_notation_admin() {
+        let eval = HppEvaluator;
+        let dets = eval.detect("GET /?user.role=admin HTTP/1.1\r\nHost: ex\r\n\r\n");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hpp_dot_notation_pollution")
+        );
+    }
+
+    #[test]
+    fn test_double_encoded_key() {
+        let eval = HppEvaluator;
+        let dets = eval.detect("GET /?user%2525id=1&user_id=admin HTTP/1.1\r\nHost: ex\r\n\r\n");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hpp_double_encoded_key")
+        );
+    }
+
+    #[test]
+    fn test_nested_json_hpp() {
+        let eval = HppEvaluator;
+        let input = "POST /api HTTP/1.1\r\nHost: ex\r\nContent-Type: application/json\r\n\r\n{\"role\":\"user\",\"user\":{\"role\":\"admin\"}}";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "hpp_nested_json"));
     }
 }
