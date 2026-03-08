@@ -43,6 +43,10 @@ static LDAP_URL_SCHEME_RE: LazyLock<Regex> =
 static LDAP_HOMOGLYPH_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"[\u{FF08}\u{FF09}\u{FF1D}\u{FF0A}\u{FE64}\u{FE65}\u{FE66}\u{2217}\u{204E}\u{02BC}\u{2018}\u{2019}]").unwrap()
 });
+static NULL_BYTE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\x00|%00|\\00|\u0000)").unwrap());
+static EXTENDED_OP_OID_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:1\.3\.6\.1\.4\.1\.4203\.1\.11|1\.3\.6\.1\.4\.1\.1466\.20037|1\.3\.6\.1\.4\.1\.4203\.1\.9)").unwrap());
 
 impl L2Evaluator for LdapEvaluator {
     fn id(&self) -> &'static str {
@@ -333,6 +337,50 @@ impl L2Evaluator for LdapEvaluator {
             }
         }
 
+        // LDAP null byte termination
+        if let Some(m) = NULL_BYTE_RE.find(&decoded) {
+            if decoded.contains('=')
+                || decoded.contains('(')
+                || decoded.contains(')')
+                || decoded.contains("cn")
+                || decoded.contains("ou")
+                || decoded.contains("dc")
+                || decoded.contains("uid")
+                || decoded.contains("objectClass")
+            {
+                dets.push(L2Detection {
+                    detection_type: "ldap_null_byte_termination".into(),
+                    confidence: 0.91,
+                    detail: "LDAP null byte termination".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Null byte terminates LDAP DN/filter strings early".into(),
+                        offset: m.start(),
+                        property: "LDAP query components must not contain unescaped null terminators".into(),
+                    }],
+                });
+            }
+        }
+
+        // LDAP extended operations injection
+        if let Some(m) = EXTENDED_OP_OID_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ldap_extended_op_injection".into(),
+                confidence: 0.88,
+                detail: format!("LDAP extended operation injection: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Injected OID matches known dangerous LDAP extended operation".into(),
+                    offset: m.start(),
+                    property: "LDAP requests should not include attacker-controlled extended operation OIDs".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -351,7 +399,9 @@ impl L2Evaluator for LdapEvaluator {
             | "ldap_dn_separator_injection"
             | "ldap_attribute_injection"
             | "ldap_url_scheme_injection"
-            | "ldap_unicode_homoglyph" => Some(InvariantClass::LdapFilterInjection),
+            | "ldap_unicode_homoglyph"
+            | "ldap_null_byte_termination"
+            | "ldap_extended_op_injection" => Some(InvariantClass::LdapFilterInjection),
             _ => None,
         }
     }
@@ -493,6 +543,36 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "ldap_unicode_homoglyph")
+        );
+    }
+
+    #[test]
+    fn detects_null_byte_termination() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("cn=admin%00.attacker.com");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_null_byte_termination")
+        );
+    }
+
+    #[test]
+    fn detects_null_byte_with_filter_bypass() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("(uid=foo\\x00)(objectClass=*)");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_null_byte_termination")
+        );
+    }
+
+    #[test]
+    fn detects_extended_op_oid() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("extendedReq: 1.3.6.1.4.1.4203.1.11.1");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_extended_op_injection")
         );
     }
 }

@@ -151,6 +151,22 @@ impl L2Evaluator for HostHeaderEvaluator {
                     }],
                 });
             }
+
+            if has_port_override(host) {
+                dets.push(L2Detection {
+                    detection_type: "host_header_port_override".into(),
+                    confidence: 0.79,
+                    detail: format!("Host header contains non-standard port: {}", host),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: format!("Host: {}", host),
+                        interpretation: "Non-standard port in Host header can bypass WAF rules that match only standard ports, and may indicate host header manipulation to redirect password reset/OAuth links to attacker-controlled endpoints on custom ports.".into(),
+                        offset: 0,
+                        property: "Host header port must match the application service port.".into(),
+                    }],
+                });
+            }
         }
 
         // 5. X-Host, X-Original-Host, X-Rewrite-URL (proxy override headers)
@@ -225,6 +241,7 @@ impl L2Evaluator for HostHeaderEvaluator {
             | "host_header_duplicate"
             | "host_header_authority_confusion"
             | "host_header_suspicious"
+            | "host_header_port_override"
             | "host_header_proxy_override"
             | "host_header_absolute_url_mismatch" => Some(InvariantClass::HostHeaderInjection),
             _ => None,
@@ -235,6 +252,13 @@ impl L2Evaluator for HostHeaderEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_port_override() {
+        let eval = HostHeaderEvaluator;
+        let dets = eval.detect("GET / HTTP/1.1\r\nHost: legit.com:8888\r\n\r\n");
+        assert!(dets.iter().any(|d| d.detection_type == "host_header_port_override"));
+    }
 
     #[test]
     fn detects_xfh_injection() {

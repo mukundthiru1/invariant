@@ -105,12 +105,57 @@ impl L2Evaluator for EmailInjectEvaluator {
             });
         }
 
+        // 4. IMAP injection
+        if let Ok(imap_re1) = regex::Regex::new(r"(?i)\b(?:A\d{3}|[A-Z]\d+)\s+(?:LOGIN|SELECT|FETCH|STORE|COPY|SEARCH|UID|LIST|LSUB|STATUS|SUBSCRIBE|UNSUBSCRIBE|APPEND|EXPUNGE|EXAMINE|CLOSE|LOGOUT|NOOP|CHECK)\b") {
+            if let Ok(imap_re2) = regex::Regex::new(r"(?i)[\r\n]+\s*(?:LOGIN|SELECT|FETCH|STORE)\s+") {
+                if imap_re1.is_match(&decoded) || imap_re2.is_match(&decoded) {
+                    dets.push(L2Detection {
+                        detection_type: "email_imap_injection".into(),
+                        confidence: 0.88,
+                        detail: "IMAP command injection sequence detected".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: decoded[..decoded.len().min(120)].to_string(),
+                            interpretation: "Input contains IMAP commands (e.g., LOGIN, SELECT, FETCH) and protocol tags. If the application constructs IMAP queries from this input, the attacker can execute arbitrary IMAP commands, access unauthorized mailboxes, or exfiltrate email content.".into(),
+                            offset: 0,
+                            property: "User input must not contain raw IMAP commands or protocol control characters.".into(),
+                        }],
+                    });
+                }
+            }
+        }
+
+        // 5. Email address comment injection
+        if let Ok(comment_re1) = regex::Regex::new(r"\([^)]{1,100}\)\s*@") {
+            if let Ok(comment_re2) = regex::Regex::new(r"@\s*\([^)]{1,100}\)") {
+                // Also check for folded header injection via whitespace-only lines
+                let has_folded_header = decoded.contains("\n \n") || decoded.contains("\r\n \r\n") || decoded.contains("\n\t\n") || decoded.contains("\r\n\t\r\n");
+                
+                if comment_re1.is_match(&decoded) || comment_re2.is_match(&decoded) || has_folded_header {
+                    dets.push(L2Detection {
+                        detection_type: "email_comment_injection".into(),
+                        confidence: 0.82,
+                        detail: "Email address comment injection or folded header detected".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: decoded[..decoded.len().min(120)].to_string(),
+                            interpretation: "Input contains RFC 5321 email comments (e.g., user(comment)@domain) or folded headers. This can be used to bypass email validation filters or inject hidden content into email headers.".into(),
+                            offset: 0,
+                            property: "Email addresses should be validated strictly without allowing complex RFC 5321 comment syntax unless explicitly required.".into(),
+                        }],
+                    });
+                }
+            }
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "email_header_injection" | "email_mass_recipient" | "email_mime_injection" => {
+            "email_header_injection" | "email_mass_recipient" | "email_mime_injection" | "email_imap_injection" | "email_comment_injection" => {
                 Some(InvariantClass::EmailHeaderInjection)
             }
             _ => None,
@@ -121,6 +166,20 @@ impl L2Evaluator for EmailInjectEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_imap_injection() {
+        let eval = EmailInjectEvaluator;
+        let dets = eval.detect("INBOX\r\nA001 SELECT INBOX\r\n* 1 EXISTS");
+        assert!(dets.iter().any(|d| d.detection_type == "email_imap_injection"));
+    }
+
+    #[test]
+    fn detects_email_comment_injection() {
+        let eval = EmailInjectEvaluator;
+        let dets = eval.detect("(attacker@evil.com)@legit.com");
+        assert!(dets.iter().any(|d| d.detection_type == "email_comment_injection"));
+    }
 
     #[test]
     fn detects_crlf_bcc_injection() {

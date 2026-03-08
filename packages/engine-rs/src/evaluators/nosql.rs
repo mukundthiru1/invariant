@@ -496,6 +496,48 @@ impl L2Evaluator for NoSqlEvaluator {
             });
         }
 
+        // Neo4j Cypher injection: tautologies, CALL/APOC abuse, backtick label injection, and LOAD CSV SSRF pivots
+        static NEO4J_CYPHER_INJECTION_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?is)(?:\bMATCH\s*\([^)]+\)\s*WHERE\b[^\n\r;]{0,400}(?:OR\s*['"]?1['"]?\s*=\s*['"]?1['"]?|(?:^|[^\d])(1\s*=\s*1|0\s*=\s*0)(?:[^\d]|$))[^\n\r;]{0,400}\bRETURN\b)|(?:\bCALL\s+(?:dbms\.procedures|apoc\.cypher\.runQuery|apoc\.shell\.execute)\s*\()|(?:\bLOAD\s+CSV\s+FROM\s+['"]https?://)|(?:[:(]\s*`[A-Za-z_][A-Za-z0-9_]{1,63}`)"#).unwrap()
+            });
+        for m in NEO4J_CYPHER_INJECTION_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_cypher_injection".into(),
+                confidence: 0.91,
+                detail: "Neo4j Cypher injection pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Cypher query structure indicates injected tautology, label escape, CALL/APOC abuse, or LOAD CSV SSRF primitive".into(),
+                    offset: m.start(),
+                    property: "Cypher clauses, labels, and procedures must not be user-controlled".into(),
+                }],
+            });
+        }
+
+        // CouchDB map/reduce and Mango query injection patterns
+        static COUCHDB_MAPREDUCE_INJECTION_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?is)(?:/_all_docs\?(?:[^ \t\r\n]*\bstartkey=|[^ \t\r\n]*\bendkey=)[^ \t\r\n]*)|(?:/_find\b[^\r\n]{0,300}(?:"selector"|selector)\s*:\s*\{[^\r\n]{0,260}(?://|\$or|\$where|\$regex|\$ne))|(?:(?:"selector"|selector)\s*:\s*\{[^\r\n]{0,260}(?://|\$or|\$where|\$regex|\$ne))|(?:function\s*\(\s*doc\s*\)\s*\{\s*emit\s*\(\s*doc\._id\s*,\s*null\s*\)\s*\})"#).unwrap()
+            });
+        for m in COUCHDB_MAPREDUCE_INJECTION_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_couchdb_mapreduce".into(),
+                confidence: 0.89,
+                detail: "CouchDB map/reduce or Mango injection pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "CouchDB endpoint parameters, selector operators, or inline map function indicate injected query logic".into(),
+                    offset: m.start(),
+                    property: "CouchDB selectors and map/reduce functions must not be directly user-influenced".into(),
+                }],
+            });
+        }
+
         // JSON parse sanity check for nested operator keys anywhere in object values
         if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
             collect_nested_ops(&value, &mut dets);
@@ -507,6 +549,9 @@ impl L2Evaluator for NoSqlEvaluator {
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
             "nosql_operator" => Some(InvariantClass::NosqlOperatorInjection),
+            "nosql_cypher_injection" | "nosql_couchdb_mapreduce" => {
+                Some(InvariantClass::NosqlOperatorInjection)
+            }
             "nosql_code_exec" => Some(InvariantClass::NosqlJsInjection),
             _ => None,
         }
@@ -556,6 +601,9 @@ mod tests {
         dets.into_iter()
             .filter_map(|d| match d.detection_type.as_str() {
                 "nosql_operator" => Some(InvariantClass::NosqlOperatorInjection),
+                "nosql_cypher_injection" | "nosql_couchdb_mapreduce" => {
+                    Some(InvariantClass::NosqlOperatorInjection)
+                }
                 "nosql_code_exec" => Some(InvariantClass::NosqlJsInjection),
                 _ => None,
             })
@@ -708,6 +756,50 @@ mod tests {
             classes
                 .iter()
                 .any(|c| *c == InvariantClass::NosqlJsInjection)
+        );
+    }
+
+    #[test]
+    fn test_neo4j_cypher_tautology() {
+        let input = "MATCH (n) WHERE n.name = '' OR '1'='1' RETURN n";
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlOperatorInjection)
+        );
+    }
+
+    #[test]
+    fn test_neo4j_apoc_rce() {
+        let input = "CALL apoc.shell.execute('id')";
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlOperatorInjection)
+        );
+    }
+
+    #[test]
+    fn test_couchdb_mango_or_injection() {
+        let input = r#"{"selector": {"type": {"$or": ["admin"]}}}"#;
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlOperatorInjection)
+        );
+    }
+
+    #[test]
+    fn test_couchdb_map_function() {
+        let input = "user input: function(doc){emit(doc._id, null)}";
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlOperatorInjection)
         );
     }
 }

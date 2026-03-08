@@ -492,6 +492,83 @@ impl L2Evaluator for SupplyChainEvaluator {
             });
         }
 
+        // GitHub Actions pwn-request injection: untrusted context interpolated into run steps
+        static GHA_CONTEXT_REF_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\$\{\{\s*github\.(?:event\.(?:pull_request|issue|review|comment|discussion|workflow_run)\.|head_ref|event\.inputs\.)(?:[^}]+)\}\}").unwrap()
+        });
+        static GHA_RUN_WITH_CONTEXT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?is)run\s*:\s*[\|>]?\s*[^#]*\$\{\{[^}]*github\.(?:event|head_ref)")
+                    .unwrap()
+            });
+        if GHA_CONTEXT_REF_RE.is_match(&decoded) {
+            if let Some(m) = GHA_RUN_WITH_CONTEXT_RE.find(&decoded) {
+                dets.push(L2Detection {
+                    detection_type: "github_actions_pwn_request".into(),
+                    confidence: 0.93,
+                    detail: "GitHub Actions run step interpolates untrusted PR/issue context".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str()[..m.as_str().len().min(180)].to_owned(),
+                        interpretation: "Workflow run command includes attacker-influenced GitHub event context that can trigger command injection".into(),
+                        offset: m.start(),
+                        property: "GitHub Actions run steps must not directly interpolate untrusted event fields".into(),
+                    }],
+                });
+            }
+        }
+
+        // Cargo.toml git dependency injection via non-standard repos or raw IP endpoints
+        static CARGO_GIT_DEP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)git\s*=\s*["\x27]https?://(?P<url>[^"\x27]+)["\x27]"#).unwrap()
+        });
+        static CARGO_GIT_DEP_RAW_IP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)git\s*=\s*["\x27]https?://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}"#).unwrap()
+        });
+        for caps in CARGO_GIT_DEP_RE.captures_iter(&decoded) {
+            let m = caps.get(0).expect("full capture exists");
+            let url = caps.name("url").map(|v| v.as_str()).unwrap_or_default();
+            let mut path_segments = url.split('/');
+            let host = path_segments.next().unwrap_or_default().to_ascii_lowercase();
+            let first = path_segments.next().unwrap_or_default();
+            let second = path_segments.next().unwrap_or_default();
+            let github_owner_repo_only = host == "github.com"
+                && !first.is_empty()
+                && !second.is_empty()
+                && path_segments.next().is_none();
+            if !github_owner_repo_only {
+                dets.push(L2Detection {
+                    detection_type: "cargo_git_dep_injection".into(),
+                    confidence: 0.85,
+                    detail: "Cargo git dependency points to non-standard repository source".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Dependency source uses a non-standard git endpoint that may be attacker-controlled".into(),
+                        offset: m.start(),
+                        property: "Cargo git dependencies must resolve to trusted repositories with strict source controls".into(),
+                    }],
+                });
+            }
+        }
+        if let Some(m) = CARGO_GIT_DEP_RAW_IP_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cargo_git_dep_injection".into(),
+                confidence: 0.85,
+                detail: "Cargo git dependency uses a raw IP address endpoint".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Raw IP git endpoints bypass expected repository trust boundaries".into(),
+                    offset: m.start(),
+                    property: "Cargo git dependencies must not use raw IP address hosts".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -500,10 +577,13 @@ impl L2Evaluator for SupplyChainEvaluator {
             "dependency_confusion"
             | "typosquatting"
             | "lockfile_poisoning"
-            | "gitmodules_poisoning" => Some(InvariantClass::DependencyConfusion),
+            | "gitmodules_poisoning"
+            | "cargo_git_dep_injection" => Some(InvariantClass::DependencyConfusion),
             "malicious_script" => Some(InvariantClass::PostinstallInjection),
             "env_exfiltration" => Some(InvariantClass::EnvExfiltration),
-            "cdn_integrity_bypass" => Some(InvariantClass::PostinstallInjection),
+            "cdn_integrity_bypass" | "github_actions_pwn_request" => {
+                Some(InvariantClass::PostinstallInjection)
+            }
             "manifest_confusion" => Some(InvariantClass::DependencyConfusion),
             _ => None,
         }
@@ -792,6 +872,35 @@ mod tests {
         assert_eq!(
             eval.map_class("manifest_confusion"),
             Some(InvariantClass::DependencyConfusion)
+        );
+    }
+
+    #[test]
+    fn test_github_actions_pwn_request() {
+        let eval = SupplyChainEvaluator;
+        let input = r#"
+name: ci
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.pull_request.title }}"
+"#;
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "github_actions_pwn_request")
+        );
+    }
+
+    #[test]
+    fn test_cargo_git_dep_raw_ip() {
+        let eval = SupplyChainEvaluator;
+        let dets = eval.detect(r#"git = "http://1.2.3.4/attacker/crate""#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cargo_git_dep_injection")
         );
     }
 }

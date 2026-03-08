@@ -97,7 +97,7 @@ impl L2Evaluator for ClickjackingEvaluator {
 
         // 3. CSP/X-Frame-Options abuse indicators
         if lower.contains("x-frame-options") {
-            if lower.contains("x-frame-options: allowall") || lower.contains("x-frame-options: allow-from *") {
+            if lower.contains("x-frame-options: allowall") || lower.contains("x-frame-options: allow-from") {
                 dets.push(L2Detection {
                     detection_type: "clickjacking_xfo_bypass".into(),
                     confidence: 0.82,
@@ -105,12 +105,36 @@ impl L2Evaluator for ClickjackingEvaluator {
                     position: 0,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::SemanticEval,
-                        matched_input: "X-Frame-Options: ALLOWALL or ALLOW-FROM *".into(),
+                        matched_input: "X-Frame-Options: ALLOWALL or ALLOW-FROM".into(),
                         interpretation: "X-Frame-Options is set to a permissive value that allows framing by any origin. This disables clickjacking protection.".into(),
                         offset: 0,
                         property: "X-Frame-Options must be set to DENY or SAMEORIGIN. ALLOW-FROM is deprecated and unsupported by most browsers.".into(),
                     }],
                 });
+            }
+        }
+
+        // 4. CSP frame-ancestors bypass
+        for line in lower.lines() {
+            if line.contains("content-security-policy:") && line.contains("frame-ancestors") {
+                if line.contains("frame-ancestors *")
+                    || line.contains("frame-ancestors http:")
+                    || line.contains("frame-ancestors https:")
+                {
+                    dets.push(L2Detection {
+                        detection_type: "clickjacking_csp_frameancestors_bypass".into(),
+                        confidence: 0.87,
+                        detail: "CSP frame-ancestors is overly permissive".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::SemanticEval,
+                            matched_input: line.to_string(),
+                            interpretation: "CSP frame-ancestors directive uses a wildcard or permissive scheme (http/https), allowing the application to be framed by arbitrary domains, defeating clickjacking protections.".into(),
+                            offset: 0,
+                            property: "CSP frame-ancestors must be restricted to 'self' or specific trusted domains.".into(),
+                        }],
+                    });
+                }
             }
         }
 
@@ -122,7 +146,8 @@ impl L2Evaluator for ClickjackingEvaluator {
             "clickjacking_iframe_overlay"
             | "clickjacking_sandbox_bypass"
             | "clickjacking_drag_drop"
-            | "clickjacking_xfo_bypass" => Some(InvariantClass::ClickjackingVuln),
+            | "clickjacking_xfo_bypass"
+            | "clickjacking_csp_frameancestors_bypass" => Some(InvariantClass::ClickjackingVuln),
             _ => None,
         }
     }
@@ -131,6 +156,20 @@ impl L2Evaluator for ClickjackingEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_csp_frameancestors_wildcard() {
+        let eval = ClickjackingEvaluator;
+        let dets = eval.detect("Content-Security-Policy: default-src self; frame-ancestors *");
+        assert!(dets.iter().any(|d| d.detection_type == "clickjacking_csp_frameancestors_bypass"));
+    }
+
+    #[test]
+    fn no_detection_for_strict_frameancestors() {
+        let eval = ClickjackingEvaluator;
+        let dets = eval.detect("Content-Security-Policy: frame-ancestors none");
+        assert!(dets.is_empty());
+    }
 
     #[test]
     fn detects_invisible_iframe() {
