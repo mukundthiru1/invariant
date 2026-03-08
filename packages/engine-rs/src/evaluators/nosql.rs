@@ -46,6 +46,11 @@ const DANGEROUS_PIPELINES: &[&str] = &[
 
 const EXFIL_PIPELINES: &[&str] = &["$lookup", "$merge", "$out"];
 
+static NOSQL_MONGO_EXPR_JS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)\$expr\s*[:]?\s*\{[^}]*\$function").unwrap());
+static NOSQL_MONGO_LOOKUP_INJECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)\$lookup\s*[:]?\s*\{[^}]*from\s*[:]?\s*[^}]*pipeline\s*[:]?\s*\[").unwrap());
+static NOSQL_REDIS_RESP_INJECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?:\r\n|\n)\*\d+\r\n\$\d+\r\n(?:SET|GET|DEL|KEYS|FLUSHALL|CONFIG)\r\n").unwrap());
+static NOSQL_MONGO_WHERE_JS_FUNCTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)\$where\s*[:]?\s*[^,}]*function\s*\([^)]*\)\s*\{").unwrap());
+
 pub struct NoSqlEvaluator;
 
 impl L2Evaluator for NoSqlEvaluator {
@@ -538,6 +543,70 @@ impl L2Evaluator for NoSqlEvaluator {
             });
         }
 
+        if let Some(m) = NOSQL_MONGO_EXPR_JS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_mongo_expr_js".into(),
+                confidence: 0.93,
+                detail: format!("MongoDB $expr with $function operator: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "MongoDB $expr with $function operator executes arbitrary JavaScript server-side. This bypasses NoSQL injection filters that only look for $where, achieving the same RCE/data exfiltration capability".into(),
+                    offset: m.start(),
+                    property: "$function and $where operators must be disabled. User input must never control operator names in query objects".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NOSQL_MONGO_LOOKUP_INJECT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_mongo_lookup_inject".into(),
+                confidence: 0.87,
+                detail: format!("MongoDB $lookup with pipeline: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "MongoDB $lookup with pipeline allows joining arbitrary collections. Attacker-controlled from field reads any collection including admin credentials".into(),
+                    offset: m.start(),
+                    property: "$lookup from and pipeline parameters must be whitelisted. User input must never control collection names in aggregation queries".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NOSQL_REDIS_RESP_INJECT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_redis_resp_inject".into(),
+                confidence: 0.89,
+                detail: format!("Redis RESP protocol injection: {}", m.as_str().trim()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Redis RESP protocol injection embeds raw commands into data values. Attackers inject FLUSHALL, CONFIG SET, or KEYS * by embedding RESP frames in user input".into(),
+                    offset: m.start(),
+                    property: "Never concatenate user input into raw RESP protocol bytes. Use official Redis client libraries with parameterized commands only".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NOSQL_MONGO_WHERE_JS_FUNCTION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "nosql_mongo_where_js_function".into(),
+                confidence: 0.91,
+                detail: format!("MongoDB $where with function definition: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "MongoDB $where with an explicit function definition executes arbitrary JavaScript server-side. The function keyword bypasses simple string-based $where pattern matching that only checks for specific operation names".into(),
+                    offset: m.start(),
+                    property: "$where operator must be disabled entirely in MongoDB. If required, restrict to pre-compiled expressions from trusted sources only".into(),
+                }],
+            });
+        }
+
         // JSON parse sanity check for nested operator keys anywhere in object values
         if let Ok(value) = serde_json::from_str::<Value>(&decoded) {
             collect_nested_ops(&value, &mut dets);
@@ -548,11 +617,11 @@ impl L2Evaluator for NoSqlEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "nosql_operator" => Some(InvariantClass::NosqlOperatorInjection),
+            "nosql_operator" | "nosql_mongo_lookup_inject" => Some(InvariantClass::NosqlOperatorInjection),
             "nosql_cypher_injection" | "nosql_couchdb_mapreduce" => {
                 Some(InvariantClass::NosqlOperatorInjection)
             }
-            "nosql_code_exec" => Some(InvariantClass::NosqlJsInjection),
+            "nosql_code_exec" | "nosql_mongo_expr_js" | "nosql_redis_resp_inject" | "nosql_mongo_where_js_function" => Some(InvariantClass::NosqlJsInjection),
             _ => None,
         }
     }
@@ -600,11 +669,11 @@ mod tests {
         let dets = NoSqlEvaluator.detect(input);
         dets.into_iter()
             .filter_map(|d| match d.detection_type.as_str() {
-                "nosql_operator" => Some(InvariantClass::NosqlOperatorInjection),
+                "nosql_operator" | "nosql_mongo_lookup_inject" => Some(InvariantClass::NosqlOperatorInjection),
                 "nosql_cypher_injection" | "nosql_couchdb_mapreduce" => {
                     Some(InvariantClass::NosqlOperatorInjection)
                 }
-                "nosql_code_exec" => Some(InvariantClass::NosqlJsInjection),
+                "nosql_code_exec" | "nosql_mongo_expr_js" | "nosql_redis_resp_inject" | "nosql_mongo_where_js_function" => Some(InvariantClass::NosqlJsInjection),
                 _ => None,
             })
             .collect()
@@ -801,5 +870,57 @@ mod tests {
                 .iter()
                 .any(|c| *c == InvariantClass::NosqlOperatorInjection)
         );
+    }
+
+    #[test]
+    fn test_nosql_mongo_expr_js() {
+        let input = r#"{$expr: {$function: { "body": "function() { return true; }" }}}"#;
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlJsInjection)
+        );
+        let dets = NoSqlEvaluator.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "nosql_mongo_expr_js"));
+    }
+
+    #[test]
+    fn test_nosql_mongo_lookup_inject() {
+        let input = r#"{$lookup: {from: "users", pipeline: []}}"#;
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlOperatorInjection)
+        );
+        let dets = NoSqlEvaluator.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "nosql_mongo_lookup_inject"));
+    }
+
+    #[test]
+    fn test_nosql_redis_resp_inject() {
+        let input = "some_value\r\n*1\r\n$8\r\nFLUSHALL\r\n";
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlJsInjection)
+        );
+        let dets = NoSqlEvaluator.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "nosql_redis_resp_inject"));
+    }
+
+    #[test]
+    fn test_nosql_mongo_where_js_function() {
+        let input = r#"{"$where": "function() { return true; }"}"#;
+        let classes = detect_classes(input);
+        assert!(
+            classes
+                .iter()
+                .any(|c| *c == InvariantClass::NosqlJsInjection)
+        );
+        let dets = NoSqlEvaluator.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "nosql_mongo_where_js_function"));
     }
 }

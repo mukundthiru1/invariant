@@ -80,6 +80,27 @@ static REQUEST_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+(\S+)\s+HTTP/(1\.[01]|2(?:\.0)?)\s*$").unwrap()
 });
 
+static H2_AUTHORITY_CONFLICT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^:authority\s*:\s*([^\r\n]+)\r?\n(?::[^\r\n]+\r?\n)*Host\s*:\s*([^\r\n]+)").unwrap()
+});
+
+static TE_CL_ZERO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^Transfer-Encoding\s*:[^\r\n]+\r?\n(?:[^\r\n]*\r?\n)*Content-Length\s*:\s*0\b").unwrap()
+});
+
+static CHUNK_EXT_CRLF_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^[0-9A-Fa-f]+\s*;[^\r\n]*\r?\n[A-Za-z][A-Za-z0-9\-]+\s*:\s*[^\r\n]+").unwrap()
+});
+
+static H2_DUPLICATE_CL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)(?:^:method:|^:path:|^:authority:|^:scheme:)[^\r\n]*\r?\n(?:(?\!:method:|:path:)[^\r\n]*\r?\n)*content-length\s*:[^\r\n]+\r?\n(?:(?\!:method:|:path:)[^\r\n]*\r?\n)*content-length\s*:")
+        .unwrap_or_else(|_| Regex::new(r"(?im)(?:^:method:|^:path:|^:authority:|^:scheme:)[^\r\n]*\r?\n(?:[^\r\n]*\r?\n)*?content-length\s*:[^\r\n]+\r?\n(?:[^\r\n]*\r?\n)*?content-length\s*:").unwrap())
+});
+
+static H2_STATUS_PSEUDO_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)^:status\s*:\s*\d{3}\b").unwrap()
+});
+
 fn split_headers_body(input: &str) -> (&str, &str, usize) {
     if let Some(i) = input.find("\r\n\r\n") {
         return (&input[..i], &input[i + 4..], i + 4);
@@ -817,6 +838,106 @@ fn detect_websocket_upgrade_smuggle(decoded: &str) -> Option<L2Detection> {
     None
 }
 
+fn detect_smuggle_h2_authority_conflict(decoded: &str) -> Option<L2Detection> {
+    if let Some(caps) = H2_AUTHORITY_CONFLICT_RE.captures(decoded) {
+        let authority = caps.get(1)?.as_str().trim();
+        let host = caps.get(2)?.as_str().trim();
+        if authority != host {
+            let m = caps.get(0)?;
+            return Some(L2Detection {
+                detection_type: "smuggle_h2_authority_conflict".into(),
+                confidence: 0.91,
+                detail: "HTTP/2 :authority and Host header conflict during H2->H1 downgrade.".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "HTTP/2 :authority pseudo-header conflicts with HTTP/1.1 Host header during protocol downgrade. If the frontend uses :authority to route but the backend uses Host, an attacker can supply different values to reach internal services or poison the routing".into(),
+                    offset: m.start(),
+                    property: "HTTP/2 to HTTP/1.1 downgrade must use :authority value as the Host header, discarding any explicit Host header in the H2 request. Conflicts must be rejected.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
+fn detect_smuggle_te_cl_zero(decoded: &str) -> Option<L2Detection> {
+    if let Some(m) = TE_CL_ZERO_RE.find(decoded) {
+        return Some(L2Detection {
+            detection_type: "smuggle_te_cl_zero".into(),
+            confidence: 0.89,
+            detail: "TE + Content-Length: 0 causes body bytes to be treated as a new request.".into(),
+            position: m.start(),
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::PayloadInject,
+                matched_input: m.as_str().to_owned(),
+                interpretation: "Transfer-Encoding combined with Content-Length: 0 creates a desync: the frontend sees CL:0 (no body) while the backend sees chunked encoding with trailing data treated as the next request".into(),
+                offset: m.start(),
+                property: "Servers must reject requests with both Transfer-Encoding and Content-Length headers. If both present, apply strict de-sync prevention.".into(),
+            }],
+        });
+    }
+    None
+}
+
+fn detect_smuggle_chunk_ext_crlf(decoded: &str) -> Option<L2Detection> {
+    if let Some(m) = CHUNK_EXT_CRLF_RE.find(decoded) {
+        return Some(L2Detection {
+            detection_type: "smuggle_chunk_ext_crlf".into(),
+            confidence: 0.88,
+            detail: "CRLF injection within chunked extension fields to inject headers.".into(),
+            position: m.start(),
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::PayloadInject,
+                matched_input: m.as_str().to_owned(),
+                interpretation: "HTTP chunked encoding extensions (4;name=value) can contain CRLF sequences. If servers pass extensions to header parsing, injected CRLF characters create new headers, enabling cache poisoning and response splitting via chunked requests".into(),
+                offset: m.start(),
+                property: "Chunked extension values must be stripped or rejected. CRLF characters must never be permitted in chunked extension fields.".into(),
+            }],
+        });
+    }
+    None
+}
+
+fn detect_smuggle_h2_duplicate_cl(decoded: &str) -> Option<L2Detection> {
+    if let Some(m) = H2_DUPLICATE_CL_RE.find(decoded) {
+        return Some(L2Detection {
+            detection_type: "smuggle_h2_duplicate_cl".into(),
+            confidence: 0.93,
+            detail: "Duplicate content-length in HTTP/2 headers frame.".into(),
+            position: m.start(),
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: m.as_str().to_owned(),
+                interpretation: "Duplicate content-length headers in HTTP/2 requests, when forwarded to HTTP/1.1 backends, create ambiguous body length. Different servers resolve the ambiguity differently, enabling request smuggling.".into(),
+                offset: m.start(),
+                property: "HTTP/2 requests must reject duplicate pseudo-headers and duplicate content-length headers. Only one value per header field is permitted.".into(),
+            }],
+        });
+    }
+    None
+}
+
+fn detect_smuggle_h2_status_pseudo(decoded: &str) -> Option<L2Detection> {
+    if let Some(m) = H2_STATUS_PSEUDO_RE.find(decoded) {
+        return Some(L2Detection {
+            detection_type: "smuggle_h2_status_pseudo".into(),
+            confidence: 0.85,
+            detail: ":status pseudo-header in request (response-only field injection).".into(),
+            position: m.start(),
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: m.as_str().to_owned(),
+                interpretation: ":status is a response-only HTTP/2 pseudo-header. Its presence in a request indicates an attempt to inject response metadata, potentially enabling cache poisoning or desync attacks in H2 multiplexing".into(),
+                offset: m.start(),
+                property: ":status pseudo-header must never appear in HTTP/2 requests. Reject requests containing response-only pseudo-headers.".into(),
+            }],
+        });
+    }
+    None
+}
+
 impl L2Evaluator for HttpSmuggleEvaluator {
     fn id(&self) -> &'static str {
         "http_smuggle"
@@ -1047,6 +1168,22 @@ impl L2Evaluator for HttpSmuggleEvaluator {
             dets.push(det);
         }
 
+        if let Some(det) = detect_smuggle_h2_authority_conflict(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_smuggle_te_cl_zero(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_smuggle_chunk_ext_crlf(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_smuggle_h2_duplicate_cl(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_smuggle_h2_status_pseudo(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -1063,12 +1200,12 @@ impl L2Evaluator for HttpSmuggleEvaluator {
             "http2_smuggle" => Some(InvariantClass::HttpSmuggleH2),
             "http2_downgrade_smuggle" => Some(InvariantClass::HttpSmuggleH2),
             "http_chunk_ext" => Some(InvariantClass::HttpSmuggleChunkExt),
-            "chunk_size_overflow" | "chunk_ext_abuse" => Some(InvariantClass::HttpSmuggleChunkExt),
+            "chunk_size_overflow" | "chunk_ext_abuse" | "smuggle_chunk_ext_crlf" => Some(InvariantClass::HttpSmuggleChunkExt),
             "http_zero_cl" => Some(InvariantClass::HttpSmuggleZeroCl),
-            "h2_cl_smuggle" | "h2_te_smuggle" | "h2_pseudo_crlf_injection" => {
+            "h2_cl_smuggle" | "h2_te_smuggle" | "h2_pseudo_crlf_injection" | "smuggle_h2_authority_conflict" | "smuggle_h2_duplicate_cl" | "smuggle_h2_status_pseudo" => {
                 Some(InvariantClass::HttpSmuggleH2)
             }
-            "cl_0_smuggle" => Some(InvariantClass::HttpSmuggleZeroCl),
+            "cl_0_smuggle" | "smuggle_te_cl_zero" => Some(InvariantClass::HttpSmuggleZeroCl),
             "chunked_edge_case" => Some(InvariantClass::HttpSmuggleChunkExt),
             "double_content_length"
             | "cl_whitespace_desync"
@@ -1455,5 +1592,45 @@ mod tests {
             eval.map_class("websocket_upgrade_smuggle"),
             Some(InvariantClass::HttpSmuggleClTe)
         );
+    }
+
+    #[test]
+    fn test_h2_authority_conflict() {
+        let eval = HttpSmuggleEvaluator;
+        let input = ":authority: evil.com\nHost: victim.com";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "smuggle_h2_authority_conflict"));
+    }
+
+    #[test]
+    fn test_te_cl_zero() {
+        let eval = HttpSmuggleEvaluator;
+        let input = "Transfer-Encoding: chunked\nContent-Length: 0\n";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "smuggle_te_cl_zero"));
+    }
+
+    #[test]
+    fn test_chunk_ext_crlf() {
+        let eval = HttpSmuggleEvaluator;
+        let input = "4;ext=val\r\nX-Injected: bad";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "smuggle_chunk_ext_crlf"));
+    }
+
+    #[test]
+    fn test_h2_duplicate_cl() {
+        let eval = HttpSmuggleEvaluator;
+        let input = ":method: POST\n:path: /\ncontent-length: 5\ncontent-length: 0\n";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "smuggle_h2_duplicate_cl"));
+    }
+
+    #[test]
+    fn test_h2_status_pseudo() {
+        let eval = HttpSmuggleEvaluator;
+        let input = ":status: 200";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "smuggle_h2_status_pseudo"));
     }
 }

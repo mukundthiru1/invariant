@@ -48,6 +48,15 @@ static NULL_BYTE_RE: LazyLock<Regex> =
 static EXTENDED_OP_OID_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?:1\.3\.6\.1\.4\.1\.4203\.1\.11|1\.3\.6\.1\.4\.1\.1466\.20037|1\.3\.6\.1\.4\.1\.4203\.1\.9)").unwrap());
 
+static LDAP_WILDCARD_INJECTION_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:(?:cn|uid|mail|sn|givenname|memberof|dn|ou|dc)\s*=\s*[^)]*\*[^)]*)").unwrap());
+static LDAP_NESTED_FILTER_INJECT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\(\s*[&|\!]\s*\([^)]*\)\s*\([^)]*\)").unwrap());
+static LDAP_OID_FILTER_BYPASS_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:1\.2\.840\.113549|2\.5\.4\.\d+)\s*=\s*[^)]*\*").unwrap());
+static LDAP_DN_INJECTION_RE_2: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:cn|ou|dc|o|uid|mail)\s*=\s*[^,]+,\s*(?:cn|ou|dc|o)=[^,)]*,\s*(?:cn|ou|dc|o|c|l|st|street)=").unwrap());
+
 impl L2Evaluator for LdapEvaluator {
     fn id(&self) -> &'static str {
         "ldap"
@@ -381,6 +390,74 @@ impl L2Evaluator for LdapEvaluator {
             });
         }
 
+        // ldap_wildcard_injection
+        if let Some(m) = LDAP_WILDCARD_INJECTION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ldap_wildcard_injection".into(),
+                confidence: 0.86,
+                detail: format!("LDAP wildcard injection: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "LDAP wildcard characters in attribute values enable enumeration of directory entries. (cn=admin*) matches all entries starting with admin, allowing username enumeration".into(),
+                    offset: m.start(),
+                    property: "LDAP search filters must escape all special characters including *. Use ldap_escape() before interpolating user input into LDAP filters".into(),
+                }],
+            });
+        }
+
+        // ldap_nested_filter_inject
+        if let Some(m) = LDAP_NESTED_FILTER_INJECT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ldap_nested_filter_inject".into(),
+                confidence: 0.90,
+                detail: format!("LDAP nested filter injection: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Nested LDAP boolean filters allow injecting additional conditions. An attacker can combine a legitimate attribute with always-true conditions to bypass authentication".into(),
+                    offset: m.start(),
+                    property: "User input must only be used as attribute values, never as filter operators. LDAP filter construction must use proper escaping".into(),
+                }],
+            });
+        }
+
+        // ldap_oid_filter_bypass
+        if let Some(m) = LDAP_OID_FILTER_BYPASS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ldap_oid_filter_bypass".into(),
+                confidence: 0.84,
+                detail: format!("LDAP OID filter bypass: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "LDAP attribute OIDs can substitute for attribute names in filters. Attackers use OIDs to bypass WAFs that only filter named attributes like cn= or uid=".into(),
+                    offset: m.start(),
+                    property: "Validate LDAP filters against both attribute names and OID representations. Use allowlisted attribute sets".into(),
+                }],
+            });
+        }
+
+        // ldap_dn_injection
+        if let Some(m) = LDAP_DN_INJECTION_RE_2.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ldap_dn_injection".into(),
+                confidence: 0.88,
+                detail: format!("LDAP DN injection: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "LDAP Distinguished Name injection appends additional DN components to access different directory branches, allowing access to other directory branches or escaping the intended search base".into(),
+                    offset: m.start(),
+                    property: "LDAP search bases and DN components must be strictly validated. User input must only supply values of pre-determined attributes, never entire DNs".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -401,7 +478,10 @@ impl L2Evaluator for LdapEvaluator {
             | "ldap_url_scheme_injection"
             | "ldap_unicode_homoglyph"
             | "ldap_null_byte_termination"
-            | "ldap_extended_op_injection" => Some(InvariantClass::LdapFilterInjection),
+            | "ldap_extended_op_injection"
+            | "ldap_wildcard_injection"
+            | "ldap_nested_filter_inject"
+            | "ldap_oid_filter_bypass" => Some(InvariantClass::LdapFilterInjection),
             _ => None,
         }
     }
@@ -573,6 +653,47 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "ldap_extended_op_injection")
+        );
+    }
+
+    #[test]
+    fn detects_ldap_wildcard_injection() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("(uid=admin*)");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_wildcard_injection")
+        );
+    }
+
+    #[test]
+    fn detects_ldap_nested_filter_inject() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("(&(uid=admin)(|(password=*)(1=1)))");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_nested_filter_inject")
+        );
+    }
+
+    #[test]
+    fn detects_ldap_oid_filter_bypass() {
+        let eval = LdapEvaluator;
+        let dets = eval.detect("(2.5.4.3=admin*)");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_oid_filter_bypass")
+        );
+    }
+
+    #[test]
+    fn detects_ldap_dn_injection_ext() {
+        let eval = LdapEvaluator;
+        // cn=admin,dc=evil,dc=com combined with ldap context
+        let dets = eval.detect("cn=admin,dc=evil,dc=com,cn=users");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_dn_injection")
         );
     }
 }
