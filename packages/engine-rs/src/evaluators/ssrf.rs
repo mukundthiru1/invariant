@@ -524,7 +524,7 @@ fn parse_low_dns_ttl_header(input: &str) -> Option<u32> {
 
 fn detect_protocol_smuggle_in_params(input: &str, dets: &mut Vec<L2Detection>) {
     static PARAM_SCHEME_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r"(?i)(?:^|[?&][^=\s&#]{1,64}=)([a-z][a-z0-9+.-]*://[^&\s#]+)").unwrap()
+        Regex::new(r"(?i)(?:^|[?&][^=\s&#]{1,64}=)((?:[a-zA-Z][a-zA-Z0-9+.-]*:)?//[^&\s#]+)").unwrap()
     });
 
     for caps in PARAM_SCHEME_RE.captures_iter(input) {
@@ -534,6 +534,40 @@ fn detect_protocol_smuggle_in_params(input: &str, dets: &mut Vec<L2Detection>) {
         let Some(parsed) = parse_url(candidate) else {
             continue;
         };
+        
+        if candidate.starts_with("//") {
+            let mut is_internal = false;
+            let mut label = String::new();
+            if let Some(ip_num) = parse_ip_representation(&parsed.hostname) {
+                if let Some(range_label) = is_internal_ip(ip_num) {
+                    is_internal = true;
+                    label = range_label.to_string();
+                }
+            } else if parsed.hostname == "localhost" {
+                is_internal = true;
+                label = "localhost".to_string();
+            } else if let Some(ipv6_label) = is_ipv6_internal(&parsed.hostname) {
+                is_internal = true;
+                label = ipv6_label.to_string();
+            }
+            
+            if is_internal {
+                dets.push(L2Detection {
+                    detection_type: "internal_reach".into(),
+                    confidence: 0.90,
+                    detail: format!("Scheme-relative URL parameter targets internal host: {}", parsed.hostname),
+                    position: start,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: candidate.to_owned(),
+                        interpretation: format!("Scheme-relative URL (//host) bypasses protocol checks and resolves to {}", label),
+                        offset: start,
+                        property: "Server-side URL parameters must not resolve to internal network addresses".into(),
+                    }],
+                });
+            }
+        }
+
         if DANGEROUS_PROTOCOLS.contains(&parsed.protocol.as_str()) {
             dets.push(L2Detection {
                 detection_type: "protocol_smuggle".into(),
@@ -656,7 +690,54 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
     }
 
     if parsed.has_credentials {
-        let before_at = parsed.authority.splitn(2, '@').next().unwrap_or("");
+        let mut before_at = "";
+        let parts: Vec<&str> = parsed.authority.split('@').collect();
+        if parts.len() > 1 {
+            before_at = parts[0];
+            
+            // Bug 2 Fix: Check all segments before the last one for internal targets
+            // because some parsers split at the FIRST '@' instead of the LAST '@'
+            for i in 0..parts.len() - 1 {
+                let mut segment = parts[i];
+                if let Some(colon) = segment.find(':') {
+                    segment = &segment[..colon];
+                }
+                
+                let segment_lower = segment.to_lowercase();
+                let mut is_internal = false;
+                let mut label = String::new();
+                
+                if let Some(ip_num) = parse_ip_representation(&segment_lower) {
+                    if let Some(range_label) = is_internal_ip(ip_num) {
+                        is_internal = true;
+                        label = range_label.to_string();
+                    }
+                } else if segment_lower == "localhost" {
+                    is_internal = true;
+                    label = "localhost".to_string();
+                } else if let Some(ipv6_label) = is_ipv6_internal(&segment_lower) {
+                    is_internal = true;
+                    label = ipv6_label.to_string();
+                }
+                
+                if is_internal {
+                    dets.push(L2Detection {
+                        detection_type: "internal_reach".into(),
+                        confidence: 0.90,
+                        detail: format!("Ambiguous authority segment resolves to internal host: {}", segment_lower),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: parsed.authority.clone(),
+                            interpretation: format!("A segment of the URL authority before '@' is an internal target ({}). Parsers splitting at the first '@' will connect to it.", label),
+                            offset: 0,
+                            property: "All authority segments must be validated to prevent credential parser confusion".into(),
+                        }],
+                    });
+                }
+            }
+        }
+        
         if before_at.contains("://") {
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
@@ -1168,6 +1249,84 @@ impl L2Evaluator for SsrfEvaluator {
         }
 
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+        let lowered_decoded = decoded.to_lowercase();
+        
+        static CONTAINER_K8S_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:unix:///var/run/docker\.sock|tcp://localhost:2375|localhost:2376|kubernetes\.default\.svc|localhost:2379|localhost:4001|localhost:8500|localhost:15000|localhost:9901|localhost:9001|169\.254\.76\.1)").unwrap()
+        });
+        if CONTAINER_K8S_RE.is_match(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_container_internal".into(),
+                confidence: 0.94,
+                detail: "References to container orchestration internal APIs detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "Container and orchestration platform internal APIs (Docker socket, Kubernetes API server, etcd, Consul, Envoy admin, Lambda runtime) are accessible from within containers. SSRF to these endpoints enables container escape, credential theft, and cluster compromise.".into(),
+                    offset: 0,
+                    property: "Server-side requests must not access container runtime or orchestration internal endpoints".into(),
+                }],
+            });
+        }
+
+        static IPV6_ZONE_ID_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:http|https|ftp)://\[fe80::[^\]]*%(?:25)?[a-z0-9]+\]").unwrap()
+        });
+        if IPV6_ZONE_ID_RE.is_match(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_ipv6_zone_id".into(),
+                confidence: 0.88,
+                detail: "IPv6 link-local address with zone identifier detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "IPv6 link-local addresses with zone identifiers (%eth0, %25eth0) are local to the machine. URL parsers may incorrectly treat the zone ID as a port or path component, allowing bypass of IP allowlists while targeting localhost.".into(),
+                    offset: 0,
+                    property: "IPv6 zone identifiers must not be permitted in URL targets".into(),
+                }],
+            });
+        }
+
+        static AWS_VPC_ENDPOINT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:[a-z0-9-]+)\.vpce-[a-z0-9-]+\.(?:[a-z0-9-]+)\.vpce\.amazonaws\.com|\.execute-api\.[a-z0-9-]+\.vpce\.amazonaws\.com").unwrap()
+        });
+        if AWS_VPC_ENDPOINT_RE.is_match(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_aws_vpc_endpoint".into(),
+                confidence: 0.87,
+                detail: "AWS VPC endpoint URL detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "AWS VPC endpoints resolve to private IP addresses within the VPC. SSRF to VPC endpoint URLs can reach internal AWS services (S3, API Gateway, SQS) without going through the public internet, potentially exposing internal APIs.".into(),
+                    offset: 0,
+                    property: "Server-side requests must validate and restrict targets pointing to VPC endpoints".into(),
+                }],
+            });
+        }
+
+        if lowered_decoded.contains("computemetadata/v1") || 
+           lowered_decoded.contains("/latest/meta-data/iam/") || 
+           lowered_decoded.contains("/metadata/instance?api-version=") || 
+           lowered_decoded.contains("/metadata/service/") {
+            dets.push(L2Detection {
+                detection_type: "ssrf_cloud_metadata_alt_path".into(),
+                confidence: 0.92,
+                detail: "Cloud metadata accessed via known alternative paths/methods".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "Cloud metadata services expose instance credentials and configuration at well-known paths. Alternative or vendor-specific paths (GCP /computeMetadata/v1, Azure /metadata/instance, DO /metadata/service) allow attackers to retrieve cloud credentials for lateral movement.".into(),
+                    offset: 0,
+                    property: "All potential paths to cloud instance metadata services must be blocked".into(),
+                }],
+            });
+        }
+
         let request_line = extract_http_request_line(&decoded);
         let request_host_header = request_line
             .as_ref()
@@ -1585,8 +1744,8 @@ impl L2Evaluator for SsrfEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "internal_reach" => Some(InvariantClass::SsrfInternalReach),
-            "cloud_metadata" => Some(InvariantClass::SsrfCloudMetadata),
+            "internal_reach" | "ssrf_container_internal" | "ssrf_ipv6_zone_id" | "ssrf_aws_vpc_endpoint" => Some(InvariantClass::SsrfInternalReach),
+            "cloud_metadata" | "ssrf_cloud_metadata_alt_path" => Some(InvariantClass::SsrfCloudMetadata),
             "protocol_smuggle" => Some(InvariantClass::SsrfProtocolSmuggle),
             _ => None,
         }
@@ -2019,5 +2178,33 @@ mod tests {
         let detection = dets.iter().find(|d| d.detection_type == "internal_reach");
         assert!(detection.is_some(), "IP as subdomain should be detected as internal reach");
         assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn test_container_k8s_endpoint() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("GET http://kubernetes.default.svc.cluster.local/api/v1/secrets");
+        assert!(dets.iter().any(|d| d.detection_type == "ssrf_container_internal"));
+    }
+
+    #[test]
+    fn test_ipv6_zone_id() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://[fe80::1%25eth0]/");
+        assert!(dets.iter().any(|d| d.detection_type == "ssrf_ipv6_zone_id"));
+    }
+
+    #[test]
+    fn test_aws_vpc_endpoint() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("https://vpce-abc123.execute-api.us-east-1.vpce.amazonaws.com/prod");
+        assert!(dets.iter().any(|d| d.detection_type == "ssrf_aws_vpc_endpoint"));
+    }
+
+    #[test]
+    fn test_gcp_metadata_alt_path() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts");
+        assert!(dets.iter().any(|d| d.detection_type == "ssrf_cloud_metadata_alt_path"));
     }
 }

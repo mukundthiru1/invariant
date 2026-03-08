@@ -403,6 +403,26 @@ impl L2Evaluator for JwtEvaluator {
                         }],
                     });
                 }
+                // x5c header certificate-chain injection
+                static X5C_INJECTION_RE: std::sync::LazyLock<Regex> =
+                    std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)['"]x5c['"]\s*:\s*\["#).unwrap()
+                    });
+                if X5C_INJECTION_RE.is_match(&header_norm) {
+                    dets.push(L2Detection {
+                        detection_type: "jwt_x5c_injection".into(),
+                        confidence: 0.91,
+                        detail: "JWT header contains inline x5c certificate chain".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: header[..header.len().min(120)].to_owned(),
+                            interpretation: "x5c (X.509 certificate chain) header allows specifying the signing certificate inline. Attackers can supply a self-signed certificate, sign the JWT with the corresponding private key, and some libraries accept the self-supplied certificate as authoritative, bypassing key verification.".into(),
+                            offset: m.start(),
+                            property: "JWT signature verification must not trust attacker-supplied x5c chains without strict trust-anchor validation".into(),
+                        }],
+                    });
+                }
 
                 // JKU/X5U SSRF/internal-host key retrieval
                 if let Some(url) = extract_internal_key_url(&header_norm) {
@@ -420,11 +440,40 @@ impl L2Evaluator for JwtEvaluator {
                         }],
                     });
                 }
+                // KID sequential or numeric enumeration patterns
+                static KID_ENUM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                    Regex::new(r#"(?i)['"]kid['"]\s*:\s*['"](?:[0-9]{1,10}|key[0-9]+|id[0-9]+)['"]"#).unwrap()
+                });
+                if KID_ENUM_RE.is_match(&header_norm) {
+                    dets.push(L2Detection {
+                        detection_type: "jwt_kid_enumeration".into(),
+                        confidence: 0.84,
+                        detail: "JWT kid uses numeric/sequential key-id pattern".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::SemanticEval,
+                            matched_input: header[..header.len().min(120)].to_owned(),
+                            interpretation: "Sequential or numeric KID values (kid:\"1\", kid:\"key1\") suggest key ID enumeration. Attackers cycle through KIDs to find keys accepted by the server, enabling signature bypass with an accepted but weak or known key.".into(),
+                            offset: m.start(),
+                            property: "JWT kid values should be non-enumerable opaque identifiers".into(),
+                        }],
+                    });
+                }
 
                 // Claim manipulation checks: issuer/audience spoofing and expiry inflation
                 if let Some(payload_json) = try_base64_decode_json(payload_b64) {
                     static EXP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                        Regex::new(r#"(?i)"exp"\s*:\s*(\d{5,})"#).unwrap()
+                        Regex::new(r#"(?i)"exp"\s*:\s*(\d+)"#).unwrap()
+                    });
+                    static EXP_NULL_FALSE_RE: std::sync::LazyLock<Regex> =
+                        std::sync::LazyLock::new(|| {
+                            Regex::new(r#"(?i)"exp"\s*:\s*(?:null|false)"#).unwrap()
+                        });
+                    static EXP_KEY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"exp"\s*:"#).unwrap()
+                    });
+                    static JTI_KEY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"jti"\s*:"#).unwrap()
                     });
                     static CLAIM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
                         Regex::new(r#"(?i)"(iss|aud)"\s*:\s*"([^"]+)""#).unwrap()
@@ -452,6 +501,24 @@ impl L2Evaluator for JwtEvaluator {
 
                     if let Some(cap) = EXP_RE.captures(&payload_json) {
                         if let Some(exp) = cap.get(1).and_then(|m| m.as_str().parse::<i64>().ok()) {
+                            if exp == 0 || exp < 1_000_000 {
+                                dets.push(L2Detection {
+                                    detection_type: "jwt_expired_or_null_exp".into(),
+                                    confidence: 0.88,
+                                    detail: "JWT exp claim is zero or extremely small".into(),
+                                    position: m.start(),
+                                    evidence: vec![ProofEvidence {
+                                        operation: EvidenceOperation::SemanticEval,
+                                        matched_input: cap
+                                            .get(0)
+                                            .map(|x| x.as_str().to_owned())
+                                            .unwrap_or_default(),
+                                        interpretation: "JWT with exp=0 or very small epoch values can disable effective expiry checks in some libraries, enabling replay.".into(),
+                                        offset: m.start(),
+                                        property: "JWT exp must be a valid near-term timestamp and strictly enforced".into(),
+                                    }],
+                                });
+                            }
                             if exp >= far_future_threshold {
                                 dets.push(L2Detection {
                                     detection_type: "jwt_claim_manipulation".into(),
@@ -475,6 +542,40 @@ impl L2Evaluator for JwtEvaluator {
                                 });
                             }
                         }
+                    }
+                    if let Some(cap) = EXP_NULL_FALSE_RE.captures(&payload_json) {
+                        dets.push(L2Detection {
+                            detection_type: "jwt_expired_or_null_exp".into(),
+                            confidence: 0.88,
+                            detail: "JWT exp claim is null/false".into(),
+                            position: m.start(),
+                            evidence: vec![ProofEvidence {
+                                operation: EvidenceOperation::SemanticEval,
+                                matched_input: cap
+                                    .get(0)
+                                    .map(|x| x.as_str().to_owned())
+                                    .unwrap_or_default(),
+                                interpretation: "JWT with exp=null/false can disable expiry checking in permissive libraries, enabling permanent token replay.".into(),
+                                offset: m.start(),
+                                property: "JWT exp must be present as a valid numeric timestamp".into(),
+                            }],
+                        });
+                    }
+                    if EXP_KEY_RE.is_match(&payload_json) && !JTI_KEY_RE.is_match(&payload_json) {
+                        dets.push(L2Detection {
+                            detection_type: "jwt_jti_absent_or_duplicated".into(),
+                            confidence: 0.80,
+                            detail: "JWT has exp claim but no jti claim".into(),
+                            position: m.start(),
+                            evidence: vec![ProofEvidence {
+                                operation: EvidenceOperation::SemanticEval,
+                                matched_input: payload_json[..payload_json.len().min(120)]
+                                    .to_owned(),
+                                interpretation: "JWT lacks a jti (JWT ID) claim. Without a unique token identifier, replay attack prevention requires storing all seen tokens. Tokens without jti cannot be reliably revoked or deduplicated, enabling replay attacks after token theft.".into(),
+                                offset: m.start(),
+                                property: "JWTs with expiry should include unique jti values for replay protection".into(),
+                            }],
+                        });
                     }
 
                     for cap in CLAIM_RE.captures_iter(&payload_json) {
@@ -503,7 +604,6 @@ impl L2Evaluator for JwtEvaluator {
                                     property: "JWT iss/aud claims should be strict allowlisted identities".into(),
                                 }],
                             });
-                            break;
                         }
                     }
                 }
@@ -521,6 +621,11 @@ impl L2Evaluator for JwtEvaluator {
                     if crit_items.contains("b64")
                         || crit_items.contains("jwk")
                         || crit_items.contains("jku")
+                        || crit_items.contains("kid")
+                        || crit_items.contains("x5c")
+                        || crit_items.contains("x5u")
+                        || crit_items.contains("x5t")
+                        || crit_items.contains("iss")
                     {
                         dets.push(L2Detection {
                             detection_type: "jwt_crit_header_abuse".into(),
@@ -553,15 +658,19 @@ impl L2Evaluator for JwtEvaluator {
             | "jwt_crit_header_abuse"
             | "jwt_rs256_to_hs256_confusion"
             | "jwt_nested_bypass"
-            | "jwt_claim_manipulation" => Some(InvariantClass::JwtConfusion),
+            | "jwt_claim_manipulation"
+            | "jwt_expired_or_null_exp"
+            | "jwt_jti_absent_or_duplicated" => Some(InvariantClass::JwtConfusion),
             "jwt_key_injection" | "jwt_jku_injection" | "jwt_jwk_embedding"
             | "jwt_jwk_symmetric"
             | "jwt_jku_ssrf"
             | "jwt_jku_header_injection"
+            | "jwt_x5c_injection"
             | "jwt_embedded_jwk_attacker_key" => Some(InvariantClass::JwtJwkEmbedding),
-            "jwt_kid_injection" | "jwt_kid_command_or_ssrf" | "jwt_kid_path_traversal" => {
-                Some(InvariantClass::JwtKidInjection)
-            }
+            "jwt_kid_injection"
+            | "jwt_kid_command_or_ssrf"
+            | "jwt_kid_path_traversal"
+            | "jwt_kid_enumeration" => Some(InvariantClass::JwtKidInjection),
             _ => None,
         }
     }
@@ -797,6 +906,37 @@ mod tests {
         assert!(det.is_some());
         assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
     }
+
+    #[test]
+    fn detects_x5c_header_injection() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJSUzI1NiIsIng1YyI6WyJNSUlDLi4uIl19";
+        let token = format!("{}.{}.c2ln", header, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_x5c_injection"));
+    }
+
+    #[test]
+    fn detects_kid_sequential_enumeration() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiIsImtpZCI6ImtleTEifQ";
+        let token = format!("{}.{}.c2ln", header, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_kid_enumeration"));
+    }
+
+    #[test]
+    fn detects_jti_absent_with_exp_claim() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload = "eyJleHAiOjE3MDAwMDAwMDAsInN1YiI6InVzZXIifQ";
+        let token = format!("{}.{}.c2ln", header, payload);
+        let dets = eval.detect(&token);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_jti_absent_or_duplicated")
+        );
+    }
 }
 
 fn try_base64_decode_json(input: &str) -> Option<String> {
@@ -906,10 +1046,18 @@ fn is_internal_or_local_key_url(url: &str) -> bool {
     let Some(host) = extract_url_host(url) else {
         return false;
     };
-    if host == "localhost" || host == "0.0.0.0" || host == "127.0.0.1" || host == "::1" {
+    if host == "localhost"
+        || host == "0.0.0.0"
+        || host == "127.0.0.1"
+        || host.starts_with("127.")
+        || host == "::1"
+        || host == "[::1]"
+        || host == "metadata.google.internal"
+        || host == "metadata.internal"
+    {
         return true;
     }
-    if host == "169.254.169.254" {
+    if host.starts_with("169.254.") || host.starts_with("fe80:") {
         return true;
     }
     if host.starts_with("10.") || host.starts_with("192.168.") {

@@ -27,7 +27,7 @@ impl L2Evaluator for SamlEvaluator {
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
         let lower = decoded.to_ascii_lowercase();
         let attribute_injection_re = Regex::new(
-            r"(?i)<(?:saml[p2]?:)?(?:AttributeStatement|Attribute)[^>]*>(?:[^<]{0,200})?(?:admin|root|superuser|administrator|role=|permission=)",
+            r"(?i)<(?:saml[p2]?:)?(?:AttributeStatement|Attribute)[^>]*>(?:[^<]{0,200})?(?:admin|root|superuser|administrator|role=|permission=|is_superuser|is_root|staff|is_staff|elevated|privileged|owner|isowner|is_owner)",
         )
         .expect("valid regex");
         let audience_bypass_re = Regex::new(
@@ -89,7 +89,10 @@ impl L2Evaluator for SamlEvaluator {
 
         // 3. Missing or manipulated signature
         if lower.contains("<samlp:response") || lower.contains("<saml:assertion") {
-            if !lower.contains("<ds:signature") && !lower.contains("<signature") {
+            if !lower.contains("<ds:signature") 
+                && !lower.contains("<signature") 
+                && !lower.contains("<saml:signature") 
+                && !lower.contains("<xmldsig:signature") {
                 dets.push(L2Detection {
                     detection_type: "saml_unsigned".into(),
                     confidence: 0.87,
@@ -195,6 +198,60 @@ impl L2Evaluator for SamlEvaluator {
             }
         }
 
+        // 9. XML XInclude injection
+        if (lower.contains("<xi:include") || lower.contains("xinclude")) && lower.contains("href=") {
+            dets.push(L2Detection {
+                detection_type: "saml_xinclude_injection".into(),
+                confidence: 0.92,
+                detail: "XInclude element detected in SAML document — external entity inclusion".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(200)].to_string(),
+                    interpretation: "XInclude (xi:include) allows embedding external XML content via href attributes. Unlike DOCTYPE-based XXE, XInclude processing can be enabled separately and bypasses DOCTYPE-disabled XXE protections. Attackers use xi:include to read local files or trigger SSRF in SAML assertions.".into(),
+                    offset: 0,
+                    property: "XInclude processing must be disabled in SAML parsers. Use a whitelist-based XML parser configuration that disables all external resource fetching.".into(),
+                }],
+            });
+        }
+
+        // 10. SubjectConfirmation manipulation
+        if lower.contains("subjectconfirmationdata") && !lower.contains("recipient=") {
+            dets.push(L2Detection {
+                detection_type: "saml_subject_confirmation_abuse".into(),
+                confidence: 0.88,
+                detail: "SubjectConfirmationData missing Recipient attribute — assertion replay vulnerability".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[..decoded.len().min(200)].to_string(),
+                    interpretation: "SubjectConfirmationData without a Recipient attribute bypass the Recipient validation check. SAML assertions can then be replayed against any service provider, not just the intended recipient.".into(),
+                    offset: 0,
+                    property: "SAML Service Providers must verify that the Recipient attribute in SubjectConfirmationData exactly matches the expected endpoint URL.".into(),
+                }],
+            });
+        }
+
+        // 11. Multiple Audience bypass
+        let audience_count = lower.matches("<audience>").count()
+            + lower.matches("<saml:audience>").count()
+            + lower.matches("<saml2:audience>").count();
+        if audience_count >= 2 {
+            dets.push(L2Detection {
+                detection_type: "saml_multi_audience_bypass".into(),
+                confidence: 0.85,
+                detail: "Multiple Audience elements detected — audience restriction bypass".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[..decoded.len().min(200)].to_string(),
+                    interpretation: "SAML Conditions with multiple Audience elements — some IdPs accept SAML with any matching audience, while others require exact match. Attackers add the legitimate audience alongside an attacker-controlled audience to create assertions usable on multiple SPs simultaneously.".into(),
+                    offset: 0,
+                    property: "SAML assertions should typically contain a single Audience matching the intended Service Provider. If multiple are present, validation logic must strictly ensure the current SP is among them and not bypass checks.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -207,7 +264,10 @@ impl L2Evaluator for SamlEvaluator {
             | "saml_xxe"
             | "saml_attribute_injection"
             | "saml_audience_bypass"
-            | "saml_deflate_bypass" => Some(InvariantClass::SamlBypass),
+            | "saml_deflate_bypass"
+            | "saml_xinclude_injection"
+            | "saml_subject_confirmation_abuse"
+            | "saml_multi_audience_bypass" => Some(InvariantClass::SamlBypass),
             _ => None,
         }
     }
@@ -300,6 +360,30 @@ mod tests {
         let input = "GET /sso?SAMLResponse=eJxBQUFBQUFBQUFBQUFBQUFBQUFBQQ== HTTP/1.1";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "saml_deflate_bypass"));
+    }
+
+    #[test]
+    fn detects_xinclude_injection() {
+        let eval = SamlEvaluator;
+        let input = r#"<saml:Assertion><xi:include href="file:///etc/passwd"/></saml:Assertion>"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "saml_xinclude_injection"));
+    }
+
+    #[test]
+    fn detects_subject_confirmation_abuse() {
+        let eval = SamlEvaluator;
+        let input = r#"<saml:Assertion><saml:SubjectConfirmationData NotOnOrAfter="2024-01-01T00:00:00Z" /></saml:Assertion>"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "saml_subject_confirmation_abuse"));
+    }
+
+    #[test]
+    fn detects_multi_audience_bypass() {
+        let eval = SamlEvaluator;
+        let input = r#"<saml:Assertion><saml:Conditions><saml:AudienceRestriction><saml:Audience>https://legit.com</saml:Audience><saml:Audience>https://attacker.com</saml:Audience></saml:AudienceRestriction></saml:Conditions></saml:Assertion>"#;
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "saml_multi_audience_bypass"));
     }
 
     #[test]

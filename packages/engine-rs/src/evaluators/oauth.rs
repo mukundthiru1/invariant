@@ -26,10 +26,14 @@ impl L2Evaluator for OAuthEvaluator {
         let mut dets = Vec::new();
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
         let lower = decoded.to_ascii_lowercase();
-        let pkce_plain_re = Regex::new(r"code_challenge_method=plain").expect("valid regex");
+        let pkce_plain_re = Regex::new(r"(?i)code_challenge_method=plain").expect("valid regex");
         let pkce_no_s256_re = Regex::new(r"code_challenge=[^&]+").expect("valid regex");
         let auth_code_re = Regex::new(r"(?:[?&])code=[A-Za-z0-9._~+/-]{10,}").expect("valid regex");
-        let token_referer_re = Regex::new(r"(?i)access_token=[A-Za-z0-9._~+/-]+=*").expect("valid regex");
+        let token_referer_re = Regex::new(r"(?i)(?:access_token|id_token)=[A-Za-z0-9._~+/-]+=*|[?&]code=[A-Za-z0-9._~+/-]{10,}").expect("valid regex");
+        let request_uri_re = Regex::new(r"(?i)[?&]request_uri=https?://[^\s&]+").expect("valid regex");
+        let redirect_double_encoded_re =
+            Regex::new(r"(?i)[?&]redirect_uri=[^&]*%25(?:2f|3a|40|00|0a|0d)[^&]*")
+                .expect("valid regex");
 
         // 1. redirect_uri manipulation (the #1 OAuth attack vector)
         if lower.contains("redirect_uri=") {
@@ -114,35 +118,57 @@ impl L2Evaluator for OAuthEvaluator {
 
         // 4. Scope escalation
         let dangerous_scopes = [
-            "admin", "root", "superuser", "all", "*",
-            "user.write", "users.admin", "openid profile email",
+            "admin",
+            "write",
+            "delete",
+            "manage",
+            "root",
+            "superuser",
+            "*",
+            "all",
+            "full_access",
+            "read_write",
         ];
+        let standard_oidc_scopes = ["openid", "profile", "email", "phone", "address", "offline_access"];
 
         if lower.contains("scope=") {
             if let Some(pos) = lower.find("scope=") {
                 let value_start = pos + "scope=".len();
                 let value_end = lower[value_start..].find('&').map(|i| value_start + i).unwrap_or(lower.len());
                 let scope_value = &lower[value_start..value_end];
+                let normalized_scope = scope_value.replace('+', " ");
+                let scope_tokens: Vec<&str> = normalized_scope
+                    .split(|c: char| c.is_whitespace() || c == ',')
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let is_only_standard_oidc = !scope_tokens.is_empty()
+                    && scope_tokens
+                        .iter()
+                        .all(|s| standard_oidc_scopes.contains(s));
 
-                for &scope in &dangerous_scopes {
-                    if scope_value.contains(scope) {
-                        dets.push(L2Detection {
-                            detection_type: "oauth_scope_escalation".into(),
-                            confidence: 0.78,
-                            detail: format!("OAuth scope contains sensitive permission: {}", scope),
-                            position: pos,
-                            evidence: vec![ProofEvidence {
-                                operation: EvidenceOperation::SemanticEval,
-                                matched_input: decoded[value_start..value_end.min(decoded.len())].to_string(),
-                                interpretation: format!(
-                                    "OAuth scope contains '{}' which grants elevated privileges. If the authorization server does not enforce scope restrictions per-client, an attacker can escalate permissions by modifying the scope parameter.",
-                                    scope
-                                ),
-                                offset: pos,
-                                property: "OAuth scopes must be validated against the client's registered scope allowlist. Scope escalation beyond the client's allowed scopes must be rejected.".into(),
-                            }],
-                        });
-                        break;
+                if !is_only_standard_oidc {
+                    for &scope in &dangerous_scopes {
+                        if scope_value.contains(scope)
+                            || scope_tokens.iter().any(|token| token == &scope)
+                        {
+                            dets.push(L2Detection {
+                                detection_type: "oauth_scope_escalation".into(),
+                                confidence: 0.78,
+                                detail: format!("OAuth scope contains sensitive permission: {}", scope),
+                                position: pos,
+                                evidence: vec![ProofEvidence {
+                                    operation: EvidenceOperation::SemanticEval,
+                                    matched_input: decoded[value_start..value_end.min(decoded.len())].to_string(),
+                                    interpretation: format!(
+                                        "OAuth scope contains '{}' which grants elevated privileges. If the authorization server does not enforce scope restrictions per-client, an attacker can escalate permissions by modifying the scope parameter.",
+                                        scope
+                                    ),
+                                    offset: pos,
+                                    property: "OAuth scopes must be validated against the client's registered scope allowlist. Scope escalation beyond the client's allowed scopes must be rejected.".into(),
+                                }],
+                            });
+                            break;
+                        }
                     }
                 }
             }
@@ -220,9 +246,10 @@ impl L2Evaluator for OAuthEvaluator {
             });
         }
 
-        // 7. Token leakage via Referer header
+        // 7. Token leakage via Referer header / URL contexts
         let in_referer_header =
             lower.contains("referer:") || (lower.contains("header") && lower.contains("referer"));
+        let in_url_context = lower.contains("http://") || lower.contains("https://") || lower.contains("get ");
         if in_referer_header {
             if let Some(m) = token_referer_re.find(&decoded) {
                 let prefix = &lower[..m.start().min(lower.len())];
@@ -230,14 +257,37 @@ impl L2Evaluator for OAuthEvaluator {
                     dets.push(L2Detection {
                         detection_type: "oauth_token_leakage_referer".into(),
                         confidence: 0.88,
-                        detail: "OAuth access token appears in Referer header value".into(),
+                        detail: "OAuth token or authorization code appears in Referer header value".into(),
                         position: m.start(),
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::SemanticEval,
                             matched_input: m.as_str().to_string(),
-                            interpretation: "Access token found in Referer context indicates bearer token leakage to downstream origins, logs, or analytics services.".into(),
+                            interpretation: "OAuth credential in Referer context indicates leakage to downstream origins, logs, or analytics services. This includes access_token, id_token, and authorization code values.".into(),
                             offset: m.start(),
-                            property: "Access tokens must not appear in URLs or Referer headers. Use Authorization headers and strict referrer policy.".into(),
+                            property: "Tokens and authorization codes must not appear in URLs or Referer headers. Use Authorization headers and strict referrer policy.".into(),
+                        }],
+                    });
+                }
+            }
+        } else if in_url_context {
+            if let Some(m) = token_referer_re.find(&decoded) {
+                let matched = m.as_str().to_ascii_lowercase();
+                let is_code = matched.starts_with("?code=") || matched.starts_with("&code=");
+                let looks_callback = lower.contains("callback")
+                    || lower.contains("/cb")
+                    || lower.contains("redirect_uri");
+                if !is_code || !looks_callback {
+                    dets.push(L2Detection {
+                        detection_type: "oauth_token_leakage_referer".into(),
+                        confidence: 0.88,
+                        detail: "OAuth token or authorization code appears in URL context".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::SemanticEval,
+                            matched_input: m.as_str().to_string(),
+                            interpretation: "OAuth credential appears directly in a URL context, which risks leakage through logs, history, and downstream systems.".into(),
+                            offset: m.start(),
+                            property: "Tokens and authorization codes must not appear in URL fragments or query strings except on tightly controlled callback exchanges.".into(),
                         }],
                     });
                 }
@@ -283,6 +333,93 @@ impl L2Evaluator for OAuthEvaluator {
             }
         }
 
+        // 9. OAuth request_uri parameter injection
+        if lower.contains("request_uri=") {
+            if let Some(m) = request_uri_re.find(&decoded) {
+                dets.push(L2Detection {
+                    detection_type: "oauth_request_uri_injection".into(),
+                    confidence: 0.93,
+                    detail: "OAuth request_uri points to external URL".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::ContextEscape,
+                        matched_input: m.as_str().to_string(),
+                        interpretation: "request_uri parameter allows loading OAuth request parameters from an external URL. Attackers can host a malicious JWT at an attacker-controlled URL, enabling parameter injection (scope escalation, redirect_uri override, client_id spoofing) that bypasses inline parameter validation.".into(),
+                        offset: m.start(),
+                        property: "Authorization servers must tightly restrict request_uri usage to pre-registered, allowlisted URIs or require signed request objects with strict validation.".into(),
+                    }],
+                });
+            }
+        }
+
+        // 10. OIDC nonce missing for id_token or implicit token flows
+        let has_response_type = lower.contains("response_type=");
+        let has_id_token_response = lower.contains("response_type=") && lower.contains("id_token");
+        let has_token_response = lower.contains("response_type=") && lower.contains("token");
+        let has_openid_scope = lower.contains("scope=openid")
+            || lower.contains("scope=openid+")
+            || lower.contains("scope=openid%20")
+            || lower.contains(" openid");
+        let is_oidc_request = has_openid_scope || has_id_token_response;
+        if has_response_type
+            && (has_id_token_response || has_token_response)
+            && !lower.contains("nonce=")
+            && is_oidc_request
+        {
+            let pos = lower.find("response_type=").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "oauth_nonce_missing_oidc".into(),
+                confidence: 0.86,
+                detail: "OIDC request with id_token/implicit response is missing nonce".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[..decoded.len().min(160)].to_string(),
+                    interpretation: "OIDC requires a nonce for id_token responses to prevent replay attacks. Without a nonce, an id_token can be replayed to authenticate as the victim user on any relying party that accepts it. This is a standard OIDC security requirement (Section 3.1.2.1).".into(),
+                    offset: pos,
+                    property: "OIDC authorization requests returning id_token must include a cryptographically random nonce and validate it in the returned token.".into(),
+                }],
+            });
+        }
+
+        // 11. redirect_uri double-encoding bypass patterns
+        if let Some(m) = redirect_double_encoded_re
+            .find(input)
+            .or_else(|| redirect_double_encoded_re.find(&decoded))
+        {
+            dets.push(L2Detection {
+                detection_type: "oauth_redirect_double_encoded".into(),
+                confidence: 0.88,
+                detail: "OAuth redirect_uri contains double-encoded control/path characters".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Double-encoded URL characters (%252f = %2f = /) in redirect_uri bypass single-pass URL decoders used in validation. The registration endpoint sees the encoded safe URL, while the OAuth server decodes it to a different, attacker-controlled redirect target.".into(),
+                    offset: m.start(),
+                    property: "redirect_uri validation must canonicalize with full decoding and compare exact normalized URIs against an allowlist.".into(),
+                }],
+            });
+        }
+
+        // 12. prompt=none silent authorization abuse
+        if lower.contains("prompt=none") {
+            let pos = lower.find("prompt=none").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "oauth_prompt_none_bypass".into(),
+                confidence: 0.81,
+                detail: "OAuth request uses prompt=none (silent authentication flow)".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: "prompt=none".into(),
+                    interpretation: "prompt=none instructs the Authorization Server to authenticate without showing any UI. If the user is already authenticated, this silently grants tokens without user confirmation. Attackers embed this in OAuth requests to silently obtain tokens from authenticated users in iframe or redirect contexts (CSRF-like attack).".into(),
+                    offset: pos,
+                    property: "Applications must strictly validate origin, CSRF state, and consent requirements before accepting results from prompt=none authorization flows.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -297,7 +434,11 @@ impl L2Evaluator for OAuthEvaluator {
             | "oauth_pkce_missing_s256"
             | "oauth_pkce_missing_verifier"
             | "oauth_token_leakage_referer"
-            | "oauth_code_injection" => Some(InvariantClass::OauthFlowAbuse),
+            | "oauth_code_injection"
+            | "oauth_request_uri_injection"
+            | "oauth_nonce_missing_oidc"
+            | "oauth_redirect_double_encoded"
+            | "oauth_prompt_none_bypass" => Some(InvariantClass::OauthFlowAbuse),
             _ => None,
         }
     }
@@ -343,6 +484,13 @@ mod tests {
     }
 
     #[test]
+    fn detects_pkce_plain_downgrade_case_insensitive() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("response_type=code&code_challenge=abc123&code_challenge_method=PLAIN");
+        assert!(dets.iter().any(|d| d.detection_type == "oauth_pkce_plain"));
+    }
+
+    #[test]
     fn detects_pkce_missing_s256() {
         let eval = OAuthEvaluator;
         let dets = eval.detect("response_type=code&code_challenge=abc123xyz&client_id=abc");
@@ -368,6 +516,46 @@ mod tests {
         let eval = OAuthEvaluator;
         let dets = eval.detect("GET /oauth/start?code=abc123def456&state=x&code=zzz999yyy888 HTTP/1.1");
         assert!(dets.iter().any(|d| d.detection_type == "oauth_code_injection"));
+    }
+
+    #[test]
+    fn detects_request_uri_injection() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect(
+            "response_type=code&client_id=abc&request_uri=https://attacker.example/malicious.jwt",
+        );
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "oauth_request_uri_injection"));
+    }
+
+    #[test]
+    fn detects_nonce_missing_for_oidc_id_token_flow() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("response_type=id_token token&scope=openid profile email&client_id=abc");
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "oauth_nonce_missing_oidc"));
+    }
+
+    #[test]
+    fn detects_double_encoded_redirect_uri() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect(
+            "response_type=code&client_id=abc&redirect_uri=https://app.example/cb%252fadmin",
+        );
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "oauth_redirect_double_encoded"));
+    }
+
+    #[test]
+    fn detects_prompt_none_bypass() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("response_type=code&client_id=abc&scope=openid&prompt=none&state=s1");
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "oauth_prompt_none_bypass"));
     }
 
     #[test]
