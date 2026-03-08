@@ -1248,6 +1248,25 @@ impl L2Evaluator for SsrfEvaluator {
             return dets;
         }
 
+        static SSRF_IPV6_ZONE_LOCALHOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\[(?:[0-9a-fA-F:]+)(?:%25?|%)(?:lo|eth|en|wlan|docker|br|veth)[0-9]*\]").unwrap()
+        });
+        for m in SSRF_IPV6_ZONE_LOCALHOST_RE.find_iter(input) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_ipv6_zone_localhost".into(),
+                confidence: 0.92,
+                detail: "IPv6 zone ID with localhost interfaces".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "IPv6 zone IDs (%lo0, %eth0, %docker0) specify network interface scoping. http://[fe80::1%lo0]/ routes to the local loopback interface despite the IPv6 address appearing non-local. Many SSRF filters check for 127.0.0.1 and ::1 but miss interface-scoped IPv6 addresses that also resolve locally".into(),
+                    offset: m.start(),
+                    property: "IPv6 addresses with zone IDs must be treated as interface-specific addresses. Reject all SSRF targets where the zone ID references loopback, Ethernet, or Docker bridge interfaces".into(),
+                }],
+            });
+        }
+
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
         let lowered_decoded = decoded.to_lowercase();
         
@@ -1744,7 +1763,7 @@ impl L2Evaluator for SsrfEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "internal_reach" | "ssrf_container_internal" | "ssrf_ipv6_zone_id" | "ssrf_aws_vpc_endpoint" => Some(InvariantClass::SsrfInternalReach),
+            "internal_reach" | "ssrf_container_internal" | "ssrf_ipv6_zone_id" | "ssrf_aws_vpc_endpoint" | "ssrf_ipv6_zone_localhost" => Some(InvariantClass::SsrfInternalReach),
             "cloud_metadata" | "ssrf_cloud_metadata_alt_path" => Some(InvariantClass::SsrfCloudMetadata),
             "protocol_smuggle" => Some(InvariantClass::SsrfProtocolSmuggle),
             _ => None,
@@ -1755,6 +1774,16 @@ impl L2Evaluator for SsrfEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detect_ssrf_ipv6_zone_localhost_pattern() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://[fe80::1%25lo0]/internal/");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_ipv6_zone_localhost")
+        );
+    }
 
     #[test]
     fn localhost_ssrf() {

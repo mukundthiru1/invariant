@@ -2054,6 +2054,30 @@ impl SqlStructuralEvaluator {
         detections
     }
 
+    fn detect_boolean_blind_extraction(&self, input: &str) -> Vec<L2Detection> {
+        static BOOL_EXTRACTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:(?:AND|OR|WHERE)\s+)?(?:MID|SUBSTRING|SUBSTR|LEFT|RIGHT|CHAR|ASCII|ORD)\s*\([^(]*\(\s*(?:SELECT\s+\w+\s+FROM|\$\w+|\w+\s*\.\s*\w+)").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in BOOL_EXTRACTION_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "sql_boolean_blind_extraction".into(),
+                confidence: 0.91,
+                detail: "Boolean blind SQL injection extracts data character-by-character using conditional responses (true/false) rather than UNION or error output.".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Boolean blind SQL injection extracts data character-by-character using conditional responses (true/false) rather than UNION or error output. AND MID((SELECT password FROM users),1,1) < a is binary-searchable, enabling password extraction without any visible error or UNION keyword".into(),
+                    offset: m.start(),
+                    property: "SQL queries must use parameterized statements for all user input. Boolean-based blind extraction is undetectable at the network level — only parameterized queries prevent it".into(),
+                }],
+            });
+        }
+        detections
+    }
+
     fn detect_boolean_blind_subquery(&self, input: &str) -> Vec<L2Detection> {
         static BOOL_SUBQUERY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is)\b(?:and|or)\b\s+\d+\s*=\s*\(\s*select\s+(?:count|ascii|substring|length|len)\s*\(").unwrap()
@@ -2698,6 +2722,12 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            for det in self.detect_boolean_blind_extraction(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
             for det in self.detect_boolean_blind_subquery(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
                 if seen.insert(key) {
@@ -2843,6 +2873,7 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "numeric_dollar_quote" => Some(InvariantClass::SqlStackedExecution),
             "like_wildcard_injection" => Some(InvariantClass::SqlTautology),
             "dbms_stacked_variant" => Some(InvariantClass::SqlStackedExecution),
+            "sql_boolean_blind_extraction" => Some(InvariantClass::SqlTautology),
             "boolean_blind_subquery" => Some(InvariantClass::SqlTautology),
             "advanced_error_oracle" => Some(InvariantClass::SqlErrorOracle),
             "json_where_abuse" => Some(InvariantClass::SqlUnionExtraction),
@@ -3507,6 +3538,16 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "dbms_stacked_variant")
+        );
+    }
+
+    #[test]
+    fn detect_sql_boolean_blind_extraction_pattern() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("AND MID((SELECT password FROM users),1,1)<'a'");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "sql_boolean_blind_extraction")
         );
     }
 
