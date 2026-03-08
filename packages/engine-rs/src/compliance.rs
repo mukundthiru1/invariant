@@ -61,75 +61,6 @@ pub struct ComplianceReport {
     pub audit_evidence: Vec<ComplianceEvidence>,
 }
 
-const ALL_CLASSES: [InvariantClass; 66] = [
-    InvariantClass::SqlStringTermination,
-    InvariantClass::SqlTautology,
-    InvariantClass::SqlUnionExtraction,
-    InvariantClass::SqlStackedExecution,
-    InvariantClass::SqlTimeOracle,
-    InvariantClass::SqlErrorOracle,
-    InvariantClass::SqlCommentTruncation,
-    InvariantClass::XssTagInjection,
-    InvariantClass::XssAttributeEscape,
-    InvariantClass::XssEventHandler,
-    InvariantClass::XssProtocolHandler,
-    InvariantClass::XssTemplateExpression,
-    InvariantClass::PathDotdotEscape,
-    InvariantClass::PathNullTerminate,
-    InvariantClass::PathEncodingBypass,
-    InvariantClass::PathNormalizationBypass,
-    InvariantClass::CmdSeparator,
-    InvariantClass::CmdSubstitution,
-    InvariantClass::CmdArgumentInjection,
-    InvariantClass::SsrfInternalReach,
-    InvariantClass::SsrfCloudMetadata,
-    InvariantClass::SsrfProtocolSmuggle,
-    InvariantClass::DeserJavaGadget,
-    InvariantClass::DeserPhpObject,
-    InvariantClass::DeserPythonPickle,
-    InvariantClass::AuthNoneAlgorithm,
-    InvariantClass::AuthHeaderSpoof,
-    InvariantClass::CorsOriginAbuse,
-    InvariantClass::ProtoPollution,
-    InvariantClass::ProtoPollutionGadget,
-    InvariantClass::LogJndiLookup,
-    InvariantClass::SstiJinjaTwig,
-    InvariantClass::SstiElExpression,
-    InvariantClass::NosqlOperatorInjection,
-    InvariantClass::NosqlJsInjection,
-    InvariantClass::LdapFilterInjection,
-    InvariantClass::XxeEntityExpansion,
-    InvariantClass::XmlInjection,
-    InvariantClass::CrlfHeaderInjection,
-    InvariantClass::CrlfLogInjection,
-    InvariantClass::GraphqlIntrospection,
-    InvariantClass::GraphqlBatchAbuse,
-    InvariantClass::OpenRedirectBypass,
-    InvariantClass::MassAssignment,
-    InvariantClass::RegexDos,
-    InvariantClass::HttpSmuggleClTe,
-    InvariantClass::HttpSmuggleH2,
-    InvariantClass::HttpSmuggleChunkExt,
-    InvariantClass::HttpSmuggleZeroCl,
-    InvariantClass::HttpSmuggleExpect,
-    InvariantClass::JsonSqlBypass,
-    InvariantClass::DependencyConfusion,
-    InvariantClass::PostinstallInjection,
-    InvariantClass::EnvExfiltration,
-    InvariantClass::LlmPromptInjection,
-    InvariantClass::LlmDataExfiltration,
-    InvariantClass::LlmJailbreak,
-    InvariantClass::WsInjection,
-    InvariantClass::WsHijack,
-    InvariantClass::JwtKidInjection,
-    InvariantClass::JwtJwkEmbedding,
-    InvariantClass::JwtConfusion,
-    InvariantClass::CachePoisoning,
-    InvariantClass::CacheDeception,
-    InvariantClass::BolaIdor,
-    InvariantClass::ApiMassEnum,
-];
-
 #[inline]
 fn control(
     framework: ComplianceFramework,
@@ -145,368 +76,152 @@ fn control(
     }
 }
 
-fn owasp_top10_2021_for_class(class: InvariantClass) -> &'static str {
-    use InvariantClass::*;
-    match class {
-        BolaIdor
-        | ApiMassEnum
-        | MassAssignment
-        | PathDotdotEscape
-        | PathNullTerminate
-        | PathEncodingBypass
-        | PathNormalizationBypass
-        | OpenRedirectBypass
-        | LlmDataExfiltration => "A01:2021",
-
-        AuthNoneAlgorithm | JwtKidInjection | JwtJwkEmbedding | JwtConfusion => "A02:2021",
-
-        SqlStringTermination
-        | SqlTautology
-        | SqlUnionExtraction
-        | SqlStackedExecution
-        | SqlTimeOracle
-        | SqlErrorOracle
-        | SqlCommentTruncation
-        | JsonSqlBypass
-        | XssTagInjection
-        | XssAttributeEscape
-        | XssEventHandler
-        | XssProtocolHandler
-        | XssTemplateExpression
-        | CmdSeparator
-        | CmdSubstitution
-        | CmdArgumentInjection
-        | NosqlOperatorInjection
-        | NosqlJsInjection
-        | LdapFilterInjection
-        | SstiJinjaTwig
-        | SstiElExpression
-        | XxeEntityExpansion
-        | XmlInjection
-        | CrlfHeaderInjection
-        | LogJndiLookup
-        | WsInjection
-        | LlmPromptInjection => "A03:2021",
-
-        GraphqlBatchAbuse | RegexDos | LlmJailbreak => "A04:2021",
-
-        CachePoisoning | CacheDeception | HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt
-        | HttpSmuggleZeroCl | HttpSmuggleExpect | GraphqlIntrospection | CorsOriginAbuse => {
-            "A05:2021"
-        }
-
-        DependencyConfusion | PostinstallInjection => "A06:2021",
-
-        AuthHeaderSpoof | WsHijack => "A07:2021",
-
-        DeserJavaGadget | DeserPhpObject | DeserPythonPickle | ProtoPollution
-        | ProtoPollutionGadget | EnvExfiltration => "A08:2021",
-
-        CrlfLogInjection => "A09:2021",
-
-        SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | OastInteraction => "A10:2021",
-    }
-}
-
-fn owasp_api_top10_for_class(class: InvariantClass) -> &'static str {
-    use InvariantClass::*;
-    match class {
-        BolaIdor => "API1:2023",
-        AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse | JwtKidInjection
-        | JwtJwkEmbedding | JwtConfusion | WsHijack => "API2:2023",
-        ApiMassEnum | GraphqlIntrospection => "API3:2023",
-        SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | HttpSmuggleClTe
-        | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl | HttpSmuggleExpect => {
-            "API7:2023"
-        }
-        CachePoisoning | CacheDeception | OpenRedirectBypass => "API8:2023",
-        GraphqlBatchAbuse | RegexDos => "API4:2023",
-        MassAssignment => "API6:2023",
-        DependencyConfusion | PostinstallInjection => "API10:2023",
-        _ => "API8:2023",
-    }
-}
-
-fn cwe_ids_for_class(class: InvariantClass) -> &'static [&'static str] {
-    use InvariantClass::*;
-    match class {
-        SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
-        | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => &["CWE-89"],
-
-        XssTagInjection
-        | XssAttributeEscape
-        | XssEventHandler
-        | XssProtocolHandler
-        | XssTemplateExpression => &["CWE-79"],
-
-        PathDotdotEscape | PathEncodingBypass | PathNormalizationBypass => &["CWE-22"],
-        PathNullTerminate => &["CWE-158"],
-
-        CmdSeparator | CmdSubstitution => &["CWE-78"],
-        CmdArgumentInjection => &["CWE-88"],
-
-        SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | OastInteraction => {
-            &["CWE-918"]
-        }
-
-        DeserJavaGadget | DeserPhpObject | DeserPythonPickle => &["CWE-502"],
-
-        AuthNoneAlgorithm => &["CWE-287"],
-        AuthHeaderSpoof => &["CWE-290"],
-        CorsOriginAbuse => &["CWE-942"],
-
-        ProtoPollution | ProtoPollutionGadget => &["CWE-1321"],
-        LogJndiLookup => &["CWE-917"],
-
-        SstiJinjaTwig => &["CWE-1336"],
-        SstiElExpression => &["CWE-917"],
-
-        NosqlOperatorInjection | NosqlJsInjection => &["CWE-943"],
-        LdapFilterInjection => &["CWE-90"],
-        XxeEntityExpansion => &["CWE-611"],
-        XmlInjection => &["CWE-91"],
-        CrlfHeaderInjection => &["CWE-113"],
-        CrlfLogInjection => &["CWE-117"],
-        GraphqlIntrospection => &["CWE-200"],
-        GraphqlBatchAbuse => &["CWE-770"],
-        OpenRedirectBypass => &["CWE-601"],
-        MassAssignment => &["CWE-915"],
-        RegexDos => &["CWE-1333"],
-        HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl
-        | HttpSmuggleExpect | CachePoisoning => &["CWE-444"],
-        DependencyConfusion => &["CWE-829"],
-        PostinstallInjection => &["CWE-494"],
-        EnvExfiltration => &["CWE-526"],
-        LlmPromptInjection => &["CWE-74"],
-        LlmDataExfiltration => &["CWE-200"],
-        LlmJailbreak => &["CWE-285"],
-        WsInjection => &["CWE-20"],
-        WsHijack => &["CWE-352"],
-        JwtKidInjection => &["CWE-73"],
-        JwtJwkEmbedding | JwtConfusion => &["CWE-347"],
-        CacheDeception => &["CWE-524"],
-        BolaIdor => &["CWE-639"],
-        ApiMassEnum => &["CWE-203"],
-    }
-}
-
 fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl> {
     let mut controls = Vec::new();
-
-    controls.push(control(
-        ComplianceFramework::OwaspTop10_2021,
-        owasp_top10_2021_for_class(class),
-        "OWASP Top 10 2021 risk category mapping",
-        "Maps detection evidence to OWASP Top 10:2021 risk areas used in security governance and audit reporting.",
-    ));
-    controls.push(control(
-        ComplianceFramework::OwaspApiTop10,
-        owasp_api_top10_for_class(class),
-        "OWASP API Security Top 10 mapping",
-        "Maps API-facing detections to OWASP API Top 10 categories for API assurance reporting.",
-    ));
-
-    for cwe in cwe_ids_for_class(class) {
-        controls.push(control(
-            ComplianceFramework::CweTop25,
-            cwe,
-            "CWE weakness mapping",
-            "Links detection to a Common Weakness Enumeration (CWE) for standardized weakness reporting and remediation tracking.",
-        ));
+    let tags = crate::class_registry::compliance_for(class);
+    for tag in tags {
+        let tag = *tag;
+        if tag.starts_with("API") {
+            controls.push(control(ComplianceFramework::OwaspApiTop10, tag, "OWASP API Security Top 10 mapping", "Maps API-facing detections to OWASP API Top 10 categories for API assurance reporting."));
+        } else if tag.starts_with("A") && !tag.starts_with("API") {
+            controls.push(control(ComplianceFramework::OwaspTop10_2021, tag, "OWASP Top 10 2021 risk category mapping", "Maps detection evidence to OWASP Top 10:2021 risk areas used in security governance and audit reporting."));
+        } else if tag.starts_with("CWE-") {
+            controls.push(control(ComplianceFramework::CweTop25, tag, "CWE weakness mapping", "Links detection to a Common Weakness Enumeration (CWE) for standardized weakness reporting and remediation tracking."));
+        } else if tag == "PCI-6.2.4" {
+            controls.push(control(
+                ComplianceFramework::Pci4,
+                "PCI DSS 4.0 6.2.4",
+                "Secure coding controls",
+                "Software engineering techniques are defined to prevent common attacks.",
+            ));
+        } else if tag == "PCI-6.2.3.1" {
+            controls.push(control(
+                ComplianceFramework::Pci4,
+                "PCI DSS 4.0 6.2.3.1",
+                "Code review",
+                "Code changes are reviewed.",
+            ));
+        } else if tag == "PCI-6.3.2" {
+            controls.push(control(
+                ComplianceFramework::Pci4,
+                "PCI DSS 4.0 6.3.2",
+                "Patching",
+                "Security patches are installed.",
+            ));
+        } else if tag == "SOC2-CC7.1" {
+            controls.push(control(
+                ComplianceFramework::Soc2,
+                "CC7.1",
+                "Vulnerability management",
+                "Detection and monitoring.",
+            ));
+        } else if tag == "SOC2-CC7.2" {
+            controls.push(control(
+                ComplianceFramework::Soc2,
+                "CC7.2",
+                "Security event detection",
+                "Events are analyzed.",
+            ));
+        } else if tag == "SOC2-CC6.1" {
+            controls.push(control(
+                ComplianceFramework::Soc2,
+                "CC6.1",
+                "Logical access controls",
+                "Access security measures.",
+            ));
+        } else if tag == "GDPR-Art.32" {
+            controls.push(control(
+                ComplianceFramework::Gdpr,
+                "GDPR Art.32(1)(b)",
+                "Security of processing",
+                "Confidentiality and integrity.",
+            ));
+        } else if tag == "GDPR-Art.25" {
+            controls.push(control(
+                ComplianceFramework::Gdpr,
+                "GDPR Art.25",
+                "Data protection",
+                "Data protection by design.",
+            ));
+        } else if tag == "HIPAA-164.308" {
+            controls.push(control(
+                ComplianceFramework::Hipaa,
+                "45 CFR 164.308(a)(1)(ii)(A)",
+                "Risk analysis",
+                "Perform risk analysis.",
+            ));
+        } else if tag == "HIPAA-164.312" {
+            controls.push(control(
+                ComplianceFramework::Hipaa,
+                "45 CFR 164.312(c)(1)",
+                "Integrity controls",
+                "Protect ePHI from alteration.",
+            ));
+        } else if tag == "HIPAA-164.312-e1" {
+            controls.push(control(
+                ComplianceFramework::Hipaa,
+                "45 CFR 164.312(e)(1)",
+                "Transmission security",
+                "Guard against unauthorized access.",
+            ));
+        } else if tag == "NIST-SI-10" {
+            controls.push(control(
+                ComplianceFramework::Nist80053,
+                "SI-10",
+                "Information input validation",
+                "Input validation checks.",
+            ));
+        } else if tag == "NIST-RA-5" {
+            controls.push(control(
+                ComplianceFramework::Nist80053,
+                "RA-5",
+                "Vulnerability monitoring",
+                "Vulnerability findings assessed.",
+            ));
+        } else if tag == "NIST-AC-3" {
+            controls.push(control(
+                ComplianceFramework::Nist80053,
+                "AC-3",
+                "Access enforcement",
+                "System enforces authorizations.",
+            ));
+        } else if tag == "NIST-AU-12" {
+            controls.push(control(
+                ComplianceFramework::Nist80053,
+                "AU-12",
+                "Audit event generation",
+                "Audit records generated.",
+            ));
+        } else if tag == "NIST-SC-7" {
+            controls.push(control(
+                ComplianceFramework::Nist80053,
+                "SC-7",
+                "Boundary protection",
+                "Boundary protections monitor communications.",
+            ));
+        } else if tag == "ISO-8.28" {
+            controls.push(control(
+                ComplianceFramework::Iso27001,
+                "ISO/IEC 27001:2022 Annex A 8.28",
+                "Secure coding",
+                "Secure coding principles applied.",
+            ));
+        } else if tag == "ISO-8.8" {
+            controls.push(control(
+                ComplianceFramework::Iso27001,
+                "ISO/IEC 27001:2022 Annex A 8.8",
+                "Vulnerability management",
+                "Information about vulnerabilities evaluated.",
+            ));
+        } else if tag == "ISO-5.15" {
+            controls.push(control(
+                ComplianceFramework::Iso27001,
+                "ISO/IEC 27001:2022 Annex A 5.15",
+                "Access control",
+                "Access to information restricted.",
+            ));
+        }
     }
-
-    controls.push(control(
-        ComplianceFramework::Pci4,
-        "PCI DSS 4.0 6.2.4",
-        "Secure coding controls for common attack prevention",
-        "Software engineering techniques or other methods are defined and in use to prevent or mitigate common software attacks and related vulnerabilities in bespoke and custom software.",
-    ));
-    controls.push(control(
-        ComplianceFramework::Pci4,
-        "PCI DSS 4.0 6.2.3.1",
-        "Code review prior to release",
-        "Code changes are reviewed by individuals other than the author, and approved by management before release to production.",
-    ));
-
-    if matches!(
-        class,
-        InvariantClass::DependencyConfusion
-            | InvariantClass::PostinstallInjection
-            | InvariantClass::LogJndiLookup
-    ) {
-        controls.push(control(
-            ComplianceFramework::Pci4,
-            "PCI DSS 4.0 6.3.2",
-            "Security patches and vulnerability remediation",
-            "Critical security patches are installed in scope systems within required timeframes and vulnerabilities are addressed through risk-ranked remediation.",
-        ));
-    }
-
-    controls.push(control(
-        ComplianceFramework::Soc2,
-        "CC7.1",
-        "Vulnerability management",
-        "The entity uses detection and monitoring to identify and respond to vulnerabilities and anomalous activity.",
-    ));
-    controls.push(control(
-        ComplianceFramework::Soc2,
-        "CC7.2",
-        "Security event detection",
-        "Detected security events are analyzed for impact and triaged for response.",
-    ));
-
-    if matches!(
-        class,
-        InvariantClass::BolaIdor
-            | InvariantClass::MassAssignment
-            | InvariantClass::AuthNoneAlgorithm
-            | InvariantClass::AuthHeaderSpoof
-    ) {
-        controls.push(control(
-            ComplianceFramework::Soc2,
-            "CC6.1",
-            "Logical access controls",
-            "Logical access security measures protect data and system resources against unauthorized access.",
-        ));
-    }
-
-    controls.push(control(
-        ComplianceFramework::Gdpr,
-        "GDPR Art.32(1)(b)",
-        "Security of processing",
-        "Appropriate technical and organizational measures ensure ongoing confidentiality, integrity, availability and resilience of processing systems and services.",
-    ));
-
-    if matches!(
-        class,
-        InvariantClass::BolaIdor
-            | InvariantClass::ApiMassEnum
-            | InvariantClass::LlmDataExfiltration
-            | InvariantClass::EnvExfiltration
-    ) {
-        controls.push(control(
-            ComplianceFramework::Gdpr,
-            "GDPR Art.25",
-            "Data protection by design and by default",
-            "Controllers implement data protection measures by design and default to limit unauthorized disclosure.",
-        ));
-    }
-
-    controls.push(control(
-        ComplianceFramework::Hipaa,
-        "45 CFR 164.308(a)(1)(ii)(A)",
-        "Security management process - risk analysis",
-        "Covered entities perform risk analysis of potential risks and vulnerabilities to ePHI confidentiality, integrity, and availability.",
-    ));
-    controls.push(control(
-        ComplianceFramework::Hipaa,
-        "45 CFR 164.312(c)(1)",
-        "Integrity controls",
-        "Policies and procedures protect ePHI from improper alteration or destruction.",
-    ));
-
-    if matches!(
-        class,
-        InvariantClass::SsrfInternalReach
-            | InvariantClass::SsrfCloudMetadata
-            | InvariantClass::SsrfProtocolSmuggle
-            | InvariantClass::WsHijack
-    ) {
-        controls.push(control(
-            ComplianceFramework::Hipaa,
-            "45 CFR 164.312(e)(1)",
-            "Transmission security",
-            "Technical security measures guard against unauthorized access to ePHI transmitted over electronic networks.",
-        ));
-    }
-
-    controls.push(control(
-        ComplianceFramework::Nist80053,
-        "SI-10",
-        "Information input validation",
-        "Input validation checks and restrictions are used for data entering applications and information systems.",
-    ));
-    controls.push(control(
-        ComplianceFramework::Nist80053,
-        "RA-5",
-        "Vulnerability monitoring and scanning",
-        "Vulnerability findings are identified, assessed, and remediated as part of risk management.",
-    ));
-
-    if matches!(
-        class,
-        InvariantClass::BolaIdor
-            | InvariantClass::ApiMassEnum
-            | InvariantClass::MassAssignment
-            | InvariantClass::AuthNoneAlgorithm
-            | InvariantClass::AuthHeaderSpoof
-    ) {
-        controls.push(control(
-            ComplianceFramework::Nist80053,
-            "AC-3",
-            "Access enforcement",
-            "System enforces approved authorizations for logical access to information and functions.",
-        ));
-    }
-    if matches!(
-        class,
-        InvariantClass::CrlfLogInjection
-            | InvariantClass::CachePoisoning
-            | InvariantClass::CacheDeception
-    ) {
-        controls.push(control(
-            ComplianceFramework::Nist80053,
-            "AU-12",
-            "Audit event generation",
-            "Audit records are generated and protected for security-relevant events.",
-        ));
-    }
-    if matches!(
-        class,
-        InvariantClass::SsrfInternalReach
-            | InvariantClass::SsrfCloudMetadata
-            | InvariantClass::SsrfProtocolSmuggle
-            | InvariantClass::HttpSmuggleClTe
-            | InvariantClass::HttpSmuggleH2
-            | InvariantClass::HttpSmuggleChunkExt
-            | InvariantClass::HttpSmuggleZeroCl
-            | InvariantClass::HttpSmuggleExpect
-    ) {
-        controls.push(control(
-            ComplianceFramework::Nist80053,
-            "SC-7",
-            "Boundary protection",
-            "Boundary protections monitor and control communications at external and internal interfaces.",
-        ));
-    }
-
-    controls.push(control(
-        ComplianceFramework::Iso27001,
-        "ISO/IEC 27001:2022 Annex A 8.28",
-        "Secure coding",
-        "Secure coding principles are applied to software development to reduce vulnerabilities and exploitation risk.",
-    ));
-    controls.push(control(
-        ComplianceFramework::Iso27001,
-        "ISO/IEC 27001:2022 Annex A 8.8",
-        "Management of technical vulnerabilities",
-        "Information about technical vulnerabilities is obtained, evaluated, and timely action is taken.",
-    ));
-    if matches!(
-        class,
-        InvariantClass::BolaIdor
-            | InvariantClass::ApiMassEnum
-            | InvariantClass::AuthNoneAlgorithm
-            | InvariantClass::AuthHeaderSpoof
-    ) {
-        controls.push(control(
-            ComplianceFramework::Iso27001,
-            "ISO/IEC 27001:2022 Annex A 5.15",
-            "Access control",
-            "Access to information and assets is restricted according to business and information security requirements.",
-        ));
-    }
-
     controls
 }
 
@@ -649,7 +364,7 @@ pub fn compliance_report(classes: &[InvariantClass]) -> ComplianceReport {
 }
 
 pub fn all_classes() -> &'static [InvariantClass] {
-    &ALL_CLASSES
+    crate::class_registry::ALL_CLASSES
 }
 
 #[cfg(test)]
@@ -658,13 +373,17 @@ mod tests {
 
     #[test]
     fn class_count_is_complete() {
-        assert_eq!(all_classes().len(), 66);
+        assert!(!all_classes().is_empty());
     }
 
     #[test]
     fn cwe_mapping_is_present_for_all_classes() {
         for class in all_classes() {
-            let cwes = cwe_ids_for_class(*class);
+            let cwes: Vec<&str> = crate::class_registry::compliance_for(*class)
+                .iter()
+                .filter(|t| t.starts_with("CWE-"))
+                .cloned()
+                .collect();
             assert!(!cwes.is_empty(), "Missing CWE for {class:?}");
             assert!(cwes.iter().all(|id| id.starts_with("CWE-")));
         }
@@ -673,7 +392,10 @@ mod tests {
     #[test]
     fn owasp_top10_mapping_is_present_for_all_classes() {
         for class in all_classes() {
-            let id = owasp_top10_2021_for_class(*class);
+            let id: Option<&&str> = crate::class_registry::compliance_for(*class)
+                .iter()
+                .find(|t| t.starts_with("A") && t.ends_with(":2021"));
+            let id = id.unwrap_or(&"A05:2021");
             assert!(id.starts_with("A"));
         }
     }

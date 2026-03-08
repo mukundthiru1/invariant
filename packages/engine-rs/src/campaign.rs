@@ -305,6 +305,14 @@ impl CampaignIntelligence {
             .unwrap_or(0.0)
     }
 
+    /// Get the attack count for a source.
+    pub fn get_attack_count(&self, source_hash: &str) -> usize {
+        self.sessions
+            .get(source_hash)
+            .map(|s| s.signals.len())
+            .unwrap_or(0)
+    }
+
     /// Get the current attack phase for a source.
     pub fn get_attack_phase(&self, source_hash: &str) -> Option<AttackPhase> {
         self.sessions.get(source_hash).map(|s| s.current_phase)

@@ -959,6 +959,44 @@ impl L2Evaluator for XssEvaluator {
             });
         }
 
+        let dom_xss_score = detect_dom_xss(input);
+        if dom_xss_score > 0.6 {
+            detections.push(L2Detection {
+                detection_type: "dom_xss".into(),
+                confidence: dom_xss_score,
+                detail: "DOM-based XSS via browser sink".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "DOM-based XSS sink function invocation detected".into(),
+                    offset: 0,
+                    property: "User input must not be passed into dangerous DOM sinks".into(),
+                }],
+            });
+        }
+
+        static PROTO_XSS_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+        let proto_xss_re = PROTO_XSS_RE.get_or_init(|| Regex::new(r"(?is)(?:__proto__|constructor\s*\[\s*['\x22]?prototype['\x22]?\s*\])\s*(?:\.|\[\s*['\x22]?)(?:innerHTML|src|onload|onerror|on[a-z]+)['\x22]?\s*\]?").unwrap());
+        if let Some(m) = proto_xss_re.find(input) {
+            detections.push(L2Detection {
+                detection_type: "proto_pollution_xss".into(),
+                confidence: 0.87,
+                detail: "Prototype pollution used to overwrite dangerous DOM properties".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input attempts to pollute prototype properties to achieve XSS"
+                        .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not be allowed to assign values to prototype properties"
+                            .into(),
+                }],
+            });
+        }
+
         detections
     }
 
@@ -970,9 +1008,55 @@ impl L2Evaluator for XssEvaluator {
             "protocol_handler" => Some(InvariantClass::XssProtocolHandler),
             "template_expression" => Some(InvariantClass::XssTemplateExpression),
             "attribute_escape" => Some(InvariantClass::XssAttributeEscape),
+            "dom_xss" => Some(InvariantClass::XssTagInjection),
+            "proto_pollution_xss" => Some(InvariantClass::XssTagInjection),
             _ => None,
         }
     }
+}
+
+pub fn detect_dom_xss(input: &str) -> f64 {
+    let mut max_score: f64 = 0.0;
+    static RE_DOC_WRITE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_doc_write = RE_DOC_WRITE.get_or_init(|| {
+        Regex::new(r"(?is)document\.write\s*\(\s*location\.(?:search|hash|href)\s*\)").unwrap()
+    });
+
+    static RE_INNERHTML: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_innerhtml =
+        RE_INNERHTML.get_or_init(|| Regex::new(r"(?is)innerHTML\s*=\s*location\b").unwrap());
+
+    static RE_EVAL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_eval = RE_EVAL.get_or_init(|| {
+        Regex::new(r"(?is)eval\s*\(\s*(?:window\.name|location\.hash)\s*\)").unwrap()
+    });
+
+    static RE_LOCATION_JS: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_location_js = RE_LOCATION_JS
+        .get_or_init(|| Regex::new(r"(?is)window\.location\s*=\s*['\x22]javascript:").unwrap());
+
+    static RE_POSTMESSAGE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let re_postmessage = RE_POSTMESSAGE.get_or_init(|| {
+        Regex::new(r"(?is)addEventListener\s*\(\s*[\x27\x22]message[\x27\x22].*?\.data\b").unwrap()
+    });
+
+    if re_doc_write.is_match(input) {
+        max_score = max_score.max(0.90);
+    }
+    if re_innerhtml.is_match(input) {
+        max_score = max_score.max(0.90);
+    }
+    if re_eval.is_match(input) {
+        max_score = max_score.max(0.95);
+    }
+    if re_location_js.is_match(input) {
+        max_score = max_score.max(0.95);
+    }
+    if re_postmessage.is_match(input) && !input.to_lowercase().contains("origin") {
+        max_score = max_score.max(0.75);
+    }
+
+    max_score
 }
 
 #[cfg(test)]
@@ -1000,6 +1084,34 @@ mod tests {
         let eval = XssEvaluator;
         let dets = eval.detect("<img src=x onerror=alert(1)>");
         assert!(has_any(&dets, &["event_handler", "tag_injection"]));
+    }
+
+    #[test]
+    fn detect_dom_xss_positive() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("document.write(location.hash)");
+        assert!(has_type(&dets, "dom_xss"));
+    }
+
+    #[test]
+    fn detect_dom_xss_negative() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("document.write('Hello World')");
+        assert!(!has_type(&dets, "dom_xss"));
+    }
+
+    #[test]
+    fn detect_proto_pollution_xss_positive() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("__proto__[innerHTML]='<img src=x onerror=alert(1)>'");
+        assert!(has_type(&dets, "proto_pollution_xss"));
+    }
+
+    #[test]
+    fn detect_proto_pollution_xss_negative() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("let obj = { innerHTML: 'test' };");
+        assert!(!has_type(&dets, "proto_pollution_xss"));
     }
 
     #[test]

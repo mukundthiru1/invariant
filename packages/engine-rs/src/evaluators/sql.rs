@@ -954,6 +954,9 @@ impl SqlStructuralEvaluator {
         static MYSQL_VER_COMMENT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is)/\*!\d{3,5}\s*(?:UNION|SELECT|DROP|INSERT|UPDATE|DELETE|SLEEP|BENCHMARK|WAITFOR)\b.*?\*/").unwrap()
         });
+        static MYSQL_VER_WILDCARD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)/\*!\d{5}(?:SELECT|UNION|WHERE|HAVING)\b.*?\*/").unwrap()
+        });
 
         let mut detections = Vec::new();
         for m in MYSQL_VER_COMMENT_RE.find_iter(input) {
@@ -968,6 +971,25 @@ impl SqlStructuralEvaluator {
                     interpretation: "Input hides executable SQL inside MySQL /*!...*/ conditional comment syntax".into(),
                     offset: m.start(),
                     property: "Injected SQL payloads must not introduce hidden executable query paths".into(),
+                }],
+            });
+        }
+        for m in MYSQL_VER_WILDCARD_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "mysql_versioned_comment".into(),
+                confidence: 0.87,
+                detail: "MySQL 5-digit version wildcard bypass".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Input attempts to evade WAF rules with no-space 5-digit versioned comments"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Injected SQL payloads must not introduce hidden executable query paths"
+                            .into(),
                 }],
             });
         }
@@ -2253,6 +2275,41 @@ impl L2Evaluator for SqlStructuralEvaluator {
             }
         }
 
+        let err_score = detect_error_based_sqli(input);
+        if err_score > 0.5 {
+            all_detections.push(L2Detection {
+                detection_type: "error_based_sqli".into(),
+                confidence: err_score,
+                detail: "Error-based SQL injection pattern detected via specific functions".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "Input triggers error-based SQL injection evaluation".into(),
+                    offset: 0,
+                    property: "User input must not trigger error-based SQL evaluation".into(),
+                }],
+            });
+        }
+
+        let sec_score = detect_second_order_sqli(input);
+        if sec_score > 0.5 {
+            all_detections.push(L2Detection {
+                detection_type: "second_order_sqli".into(),
+                confidence: sec_score,
+                detail: "Second-order SQL injection profile/username payload detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation: "Input stores payload for second-order SQL injection".into(),
+                    offset: 0,
+                    property: "User input must not store payloads for delayed SQL evaluation"
+                        .into(),
+                }],
+            });
+        }
+
         all_detections
     }
 
@@ -2281,6 +2338,8 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "group_by_injection" => Some(InvariantClass::SqlUnionExtraction),
             "subquery_injection" => Some(InvariantClass::SqlUnionExtraction),
             "second_order_injection" => Some(InvariantClass::SqlUnionExtraction),
+            "error_based_sqli" => Some(InvariantClass::SqlErrorOracle),
+            "second_order_sqli" => Some(InvariantClass::SqlUnionExtraction),
             "xml_abuse" => Some(InvariantClass::SqlErrorOracle),
             "cte_injection" => Some(InvariantClass::SqlUnionExtraction),
             "db_specific_primitive" => Some(InvariantClass::SqlStackedExecution),
@@ -2326,6 +2385,60 @@ fn strip_injection_prefix(input: &str) -> Vec<std::string::String> {
 fn extract_context(input: &str, pos: usize, max_len: usize) -> std::string::String {
     let end = (pos + max_len).min(input.len());
     input.get(pos..end).unwrap_or("").to_owned()
+}
+
+pub fn detect_error_based_sqli(input: &str) -> f64 {
+    let mut max_score: f64 = 0.0;
+    static RE_EXTRACTVALUE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)extractvalue\s*\(\s*1\s*,\s*[^)]+\)").unwrap()
+    });
+    static RE_UPDATEXML: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)updatexml\s*\(\s*1\s*,\s*[^)]+\)").unwrap());
+    static RE_EXP: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)exp\s*\(\s*~\s*\(\s*select\b").unwrap());
+    static RE_GEOMETRIC: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)(?:polygon|multipoint)\s*\(\s*\(\s*select\b").unwrap()
+    });
+    static RE_FLOOR_RAND: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)floor\s*\(\s*rand\s*\(\s*0\s*\)\s*\*\s*2\s*\).*?group\s+by").unwrap()
+    });
+
+    if RE_EXTRACTVALUE.is_match(input) {
+        max_score = max_score.max(0.92);
+    }
+    if RE_UPDATEXML.is_match(input) {
+        max_score = max_score.max(0.92);
+    }
+    if RE_EXP.is_match(input) {
+        max_score = max_score.max(0.90);
+    }
+    if RE_GEOMETRIC.is_match(input) {
+        max_score = max_score.max(0.88);
+    }
+    if RE_FLOOR_RAND.is_match(input) {
+        max_score = max_score.max(0.91);
+    }
+
+    max_score
+}
+
+pub fn detect_second_order_sqli(input: &str) -> f64 {
+    let mut max_score: f64 = 0.0;
+    static RE_REG_PROFILE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
+            r"(?is)(?:username|email|profile|name)=[^&]*'(?:\s*OR\s*'1'='1|\s*UNION\s+SELECT|--@)",
+        )
+        .unwrap()
+    });
+    static RE_JSON_USERNAME: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?is)"(?:username|email|name)"\s*:\s*"[^"]*'(?:\s*OR\s*'1'='1|\s*UNION\s+SELECT|--@)"#).unwrap()
+    });
+
+    if RE_REG_PROFILE.is_match(input) || RE_JSON_USERNAME.is_match(input) {
+        max_score = max_score.max(0.90);
+    }
+
+    max_score
 }
 
 #[cfg(test)]
@@ -2984,6 +3097,55 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "insert_update_injection")
+        );
+    }
+
+    #[test]
+    fn detect_error_based_sqli_positive() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("extractvalue(1, concat(0x7e, (SELECT version())))");
+        assert!(dets.iter().any(|d| d.detection_type == "error_based_sqli"));
+    }
+
+    #[test]
+    fn detect_error_based_sqli_negative() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("SELECT * FROM users WHERE id = 1");
+        assert!(!dets.iter().any(|d| d.detection_type == "error_based_sqli"));
+    }
+
+    #[test]
+    fn detect_second_order_sqli_positive() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("username=' UNION SELECT 1,2,3--@");
+        assert!(dets.iter().any(|d| d.detection_type == "second_order_sqli"));
+    }
+
+    #[test]
+    fn detect_second_order_sqli_negative() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("username='john.doe'");
+        assert!(!dets.iter().any(|d| d.detection_type == "second_order_sqli"));
+    }
+
+    #[test]
+    fn detect_mysql_versioned_wildcard_positive() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("/*!12345SELECT * FROM users*/");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mysql_versioned_comment")
+        );
+    }
+
+    #[test]
+    fn detect_mysql_versioned_wildcard_negative() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("/*!123456789*/");
+        assert!(
+            !dets
+                .iter()
+                .any(|d| d.detection_type == "mysql_versioned_comment")
         );
     }
 }

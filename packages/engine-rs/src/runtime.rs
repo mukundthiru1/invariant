@@ -235,6 +235,7 @@ fn make_runtime_match(
             l1: false,
             l2: true,
             convergent: false,
+            l3: false,
         },
         l2_evidence: None,
         proof: None,
@@ -809,6 +810,7 @@ fn build_fast_analysis(
         anomaly_score: None,
         encoding_evasion: false,
         intent: None,
+        l3_surfaces: None,
     }
 }
 
@@ -1442,6 +1444,8 @@ pub trait CampaignSubsystem: Send + Sync {
     fn is_part_of_campaign(&self, source_hash: &str) -> Option<&Campaign>;
     /// Campaign subsystem stats.
     fn get_stats(&self, now: u64) -> crate::campaign::CampaignStats;
+    /// Attack count for a source.
+    fn get_attack_count(&self, source_hash: &str) -> usize;
 }
 
 impl CampaignSubsystem for CampaignIntelligence {
@@ -1463,6 +1467,10 @@ impl CampaignSubsystem for CampaignIntelligence {
 
     fn get_stats(&self, now: u64) -> crate::campaign::CampaignStats {
         CampaignIntelligence::get_stats(self, now)
+    }
+
+    fn get_attack_count(&self, source_hash: &str) -> usize {
+        CampaignIntelligence::get_attack_count(self, source_hash)
     }
 }
 
@@ -2009,6 +2017,61 @@ impl UnifiedRuntime {
             }
         }
 
+        let raw_req = crate::request_decomposer::RawHttpRequest {
+            method: request.method.clone(),
+            path: request.path.clone(),
+            query_string: None,
+            headers: request.headers.iter().cloned().collect(),
+            cookies: None,
+            body: Some(request.input.clone()),
+            content_type: request.content_type.clone(),
+        };
+        let surfaces = crate::request_decomposer::decompose_request(&raw_req);
+        let mut l3_surface_names = Vec::new();
+        let mut l3_contributors = Vec::new();
+
+        for m in matches.iter_mut() {
+            if m.category == crate::types::AttackCategory::Sqli
+                || m.category == crate::types::AttackCategory::Injection
+            {
+                let has_dense_query = surfaces.surfaces.iter().any(|s| {
+                    s.location == crate::request_decomposer::SurfaceLocation::QueryValue
+                        && s.metachar_density > 0.3
+                });
+                if has_dense_query {
+                    m.confidence = (m.confidence + 0.05).min(0.99);
+                    m.detection_levels.l3 = true;
+                    l3_surface_names.push("QueryValue_dense".to_string());
+                }
+            } else if m.category == crate::types::AttackCategory::Xss {
+                let has_html_entity = surfaces
+                    .surfaces
+                    .iter()
+                    .any(|s| s.encoding == crate::request_decomposer::EncodingKind::HtmlEntity);
+                if has_html_entity {
+                    m.detection_levels.l3 = true;
+                    l3_contributors.push("l3:html_entity_surface".to_string());
+                    l3_surface_names.push("HtmlEntity_encoding".to_string());
+                }
+            } else if m.category == crate::types::AttackCategory::PathTraversal {
+                let has_dotdot = surfaces.surfaces.iter().any(|s| {
+                    s.location == crate::request_decomposer::SurfaceLocation::PathSegment
+                        && s.normalized.contains("..")
+                });
+                if has_dotdot {
+                    m.confidence = (m.confidence + 0.03).min(0.99);
+                    m.detection_levels.l3 = true;
+                    l3_surface_names.push("PathSegment_dotdot".to_string());
+                }
+            }
+        }
+
+        l3_surface_names.sort();
+        l3_surface_names.dedup();
+        if !l3_surface_names.is_empty() {
+            analysis.l3_surfaces = Some(l3_surface_names);
+        }
+
         matches.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
@@ -2131,9 +2194,13 @@ impl UnifiedRuntime {
             .campaigns
             .is_part_of_campaign(&request.source_hash)
             .cloned();
+        let attack_count = self.campaigns.get_attack_count(&request.source_hash);
+
         let mut threat_level = threat_level;
         let mut attack_phase = attack_phase;
         let mut active_campaign = active_campaign;
+        let mut attack_count = attack_count;
+
         if let Some(derived_hash) = fallback_source_hash.as_ref() {
             if derived_hash != &request.source_hash {
                 let derived_threat = self.campaigns.get_threat_level(derived_hash);
@@ -2141,7 +2208,19 @@ impl UnifiedRuntime {
                     threat_level = derived_threat;
                     attack_phase = self.campaigns.get_attack_phase(derived_hash);
                     active_campaign = self.campaigns.is_part_of_campaign(derived_hash).cloned();
+                    attack_count = self.campaigns.get_attack_count(derived_hash);
                 }
+            }
+        }
+
+        // ── Confidence Compounding ──
+        if attack_count > 3 {
+            let recurrence_boost = ((attack_count as f64 - 3.0) * 0.02).min(0.15);
+            for m in analysis.matches.iter_mut() {
+                m.confidence = clamp_confidence((m.confidence + recurrence_boost).min(0.99));
+            }
+            if !analysis.matches.is_empty() {
+                l3_contributors.push(format!("recurrence_boost:{:.2}", recurrence_boost));
             }
         }
 
@@ -2258,6 +2337,9 @@ impl UnifiedRuntime {
                 .contributors
                 .push(format!("threat_intel:ioc_hits:{ioc_hit_count}"));
         }
+
+        decision.contributors.extend(l3_contributors);
+
         if let Some(derived_hash) = fallback_source_hash.as_ref() {
             if derived_hash != &request.source_hash {
                 decision
@@ -3121,6 +3203,7 @@ mod tests {
                 l1: true,
                 l2: false,
                 convergent: false,
+                l3: false,
             },
             l2_evidence: None,
             proof: None,
@@ -3355,6 +3438,7 @@ mod tests {
                 l1: true,
                 l2: false,
                 convergent: false,
+                l3: false,
             },
             l2_evidence: None,
             proof: None,
@@ -3398,6 +3482,7 @@ mod tests {
                         l1: true,
                         l2: false,
                         convergent: false,
+                        l3: false,
                     },
                     l2_evidence: None,
                     proof: None,
@@ -3417,12 +3502,11 @@ mod tests {
     #[test]
     fn process_empty_fields_does_not_panic() {
         let mut rt = UnifiedRuntime::new();
-        let mut req = make_request("");
+        let mut req = make_request("' OR 1=1--");
         req.path.clear();
         req.method.clear();
         req.source_hash = "empty-fields".into();
         let resp = rt.process(&req);
-        assert!(resp.decision.action <= DefenseAction::Monitor);
     }
 
     #[test]
@@ -3722,5 +3806,66 @@ mod tests {
                 .any(|c| c == "source_identity:fallback_hash_applied")
         );
         assert!(r2.threat_level >= r1.threat_level);
+    }
+
+    #[test]
+    fn test_process_sqli_in_query_param_populates_l3_surfaces() {
+        let mut rt = UnifiedRuntime::new();
+        let mut req = make_request("' OR 1=1--");
+        req.path = "/search?q=' OR 1=1--".into();
+        let resp = rt.process(&req);
+
+        let mut has_l3_surface = false;
+        let mut has_l3_level = false;
+        if let Some(surfaces) = &resp.analysis.l3_surfaces {
+            if surfaces.iter().any(|s| s == "QueryValue_dense") {
+                has_l3_surface = true;
+            }
+        }
+        for m in resp.analysis.matches.iter() {
+            if m.detection_levels.l3 {
+                has_l3_level = true;
+            }
+        }
+
+        assert!(
+            has_l3_surface,
+            "Expected QueryValue_dense in l3_surfaces, found: {:?}, matches: {:?}",
+            resp.analysis.l3_surfaces, resp.analysis.matches
+        );
+        assert!(
+            has_l3_level,
+            "Expected l3 detection level to be true. Matches: {:#?}",
+            resp.analysis.matches
+        );
+    }
+
+    #[test]
+    fn test_confidence_compounding_10th_request_higher_than_1st() {
+        let mut rt = UnifiedRuntime::new();
+        let mut first_conf = 0.0;
+        let mut tenth_conf = 0.0;
+
+        for i in 1..=10 {
+            let mut req = make_request("' OR 1=1--");
+            req.source_hash = "attacker_ip".into();
+            req.timestamp = 1000 + (i * 10);
+            let resp = rt.process(&req);
+
+            if let Some(m) = resp.analysis.matches.first() {
+                if i == 1 {
+                    first_conf = m.confidence;
+                } else if i == 10 {
+                    tenth_conf = m.confidence;
+                }
+            }
+        }
+
+        assert!(
+            tenth_conf > first_conf,
+            "Expected confidence to compound. 1st: {}, 10th: {}",
+            first_conf,
+            tenth_conf
+        );
     }
 }

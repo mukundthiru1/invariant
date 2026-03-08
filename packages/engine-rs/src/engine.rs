@@ -90,7 +90,10 @@ impl InputProfile {
             has_colon: input.contains(':'),
             has_equals: input.contains('='),
             has_dollar: input.contains('$'),
-            has_js_protocol: input.trim_start().to_ascii_lowercase().starts_with("javascript:"),
+            has_js_protocol: input
+                .trim_start()
+                .to_ascii_lowercase()
+                .starts_with("javascript:"),
             has_sql_keyword: SQL_HINT_RE.is_match(input),
             has_url_hint: URL_HINT_RE.is_match(input),
             has_xml_hint: XML_HINT_RE.is_match(input),
@@ -573,10 +576,12 @@ fn should_skip_l1_class(class_id: InvariantClass, profile: &InputProfile) -> boo
                 || profile.has_semicolon
                 || profile.has_percent)
         }
-        AttackCategory::Xss => !(profile.has_angle_bracket
-            || profile.has_quote
-            || profile.has_percent
-            || profile.has_js_protocol),
+        AttackCategory::Xss => {
+            !(profile.has_angle_bracket
+                || profile.has_quote
+                || profile.has_percent
+                || profile.has_js_protocol)
+        }
         AttackCategory::Cmdi => {
             !(profile.has_semicolon || profile.has_dollar || profile.has_shell_hint)
         }
@@ -765,10 +770,10 @@ fn looks_like_search_query(input: &str) -> bool {
 
 fn looks_like_error_echo(input: &str) -> bool {
     let lower = input.to_ascii_lowercase();
-    let err = lower.starts_with("error")
-        || lower.contains("invalid syntax")
-        || lower.contains("syntax error")
-        || lower.contains("near ");
+    static ERR_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^(?:error)|invalid syntax|syntax error|near ").unwrap()
+    });
+    let err = ERR_RE.is_match(&lower);
     err && ["select", "union", "where", "from"]
         .iter()
         .any(|kw| contains_word(&lower, kw))
@@ -971,6 +976,19 @@ pub trait EngineSubsystem: Send + Sync {
 }
 
 /// Production detection engine implementation.
+
+// Threshold constants
+const CONFIDENCE_L2_CONVERGENT_FLOOR: f64 = 0.85;
+const BOOST_CONVERGENT: f64 = 0.05;
+const BOOST_L2_ONLY_PASS2: f64 = 0.02;
+const BOOST_L2_CONTEXT: f64 = 0.01;
+const BOOST_L2_NOVEL_CONTEXT: f64 = 0.03;
+const ATTENUATE_L1_BASE: f64 = 0.85;
+const BOOST_L1_CONTEXT: f64 = 0.02;
+const BOOST_PRIMARY_CONTEXT: f64 = 0.10;
+const BOOST_SECONDARY_CONTEXT: f64 = 0.04;
+const PENALTY_OUT_OF_CONTEXT: f64 = 0.85;
+
 pub struct InvariantEngine {
     classes: &'static [ClassDefinition],
     exceptions: Option<ExceptionConfig>,
@@ -1036,6 +1054,7 @@ impl InvariantEngine {
                     detection_levels: DetectionLevels {
                         l1: true,
                         l2: false,
+                        l3: false,
                         convergent: false,
                     },
                     l2_evidence: None,
@@ -1067,6 +1086,29 @@ impl InvariantEngine {
 
     /// v3 deep detection with optional request-level context used by post-filters.
     #[inline]
+    #[inline]
+    fn apply_context_weighting(
+        &self,
+        match_map: &mut HashMap<InvariantClass, InvariantMatch>,
+        environment: Option<&str>,
+    ) {
+        if let Some(env) = environment {
+            if let Some(ctx) = context_relevance(env) {
+                for (_, m) in match_map.iter_mut() {
+                    if let Some(domain) = class_domain(m.class) {
+                        if ctx.primary.contains(domain) {
+                            m.confidence = (m.confidence + BOOST_PRIMARY_CONTEXT).min(0.99);
+                        } else if ctx.secondary.contains(domain) {
+                            m.confidence = (m.confidence + BOOST_SECONDARY_CONTEXT).min(0.99);
+                        } else {
+                            m.confidence *= PENALTY_OUT_OF_CONTEXT;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     pub fn detect_deep_with_context(
         &self,
         input: &str,
@@ -1189,6 +1231,7 @@ impl InvariantEngine {
                     detection_levels: DetectionLevels {
                         l1: true,
                         l2: true,
+                        l3: false,
                         convergent: true,
                     },
                     l2_evidence: Some(l2r.detail.clone()),
@@ -1228,6 +1271,7 @@ impl InvariantEngine {
                     detection_levels: DetectionLevels {
                         l1: false,
                         l2: true,
+                        l3: false,
                         convergent: false,
                     },
                     l2_evidence: Some(l2r.detail.clone()),
@@ -1265,6 +1309,7 @@ impl InvariantEngine {
                     detection_levels: DetectionLevels {
                         l1: true,
                         l2: false,
+                        l3: false,
                         convergent: false,
                     },
                     l2_evidence: None,
@@ -1298,22 +1343,7 @@ impl InvariantEngine {
             }
         }
 
-        // ── Context-dependent confidence weighting ──
-        if let Some(env) = environment {
-            if let Some(ctx) = context_relevance(env) {
-                for (_, m) in match_map.iter_mut() {
-                    if let Some(domain) = class_domain(m.class) {
-                        if ctx.primary.contains(domain) {
-                            m.confidence = (m.confidence + 0.10).min(0.99);
-                        } else if ctx.secondary.contains(domain) {
-                            m.confidence = (m.confidence + 0.04).min(0.99);
-                        } else {
-                            m.confidence *= 0.85;
-                        }
-                    }
-                }
-            }
-        }
+        self.apply_context_weighting(&mut match_map, environment);
 
         let encoding_boost = encoding_depth_multiplier(canonical.encoding_depth);
         if encoding_boost > 1.0 {
@@ -1427,6 +1457,7 @@ impl InvariantEngine {
                 anomaly_score: None,
                 encoding_evasion: false,
                 intent: None,
+                l3_surfaces: None,
             };
         }
 
@@ -1523,6 +1554,7 @@ impl InvariantEngine {
             anomaly_score: Some(anomaly_profile.anomaly_score),
             encoding_evasion: encoding_ev.is_evasion,
             intent: None,
+            l3_surfaces: None,
         }
     }
 

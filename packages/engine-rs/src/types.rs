@@ -150,107 +150,34 @@ pub enum InvariantClass {
 }
 
 impl InvariantClass {
+    pub fn severity_weight(self) -> f64 {
+        crate::class_registry::severity_for(self)
+    }
+
+    pub fn attack_category(self) -> AttackCategory {
+        crate::class_registry::attack_category_for(self)
+    }
+
+    pub fn mitre_tactic(self) -> crate::mitre::MitreTactic {
+        crate::class_registry::mitre_for(self).1
+    }
+
     /// Attack category for grouping related classes.
     pub fn category(self) -> AttackCategory {
-        use InvariantClass::*;
-        match self {
-            SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
-            | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => {
-                AttackCategory::Sqli
-            }
-
-            XssTagInjection
-            | XssAttributeEscape
-            | XssEventHandler
-            | XssProtocolHandler
-            | XssTemplateExpression => AttackCategory::Xss,
-
-            PathDotdotEscape | PathNullTerminate | PathEncodingBypass | PathNormalizationBypass => {
-                AttackCategory::PathTraversal
-            }
-
-            CmdSeparator | CmdSubstitution | CmdArgumentInjection => AttackCategory::Cmdi,
-
-            SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle => AttackCategory::Ssrf,
-
-            DeserJavaGadget | DeserPhpObject | DeserPythonPickle => AttackCategory::Deser,
-
-            AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse | JwtKidInjection
-            | JwtJwkEmbedding | JwtConfusion => AttackCategory::Auth,
-
-            HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl
-            | HttpSmuggleExpect => AttackCategory::Smuggling,
-
-            _ => AttackCategory::Injection,
-        }
+        crate::class_registry::attack_category_for(self)
     }
 
     /// Default severity when this class is detected.
     pub fn default_severity(self) -> Severity {
-        use InvariantClass::*;
-        match self {
-            // Critical: RCE, full data extraction, credential theft
-            SqlUnionExtraction | SqlStackedExecution | CmdSeparator | CmdSubstitution
-            | DeserJavaGadget | DeserPythonPickle | LogJndiLookup | SstiJinjaTwig
-            | SstiElExpression | SsrfCloudMetadata | XxeEntityExpansion | LlmDataExfiltration
-            | ProtoPollutionGadget | OastInteraction => Severity::Critical,
-
-            // High: significant data access or code execution potential
-            SqlStringTermination
-            | SqlTautology
-            | SqlTimeOracle
-            | SqlErrorOracle
-            | SqlCommentTruncation
-            | JsonSqlBypass
-            | XssTagInjection
-            | XssEventHandler
-            | XssProtocolHandler
-            | PathDotdotEscape
-            | PathEncodingBypass
-            | SsrfInternalReach
-            | SsrfProtocolSmuggle
-            | DeserPhpObject
-            | AuthNoneAlgorithm
-            | AuthHeaderSpoof
-            | ProtoPollution
-            | NosqlOperatorInjection
-            | NosqlJsInjection
-            | CrlfHeaderInjection
-            | HttpSmuggleClTe
-            | HttpSmuggleH2
-            | LlmPromptInjection
-            | LlmJailbreak
-            | JwtKidInjection
-            | JwtJwkEmbedding
-            | JwtConfusion
-            | CachePoisoning
-            | WsInjection
-            | WsHijack
-            | DependencyConfusion
-            | PostinstallInjection
-            | EnvExfiltration
-            | CmdArgumentInjection => Severity::High,
-
-            // Medium: information disclosure, limited impact
-            XssAttributeEscape
-            | XssTemplateExpression
-            | PathNullTerminate
-            | PathNormalizationBypass
-            | CorsOriginAbuse
-            | LdapFilterInjection
-            | XmlInjection
-            | CrlfLogInjection
-            | GraphqlIntrospection
-            | GraphqlBatchAbuse
-            | OpenRedirectBypass
-            | MassAssignment
-            | RegexDos
-            | HttpSmuggleChunkExt
-            | HttpSmuggleZeroCl
-            | HttpSmuggleExpect
-            | CacheDeception
-            | BolaIdor
-            | ApiMassEnum => Severity::Medium,
+        let w = self.severity_weight();
+        if w >= 0.95 {
+            Severity::Critical
+        } else if w >= 0.85 {
+            Severity::High
+        } else if w >= 0.70 {
+            Severity::Medium
+        } else {
+            Severity::Low
         }
     }
 
@@ -538,6 +465,8 @@ pub struct DetectionLevels {
     pub l1: bool,
     /// Structural evaluator fired.
     pub l2: bool,
+    /// L3 surface decomposer fired.
+    pub l3: bool,
     /// L1 and L2 both fired for the same class.
     pub convergent: bool,
 }
@@ -547,6 +476,7 @@ impl Default for DetectionLevels {
         Self {
             l1: false,
             l2: false,
+            l3: false,
             convergent: false,
         }
     }
@@ -861,6 +791,8 @@ pub struct AnalysisResult {
     pub encoding_evasion: bool,
     /// Optional intent classification.
     pub intent: Option<IntentClassification>,
+    /// Optional L3 surface tracking.
+    pub l3_surfaces: Option<Vec<String>>,
 }
 
 impl Default for AnalysisResult {
@@ -880,6 +812,7 @@ impl Default for AnalysisResult {
             anomaly_score: None,
             encoding_evasion: false,
             intent: None,
+            l3_surfaces: None,
         }
     }
 }

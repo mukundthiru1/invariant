@@ -17,6 +17,7 @@ pub mod body_parser;
 pub mod bot_detect;
 pub mod campaign;
 pub mod chain;
+pub mod class_registry;
 pub mod classes;
 pub mod compliance;
 pub mod deception;

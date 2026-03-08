@@ -430,6 +430,7 @@ pub fn detections_to_matches(detections: &[RaspDetection]) -> Vec<InvariantMatch
                 l1: false,
                 l2: false,
                 convergent: false,
+                l3: false,
             },
             l2_evidence: Some(d.evidence.clone()),
             proof: None,
