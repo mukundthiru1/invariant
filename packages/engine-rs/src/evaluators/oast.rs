@@ -35,6 +35,15 @@ const OAST_DOMAINS: &[&str] = &[
     "beeceptor.com",
     "mockbin.org",
     "rbndr.us",
+    "pipedream.net",
+    "requestcatcher.com",
+    "requestinspector.com",
+    "canarytokens.org",
+    "ssrf.king",
+    "canary.tools",
+    "svix.com",
+    "hookbin.com",
+    "postb.in",
 ];
 
 pub struct OastEvaluator;

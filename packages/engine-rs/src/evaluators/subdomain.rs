@@ -39,6 +39,16 @@ const TAKEOVER_FINGERPRINTS: &[(&str, &str)] = &[
     ("Uh oh. That page doesn't exist", "Intercom"),
     ("This page is reserved for", "Webflow"),
     ("The specified account does not exist", "Azure Blob"),
+    ("Application not found", "Railway/Fly.io"),
+    ("No such app", "Fly.io"),
+    ("Service not found", "Render.com"),
+    ("We're sorry, but this workspace isn't available", "Slack"),
+    ("This domain is available for purchase", "Undeveloped"),
+    ("This account has been suspended", "SiteGround"),
+    ("The site you're looking for doesn't exist", "Zendesk"),
+    ("Oops! We can't find this Freshdesk portal", "Freshdesk"),
+    ("We couldn't find what you're looking for", "Launchpad/GitHub"),
+    ("koyeb", "Koyeb"),
 ];
 
 pub struct SubdomainEvaluator;
@@ -104,6 +114,14 @@ impl L2Evaluator for SubdomainEvaluator {
             (".tumblr.com", "Tumblr"),
             (".wordpress.com", "WordPress.com"),
             (".fly.dev", "Fly.io"),
+            (".koyeb.app", "Koyeb"),
+            (".railway.app", "Railway"),
+            (".onrender.com", "Render"),
+            (".azurefd.net", "Azure Front Door"),
+            (".azureedge.net", "Azure CDN"),
+            (".zendesk.com", "Zendesk"),
+            (".freshdesk.com", "Freshdesk"),
+            (".helpscoutdocs.com", "Help Scout"),
         ];
 
         for &(target, service) in &dangling_cname_targets {
