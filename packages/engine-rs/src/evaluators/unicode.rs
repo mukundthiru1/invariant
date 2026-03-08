@@ -12,6 +12,7 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
 
 /// Bidirectional control characters (Unicode).
 const BIDI_CHARS: &[char] = &[
@@ -51,6 +52,30 @@ const HOMOGLYPH_GROUPS: &[(&str, &[char])] = &[
     ("i", &['і', 'ι']),           // Ukrainian і, Greek iota
     ("d", &['ԁ']),                // Cyrillic d
 ];
+
+static UNICODE_NORMALIZATION_BYPASS: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"[\u{2100}-\u{214F}\u{1D400}-\u{1D7FF}\u{2460}-\u{2473}\u{24B6}-\u{24E9}]+")
+        .unwrap()
+});
+
+static UNICODE_VARIATION_SELECTOR: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"[\u{FE00}-\u{FE0F}\u{180B}-\u{180D}]+").unwrap()
+});
+
+static UNICODE_EXTENDED_HOMOGRAPH: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(
+        r"[\u{0430}\u{0435}\u{043E}\u{0440}\u{0441}\u{0445}\u{0443}\u{0455}\u{0456}\u{03B1}\u{03B5}\u{03BF}\u{03C1}\u{0458}]+",
+    )
+    .unwrap()
+});
+
+static UNICODE_LINE_PARA_SEP: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"[\u{2028}\u{2029}]").unwrap()
+});
+
+static UNICODE_NONSTANDARD_WS: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r"[\u{00A0}\u{1680}\u{2000}-\u{200A}\u{202F}\u{205F}\u{3000}\u{2060}]+").unwrap()
+});
 
 pub struct UnicodeEvaluator;
 
@@ -199,6 +224,91 @@ impl L2Evaluator for UnicodeEvaluator {
             });
         }
 
+        // 6. Unicode normalization bypass via mathematical/enclosed alphanumerics
+        if let Some(m) = UNICODE_NORMALIZATION_BYPASS.find(input) {
+            dets.push(L2Detection {
+                detection_type: "unicode_normalization_bypass".into(),
+                confidence: 0.87,
+                detail: "Unicode mathematical/enclosed alphanumeric symbols detected — NFKC normalization bypass".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Mathematical alphanumeric symbols (Unicode block 1D400-1D7FF) and enclosed alphanumerics (2460-24E9) NFKC-normalize to standard ASCII characters. WAFs scanning for ASCII keywords miss these payloads while downstream systems that normalize text execute them".into(),
+                    offset: m.start(),
+                    property: "Input must be NFKC-normalized before keyword scanning. Mathematical and enclosed alphanumeric Unicode blocks must be treated as their ASCII equivalents".into(),
+                }],
+            });
+        }
+
+        // 7. Unicode variation selectors
+        if let Some(m) = UNICODE_VARIATION_SELECTOR.find(input) {
+            dets.push(L2Detection {
+                detection_type: "unicode_variation_selector".into(),
+                confidence: 0.84,
+                detail: "Unicode variation selector characters detected — parser/view mismatch obfuscation".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Unicode variation selectors (U+FE00-FE0F) modify character rendering but are ignored by some parsers while visible to others, enabling payload smuggling through systems with inconsistent Unicode handling".into(),
+                    offset: m.start(),
+                    property: "Variation selector characters must be stripped from all user input as they serve no legitimate purpose in user-generated content and are exclusively used for obfuscation".into(),
+                }],
+            });
+        }
+
+        // 8. Extended Cyrillic/Greek homograph characters
+        if let Some(m) = UNICODE_EXTENDED_HOMOGRAPH.find(input) {
+            dets.push(L2Detection {
+                detection_type: "unicode_extended_homograph".into(),
+                confidence: 0.86,
+                detail: "Extended Cyrillic/Greek lookalike glyphs detected — homograph attack surface".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Cyrillic (а,е,о,р,с,х,у,ѕ,і) and Greek (α,ε,ο,ρ,ψ) characters that are visually identical to Latin letters are used in IDN homograph attacks and bypass ASCII-only security filters by appearing as legitimate domain names or identifiers".into(),
+                    offset: m.start(),
+                    property: "Domain names and identifiers must use Punycode/IDN validation. Mixed-script strings combining Cyrillic or Greek with Latin characters must be flagged as homograph attempts".into(),
+                }],
+            });
+        }
+
+        // 9. Unicode line/paragraph separator injection
+        if let Some(m) = UNICODE_LINE_PARA_SEP.find(input) {
+            dets.push(L2Detection {
+                detection_type: "unicode_line_para_separator".into(),
+                confidence: 0.88,
+                detail: "Unicode line/paragraph separator detected — newline interpretation bypass".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "U+2028 Line Separator and U+2029 Paragraph Separator are interpreted as newlines by JavaScript engines and some XML/HTML parsers. Injecting them into JavaScript string literals that appear single-line to scanners enables comment bypass and code injection".into(),
+                    offset: m.start(),
+                    property: "U+2028 and U+2029 must be escaped or rejected in all user-controlled string contexts, especially in JavaScript templates and JSON responses".into(),
+                }],
+            });
+        }
+
+        // 10. Non-standard whitespace homoglyphs
+        if let Some(m) = UNICODE_NONSTANDARD_WS.find(input) {
+            dets.push(L2Detection {
+                detection_type: "unicode_nonstandard_whitespace".into(),
+                confidence: 0.81,
+                detail: "Non-standard Unicode whitespace detected — tokenization/filter bypass".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Non-standard Unicode whitespace characters (NBSP U+00A0, en-space U+2002, em-space U+2003, narrow no-break U+202F, ideographic space U+3000) bypass ASCII whitespace filters in SQL injection, shell injection, and XSS payloads while being recognized as whitespace by target parsers".into(),
+                    offset: m.start(),
+                    property: "Only ASCII whitespace (0x09, 0x0A, 0x0D, 0x20) should be permitted in security-sensitive contexts. All Unicode whitespace variants must be normalized or rejected".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -208,7 +318,12 @@ impl L2Evaluator for UnicodeEvaluator {
             | "unicode_zero_width"
             | "unicode_homoglyph"
             | "unicode_overlong_utf8"
-            | "unicode_fullwidth" => Some(InvariantClass::UnicodeBypass),
+            | "unicode_fullwidth"
+            | "unicode_normalization_bypass"
+            | "unicode_variation_selector"
+            | "unicode_extended_homograph"
+            | "unicode_line_para_separator"
+            | "unicode_nonstandard_whitespace" => Some(InvariantClass::UnicodeBypass),
             _ => None,
         }
     }
@@ -257,6 +372,56 @@ mod tests {
         let input = "\u{FF1C}script\u{FF1E}alert(1)";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "unicode_fullwidth"));
+    }
+
+    #[test]
+    fn test_normalization_bypass() {
+        let eval = UnicodeEvaluator;
+        let input = "x\u{1D400}y";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "unicode_normalization_bypass"));
+    }
+
+    #[test]
+    fn test_variation_selector() {
+        let eval = UnicodeEvaluator;
+        let input = "safe\u{FE0F}";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "unicode_variation_selector"));
+    }
+
+    #[test]
+    fn test_extended_homograph() {
+        let eval = UnicodeEvaluator;
+        let input = "micro\u{0455}oft.com";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "unicode_extended_homograph"));
+    }
+
+    #[test]
+    fn test_line_sep() {
+        let eval = UnicodeEvaluator;
+        let input = "a\u{2028}b";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "unicode_line_para_separator"));
+    }
+
+    #[test]
+    fn test_nonstandard_ws() {
+        let eval = UnicodeEvaluator;
+        let input = "cmd\u{00A0}arg";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "unicode_nonstandard_whitespace"));
     }
 
     #[test]

@@ -462,6 +462,86 @@ impl L2Evaluator for DeserEvaluator {
             dets.push(mk("php_unserialize_gadget_chain", 0.88, "PHP unserialize with object gadget chains", "PHP serialized object strings with complex gadget chains", "Untrusted PHP unserialization must be avoided", m.as_str(), m.start()));
         }
 
+        // 7. Spring Framework gadget chains
+        static JAVA_SPRING_GADGET: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:org\.springframework\.(?:context\.support\.FileSystemXmlApplicationContext|beans\.factory\.config\.PropertyPathFactoryBean|jndi\.JndiObjectFactoryBean|transaction\.jta\.JtaTransactionManager|core\.SerializableTypeWrapper))").unwrap()
+        });
+        if let Some(m) = JAVA_SPRING_GADGET.find(&decoded) {
+            dets.push(mk(
+                "java_spring_gadget_chain",
+                0.94,
+                &format!("Spring Framework gadget chain: {}", m.as_str()),
+                "Spring Framework gadget classes in serialized payloads are part of known ysoserial gadget chains. FileSystemXmlApplicationContext loads arbitrary XML from attacker-controlled URLs; JndiObjectFactoryBean triggers JNDI lookup leading to RCE",
+                "Java deserialization must use allowlist-based ObjectInputStream. Spring Framework classes must be blocked from appearing in deserialized object graphs",
+                m.as_str(),
+                m.start(),
+            ));
+        }
+
+        // 8. JDK native gadget classes
+        static JAVA_JDK_GADGET: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:com\.sun\.jndi\.(?:rmi|ldap|dns)|javax\.management\.(?:MBeanServerInvocationHandler|BadAttributeValueExpException)|java\.beans\.beancontext\.BeanContextSupport|java\.util\.PriorityQueue.*Comparator|sun\.reflect\.annotation\.AnnotationInvocationHandler)").unwrap()
+        });
+        if let Some(m) = JAVA_JDK_GADGET.find(&decoded) {
+            dets.push(mk(
+                "java_jdk_native_gadget",
+                0.91,
+                &format!("JDK native gadget class: {}", m.as_str()),
+                "JDK built-in classes used in ysoserial gadget chains: com.sun.jndi triggers JNDI injection, BadAttributeValueExpException is used in Commons Collections chain, AnnotationInvocationHandler is used in CC1/CC2 chains leading to RCE",
+                "JDK internal com.sun.* and sun.* classes must be blocked from deserialization. Use serialization allowlisting or avoid native Java deserialization entirely",
+                m.as_str(),
+                m.start(),
+            ));
+        }
+
+        // 9. .NET BinaryFormatter header detection
+        static DOTNET_BINARYFORMATTER_HEADER: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:AAEAAAD/////AQAAAAAAAAAMAgAAAFdTeXN0ZW0u|AAEAAAD/////AQAAAAAAAAAEAQAAAHJTeXN0ZW0u|/wEAAAAMAgAAAFdTeXN0ZW0u|LosFormatter|ObjectStateFormatter)").unwrap()
+        });
+        if let Some(m) = DOTNET_BINARYFORMATTER_HEADER.find(&decoded) {
+            dets.push(mk(
+                "dotnet_binaryformatter_header",
+                0.92,
+                "BinaryFormatter header detected",
+                ".NET BinaryFormatter serialized payload detected via magic header patterns. BinaryFormatter is deprecated/dangerous and can execute arbitrary .NET code via ViewState or session deserialization gadget chains",
+                ".NET BinaryFormatter, LosFormatter, and ObjectStateFormatter must not be used for untrusted data. Migrate to System.Text.Json or JSON.NET with type handling disabled",
+                m.as_str(),
+                m.start(),
+            ));
+        }
+
+        // 10. Python pickle protocol 0/1 opcode bypass
+        static PYTHON_PICKLE_P01_OPCODE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)(?:os\nos\n(?:system|popen|exec|eval)\n|\([^)]{1,64}\nos\n(?:system|popen)\n\.)").unwrap()
+        });
+        if let Some(m) = PYTHON_PICKLE_P01_OPCODE.find(&decoded) {
+            dets.push(mk(
+                "python_pickle_protocol01_opcode",
+                0.89,
+                "Python pickle protocol 0/1 opcode RCE pattern",
+                "Python pickle protocol 0 (ASCII) opcode sequences: the pattern (S...\\nos\\nsystem\\n. is a protocol 0 RCE gadget where os.system is called with the string argument. These bypass base64/binary pickle detection by using ASCII-safe protocol 0 encoding",
+                "Python pickle.load() must never process untrusted data. Use json.loads() or restrict to safe_load() alternatives. Protocol 0 pickles are ASCII and easily smuggled through text channels",
+                m.as_str(),
+                m.start(),
+            ));
+        }
+
+        // 11. PHP POP chain gadget classes
+        static PHP_POP_CHAIN_GADGET: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)O:\d+:["'](?:[Gg]uzzle|Symfony|Illuminate|Monolog|Pimple|Doctrine|Slim|Yii|Zend|CakePHP|CodeIgniter)"#).unwrap()
+        });
+        if let Some(m) = PHP_POP_CHAIN_GADGET.find(&decoded) {
+            dets.push(mk(
+                "php_pop_chain_gadget",
+                0.90,
+                &format!("PHP POP chain gadget class: {}", m.as_str()),
+                "PHP POP (Property-Oriented Programming) chain gadgets from popular frameworks detected in serialized data. Framework class deserialization with __destruct/__wakeup methods chains to arbitrary code execution, file write, or SSRF",
+                "PHP unserialize() must never process untrusted data. Restrict to JSON, validate against a class allowlist, or use Symfony serializer with strict type checking",
+                m.as_str(),
+                m.start(),
+            ));
+        }
+
         dets
     }
 
@@ -477,14 +557,17 @@ impl L2Evaluator for DeserEvaluator {
             | "java_kryo_serial"
             | "java_hessian_serial"
             | "ruby_marshal_load_pattern"
-            | "kryo_hessian_serialization" => Some(InvariantClass::DeserJavaGadget),
+            | "kryo_hessian_serialization"
+            | "java_spring_gadget_chain"
+            | "java_jdk_native_gadget" => Some(InvariantClass::DeserJavaGadget),
             "php_object"
             | "php_pop_chain"
             | "php_base64_serial"
             | "php_magic_method_chain"
             | "php_phar_deser"
             | "php_gadget_object_chain"
-            | "php_unserialize_gadget_chain" => Some(InvariantClass::DeserPhpObject),
+            | "php_unserialize_gadget_chain"
+            | "php_pop_chain_gadget" => Some(InvariantClass::DeserPhpObject),
             "python_pickle"
             | "python_reduce"
             | "python_pickle_base64"
@@ -498,7 +581,9 @@ impl L2Evaluator for DeserEvaluator {
             | "node_unserialize_gadget"
             | "python_pickle_rce_pattern"
             | "yaml_unsafe_load_rce"
-            | "nodejs_proto_merge" => Some(InvariantClass::DeserPythonPickle),
+            | "nodejs_proto_merge"
+            | "dotnet_binaryformatter_header"
+            | "python_pickle_protocol01_opcode" => Some(InvariantClass::DeserPythonPickle),
             _ => None,
         }
     }
@@ -743,5 +828,40 @@ mod tests {
         let eval = DeserEvaluator;
         let dets = eval.detect("O:12:\"My\\Namespace\":1:{");
         assert!(dets.iter().any(|d| d.detection_type == "php_unserialize_gadget_chain"));
+    }
+
+    #[test]
+    fn test_spring_gadget() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("org.springframework.context.support.FileSystemXmlApplicationContext");
+        assert!(dets.iter().any(|d| d.detection_type == "java_spring_gadget_chain"));
+    }
+
+    #[test]
+    fn test_jdk_gadget() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("com.sun.jndi.rmi.registry.RegistryContext");
+        assert!(dets.iter().any(|d| d.detection_type == "java_jdk_native_gadget"));
+    }
+
+    #[test]
+    fn test_binaryformatter_header() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("AAEAAAD/////AQAAAAAAAAAEAQAAAHJTeXN0ZW0u");
+        assert!(dets.iter().any(|d| d.detection_type == "dotnet_binaryformatter_header"));
+    }
+
+    #[test]
+    fn test_pickle_protocol0() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("os\nos\nsystem\n.");
+        assert!(dets.iter().any(|d| d.detection_type == "python_pickle_protocol01_opcode"));
+    }
+
+    #[test]
+    fn test_php_pop_chain() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("O:10:\"GuzzleHttp");
+        assert!(dets.iter().any(|d| d.detection_type == "php_pop_chain_gadget"));
     }
 }
