@@ -68,6 +68,22 @@ static PHAR_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
 static ZIP_WRAPPER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)zip://[^#]*#").unwrap());
 static EXPECT_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)expect://").unwrap());
+static WINDOWS_DEVICE_NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[\\/])(?:NUL|CON|PRN|AUX|COM[1-9]|LPT[1-9])(?:\.[^\\/]*)?(?:$|[\\/])|\\\\\.\\(?:NUL|CON|PRN|AUX|COM[1-9]|LPT[1-9])\b").unwrap()
+});
+static ALTERNATE_DATA_STREAM_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)[a-zA-Z0-9_\-]+\.[a-zA-Z0-9]+:(?:Zone\.Identifier|\$DATA|\$INDEX_ALLOCATION|[a-zA-Z][a-zA-Z0-9_\-]*\.(?:exe|dll|bat|ps1|cmd|vbs))").unwrap()
+});
+static VERBATIM_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:\\\\[?\\]|\\?\\)(?:UNC\\|[a-zA-Z]:\\|GLOBALROOT\\|Device\\)").unwrap()
+});
+static NULL_BYTE_UNICODE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:%C0%80|%E0%80%80|%F0%80%80%80|%u0000|\\x00|\\u0000|\\0)").unwrap()
+});
+static NT_DEVICE_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\\\\[.\\]\\(?:[a-zA-Z]+[0-9]*|GLOBALROOT|Device\\[a-zA-Z]+Volume[0-9]+)\b")
+        .unwrap()
+});
 
 impl L2Evaluator for PathTraversalEvaluator {
     fn id(&self) -> &'static str {
@@ -339,6 +355,86 @@ impl L2Evaluator for PathTraversalEvaluator {
             });
         }
 
+        if let Some(m) = WINDOWS_DEVICE_NAME_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_windows_device_name".into(),
+                confidence: 0.88,
+                detail: format!("Windows device name in path input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Windows device names (NUL, CON, PRN, AUX, COM1-9, LPT1-9) cause DoS or bypass extension filters when used as filenames. file.txt:NUL and C:\\CON\\secret.txt are valid Windows paths that bypass naive path validation.".into(),
+                    offset: m.start(),
+                    property: "Windows device names must be rejected from all file path inputs. Normalize paths and check for device name prefixes before file operations.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = ALTERNATE_DATA_STREAM_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_alternate_data_stream".into(),
+                confidence: 0.90,
+                detail: format!("Windows alternate data stream path: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Windows NTFS alternate data streams (file.txt:hidden.exe) hide executable content in legitimate files. Zone.Identifier stream reveals download origin. Attackers use ADS to smuggle malware alongside benign files.".into(),
+                    offset: m.start(),
+                    property: "File operations must reject paths containing the : character on Windows except for drive letter prefixes. ADS access must be blocked via filesystem-level controls.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = VERBATIM_PREFIX_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_verbatim_prefix".into(),
+                confidence: 0.89,
+                detail: format!("Windows verbatim path prefix in input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Verbatim path prefixes \\\\?\\ and \\??\\ bypass path canonicalization and length limits in Windows. They prevent normalization of ../ sequences and allow accessing device paths directly, bypassing security filters.".into(),
+                    offset: m.start(),
+                    property: "\\\\?\\ and \\??\\ verbatim path prefixes must be rejected from user input. All paths must be canonicalized via GetFullPathNameW before security checks.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NULL_BYTE_UNICODE_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_null_byte_unicode".into(),
+                confidence: 0.85,
+                detail: format!("Overlong/non-standard null-byte variant in path: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Overlong UTF-8 null bytes (%C0%80 decodes to U+0000) bypass NULL byte detection in validators that check only for %00 or literal \\0. Many C-based servers still truncate strings at overlong nulls after URL decoding.".into(),
+                    offset: m.start(),
+                    property: "All NULL byte variants must be detected: %00, %C0%80, %E0%80%80, \\x00, \\u0000, \\0. Input must be rejected at the earliest layer if any NULL byte representation is found.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NT_DEVICE_PREFIX_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_nt_device_prefix".into(),
+                confidence: 0.89,
+                detail: format!("Windows NT device object path prefix: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "\\\\.\\PhysicalDrive0 and \\\\.\\Device paths provide raw disk access in Windows, bypassing filesystem permissions. GLOBALROOT paths can reference kernel objects. These are used for privilege escalation and data exfiltration at the raw device level.".into(),
+                    offset: m.start(),
+                    property: "\\\\. and \\\\. NT device object paths must be rejected from all user input. Raw device access must never be reachable through user-controlled path parameters.".into(),
+                }],
+            });
+        }
+
         // Count traversal tokens
         let traversal_count = tokens
             .iter()
@@ -431,7 +527,12 @@ impl L2Evaluator for PathTraversalEvaluator {
             | "path_data_uri_wrapper"
             | "path_phar_wrapper"
             | "path_zip_wrapper"
-            | "path_expect_wrapper" => Some(InvariantClass::PathEncodingBypass),
+            | "path_expect_wrapper"
+            | "path_windows_device_name"
+            | "path_alternate_data_stream"
+            | "path_nt_device_prefix" => Some(InvariantClass::PathEncodingBypass),
+            "path_verbatim_prefix" => Some(InvariantClass::PathNormalizationBypass),
+            "path_null_byte_unicode" => Some(InvariantClass::PathNullTerminate),
             _ => None,
         }
     }
@@ -624,6 +725,56 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "path_expect_wrapper")
+        );
+    }
+
+    #[test]
+    fn test_windows_device_name() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("/path/CON/file.txt");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_windows_device_name")
+        );
+    }
+
+    #[test]
+    fn test_alternate_data_stream() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("report.pdf:Zone.Identifier");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_alternate_data_stream")
+        );
+    }
+
+    #[test]
+    fn test_verbatim_prefix() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect(r"\\?\C:\Windows\secret.txt");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_verbatim_prefix")
+        );
+    }
+
+    #[test]
+    fn test_null_byte_unicode() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("%C0%80etc%C0%80passwd");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_null_byte_unicode")
+        );
+    }
+
+    #[test]
+    fn test_nt_device_prefix() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect(r"\\.\PhysicalDrive0");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_nt_device_prefix")
         );
     }
 

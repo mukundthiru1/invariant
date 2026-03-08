@@ -548,12 +548,112 @@ impl L2Evaluator for SstiEvaluator {
             });
         }
 
+        // Go template injection
+        static GO_TEMPLATE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)\{\{\s*(?:\.[a-zA-Z_][a-zA-Z0-9_]*|template\s+["'][a-zA-Z_][a-zA-Z0-9_]*["']\s*\.|define\s+["'][a-zA-Z_][a-zA-Z0-9_]*["']|range\s+\.|if\s+\.)\s*\}\}"#).unwrap()
+        });
+        if let Some(m) = GO_TEMPLATE_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_go_template".into(),
+                confidence: 0.89,
+                detail: format!("Go template injection payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Go text/template and html/template allow accessing struct fields with {{.Field}} and calling methods with {{.Method}}. Template injection via {{define}} or {{template}} can load attacker-defined templates and exfiltrate data through {{.}} context exposure.".into(),
+                    offset: m.start(),
+                    property: "Go template rendering must only accept pre-compiled templates. User input must never be passed to template.Parse() or template.New().Parse().".into(),
+                }],
+            });
+        }
+
+        // Ruby ERB info leak
+        static ERB_INFO_LEAK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"<%[=\-]?\s*(?:@[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*|ENV\s*\[\s*['][^'"]+['"]\s*\]|params\s*\[\s*:[a-zA-Z_][a-zA-Z0-9_]*\s*\]|session\s*\[\s*:[a-zA-Z_][a-zA-Z0-9_]*\s*\])"#).unwrap()
+        });
+        if let Some(m) = ERB_INFO_LEAK_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_erb_info_leak".into(),
+                confidence: 0.85,
+                detail: format!("Ruby ERB info leak payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Ruby ERB <%= %> tags accessing instance variables (@user.password), ENV hash (ENV[\"SECRET_KEY\"]), params, or session cookies can disclose sensitive server-side data when user-controlled content is passed to ERB.new.result().".into(),
+                    offset: m.start(),
+                    property: "Ruby ERB must never render untrusted templates. Instance variables, ENV, params, and session must not be accessible through template injection.".into(),
+                }],
+            });
+        }
+
+        // Velocity advanced RCE
+        static VELOCITY_ADVANCED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)(?:\$class\.inspect\s*\(\s*[']java\.lang\.[a-zA-Z]+[']\s*\)|#evaluate\s*\(\s*['][^']*(?:getClass|forName|Runtime|exec)[']\s*\)|\$[a-zA-Z_][a-zA-Z0-9_]*\.(?:getClass\(\)|exec\s*\(|forName\s*\())"#).unwrap()
+        });
+        if let Some(m) = VELOCITY_ADVANCED_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_velocity_advanced".into(),
+                confidence: 0.87,
+                detail: format!("Velocity advanced RCE payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Velocity $class.inspect() and #evaluate() directives allow loading arbitrary Java classes by name. Combined with java.lang.Runtime, this achieves RCE.".into(),
+                    offset: m.start(),
+                    property: "Velocity template rendering must use SecureUberspector and disable ClassTool.".into(),
+                }],
+            });
+        }
+
+        // Mako exec/eval
+        static MAKO_EXEC_EVAL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)(?:<%[!%]\s*(?:exec|eval)\s*\(|<%\s*exec\s+[^%]+%>|\$\{\s*__import__\s*\(\s*[']os[']\s*\)(?:\.popen|\.system)\s*\()"#).unwrap()
+        });
+        if let Some(m) = MAKO_EXEC_EVAL_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_mako_exec_eval".into(),
+                confidence: 0.91,
+                detail: format!("Mako exec/eval payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Mako <%! module-level block and ${ } expressions can call exec()/eval() and import os to execute arbitrary commands. Mako has no sandboxing.".into(),
+                    offset: m.start(),
+                    property: "Mako templates must not accept user-controlled template strings. Module-level blocks (<%! %>) must be rejected entirely from user input.".into(),
+                }],
+            });
+        }
+
+        // OGNL direct injection
+        static OGNL_DIRECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)(?:%\{\s*#[a-zA-Z_]|\$\{\s*#[a-zA-Z_][a-zA-Z0-9_]*\s*=\s*@ognl\.OgnlContext|@\s*[a-zA-Z_][a-zA-Z0-9_.]*@[a-zA-Z_][a-zA-Z0-9_]*\s*\()"#).unwrap()
+        });
+        if let Some(m) = OGNL_DIRECT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_ognl_direct".into(),
+                confidence: 0.93,
+                detail: format!("OGNL direct injection payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "OGNL %{#context[...]} expressions used in Struts 2 allow accessing the ActionContext, overriding member access, and executing arbitrary Java code. The #_memberAccess override pattern bypasses security manager restrictions.".into(),
+                    offset: m.start(),
+                    property: "OGNL expression evaluation must be disabled or restricted. User input must never be passed to OGNL.parseExpression(). Struts 2 must use the SecurityMemberAccess patch.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "ssti_jinja" | "ssti_probe" | "ssti_freemarker" | "ssti_velocity" | "ssti_erb" => {
+            "ssti_jinja" | "ssti_probe" | "ssti_freemarker" | "ssti_velocity" | "ssti_erb" | "ssti_go_template" | "ssti_erb_info_leak" | "ssti_velocity_advanced" | "ssti_mako_exec_eval" | "ssti_ognl_direct" => {
                 Some(InvariantClass::SstiJinjaTwig)
             }
             "ssti_spel_runtime" | "ssti_el_injection" => Some(InvariantClass::SstiElExpression),
@@ -756,5 +856,40 @@ mod tests {
         assert!(dets.iter().any(|d| {
             d.detection_type == "ssti_template_comment_bypass" && d.confidence > 0.75
         }));
+    }
+
+    #[test]
+    fn test_go_template() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("{{.Secret}}");
+        assert!(dets.iter().any(|d| d.detection_type == "ssti_go_template"));
+    }
+
+    #[test]
+    fn test_erb_info_leak() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("<%= ENV['SECRET'] %>");
+        assert!(dets.iter().any(|d| d.detection_type == "ssti_erb_info_leak"));
+    }
+
+    #[test]
+    fn test_velocity_advanced() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("$class.inspect('java.lang.Runtime')");
+        assert!(dets.iter().any(|d| d.detection_type == "ssti_velocity_advanced"));
+    }
+
+    #[test]
+    fn test_mako_exec() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("<%! exec('id') %>");
+        assert!(dets.iter().any(|d| d.detection_type == "ssti_mako_exec_eval"));
+    }
+
+    #[test]
+    fn test_ognl_direct() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("%{#context['com.opensymphony.xwork2']}");
+        assert!(dets.iter().any(|d| d.detection_type == "ssti_ognl_direct"));
     }
 }

