@@ -212,6 +212,86 @@ impl L2Evaluator for UploadEvaluator {
             }
         }
 
+        // 7. Zip slip / archive path traversal
+        if lower.contains("filename=") && (lower.contains("../") || lower.contains("..\\") || lower.contains("%2e%2e") || lower.contains("..%2f") || lower.contains("..%5c")) {
+            let pos = lower.find("filename=").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "upload_zip_slip".into(),
+                confidence: 0.93,
+                detail: "Archive entry filename contains path traversal (..). During extraction, files are written outside the target directory (zip slip). This enables writing webshells to executable directories, overwriting config files, or planting cron jobs.".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: decoded[pos..decoded.len().min(pos + 40)].to_string(),
+                    interpretation: "Archive entry filename contains path traversal (..). During extraction, files are written outside the target directory (zip slip). This enables writing webshells to executable directories, overwriting config files, or planting cron jobs.".into(),
+                    offset: pos,
+                    property: "Archive extraction must validate that resolved paths remain within the target extraction directory.".into(),
+                }],
+            });
+        }
+
+        // 8. Malicious .htaccess / web.config upload
+        if let Ok(re) = regex::Regex::new(r#"(?i)(?:^|/)(?:\.htaccess|web\.config|\.(user\.ini|htpasswd|htdigest|php\.ini|ini))(?:['"]|$|\s)"#) {
+            if let Some(mat) = re.find(&decoded) {
+                dets.push(L2Detection {
+                    detection_type: "upload_config_override".into(),
+                    confidence: 0.92,
+                    detail: "Upload of server configuration file (.htaccess, web.config, .user.ini) can override PHP execution rules, enable directory listing, redirect requests, or cause the server to execute non-PHP files as PHP. This enables code execution without uploading a .php file.".into(),
+                    position: mat.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::ContextEscape,
+                        matched_input: mat.as_str().to_string(),
+                        interpretation: "Upload of server configuration file (.htaccess, web.config, .user.ini) can override PHP execution rules, enable directory listing, redirect requests, or cause the server to execute non-PHP files as PHP. This enables code execution without uploading a .php file.".into(),
+                        offset: mat.start(),
+                        property: "File uploads must reject server configuration files.".into(),
+                    }],
+                });
+            }
+        }
+
+        // 9. Content-Type mismatch
+        if let Ok(re_ct) = regex::Regex::new(r#"(?im)^content-type\s*:\s*(image/|text/plain)"#) {
+            if re_ct.is_match(&decoded) {
+                for &exec in EXECUTABLE_EXTENSIONS {
+                    if lower.contains(exec) {
+                        let pos = lower.find(exec).unwrap_or(0);
+                        dets.push(L2Detection {
+                            detection_type: "upload_content_type_mismatch".into(),
+                            confidence: 0.87,
+                            detail: "Content-Type header claims the file is an image or plain text, but the filename contains an executable extension. Servers that trust Content-Type over extension validation accept the dangerous file while believing it is safe.".into(),
+                            position: pos,
+                            evidence: vec![ProofEvidence {
+                                operation: EvidenceOperation::ContextEscape,
+                                matched_input: decoded[pos..decoded.len().min(pos + 40)].to_string(),
+                                interpretation: "Content-Type header claims the file is an image or plain text, but the filename contains an executable extension. Servers that trust Content-Type over extension validation accept the dangerous file while believing it is safe.".into(),
+                                offset: pos,
+                                property: "File extension must match the declared Content-Type and its actual content.".into(),
+                            }],
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 10. XML/SVG XXE in upload
+        if (lower.contains("<svg") || lower.contains("<?xml")) && lower.contains("<!doctype") && lower.contains("<!entity") {
+            let pos = lower.find("<!entity").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "upload_xxe".into(),
+                confidence: 0.91,
+                detail: "Uploaded SVG or XML file contains a DOCTYPE with ENTITY declaration. When the server parses this file (for validation, resizing, or rendering), the XML parser fetches external entities, enabling SSRF and local file disclosure (/etc/passwd, internal service endpoints).".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos..decoded.len().min(pos + 40)].to_string(),
+                    interpretation: "Uploaded SVG or XML file contains a DOCTYPE with ENTITY declaration. When the server parses this file (for validation, resizing, or rendering), the XML parser fetches external entities, enabling SSRF and local file disclosure (/etc/passwd, internal service endpoints).".into(),
+                    offset: pos,
+                    property: "XML parsers must disable external entity resolution (XXE) when processing untrusted SVG or XML uploads.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -222,7 +302,11 @@ impl L2Evaluator for UploadEvaluator {
             | "upload_semicolon_bypass"
             | "upload_svg_xss"
             | "upload_polyglot"
-            | "upload_webshell" => Some(InvariantClass::MaliciousUpload),
+            | "upload_webshell"
+            | "upload_zip_slip"
+            | "upload_config_override"
+            | "upload_content_type_mismatch"
+            | "upload_xxe" => Some(InvariantClass::MaliciousUpload),
             _ => None,
         }
     }
@@ -281,5 +365,33 @@ mod tests {
             eval.map_class("upload_webshell"),
             Some(InvariantClass::MaliciousUpload)
         );
+    }
+
+    #[test]
+    fn detects_zip_slip() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("filename=../../../etc/passwd");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_zip_slip"));
+    }
+
+    #[test]
+    fn detects_config_override() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("filename=\"/.htaccess\"");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_config_override"));
+    }
+
+    #[test]
+    fn detects_content_type_mismatch() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("Content-Type: image/jpeg\r\n\r\nfilename=\"shell.php\"");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_content_type_mismatch"));
+    }
+
+    #[test]
+    fn detects_xxe_in_upload() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect(r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg>&xxe;</svg>"#);
+        assert!(dets.iter().any(|d| d.detection_type == "upload_xxe"));
     }
 }

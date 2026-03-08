@@ -150,6 +150,91 @@ impl L2Evaluator for DosEvaluator {
             });
         }
 
+        // 6. Slowloris / slow HTTP headers
+        let mut is_slowloris = false;
+        if lower.matches("x-a:").count() >= 50 {
+            is_slowloris = true;
+        } else if lower.contains("content-length:") {
+            if let Ok(re) = regex::Regex::new(r"(?im)^content-length\s*:\s*(\d+)") {
+                if let Some(captures) = re.captures(input) {
+                    if let Ok(declared_length) = captures[1].parse::<u64>() {
+                        if declared_length >= 100_000 {
+                            let body_start = if let Some(idx) = input.find("\r\n\r\n") {
+                                idx + 4
+                            } else if let Some(idx) = input.find("\n\n") {
+                                idx + 2
+                            } else {
+                                input.len()
+                            };
+                            let body_len = input.len() - body_start;
+                            if body_len < 100 {
+                                is_slowloris = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if is_slowloris {
+            dets.push(L2Detection {
+                detection_type: "dos_slowloris".into(),
+                confidence: 0.82,
+                detail: "Slowloris attack or incomplete HTTP headers".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(100)].to_string(),
+                    interpretation: "Slowloris attack: client declares a large Content-Length but sends the body extremely slowly (or not at all), keeping the server connection open indefinitely and exhausting connection slots. The X-a header trick sends partial headers to keep keep-alive connections alive without completing the request.".into(),
+                    offset: 0,
+                    property: "Implement request timeouts, connection limits, and body completion deadlines. Reverse proxies must enforce minimum request transmission rates.".into(),
+                }],
+            });
+        }
+
+        // 7. YAML anchor bomb
+        let is_yaml_bomb = (lower.contains("---") && lower.matches('&').count() >= 3 && lower.matches('*').count() >= 10)
+            || (lower.contains("&a") && lower.matches("*a").count() >= 5);
+        
+        if is_yaml_bomb {
+            dets.push(L2Detection {
+                detection_type: "dos_yaml_bomb".into(),
+                confidence: 0.91,
+                detail: "YAML anchor bomb detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(100)].to_string(),
+                    interpretation: "YAML anchor bomb (analogous to XML billion laughs): anchors (&a) define a node once, aliases (*a) expand it each time they appear. Nested anchors create exponential memory expansion. A YAML document of <100 bytes can expand to gigabytes when parsed.".into(),
+                    offset: 0,
+                    property: "YAML parsers must limit alias expansion depth and the total number of alias expansions. Disable recursive/nested anchors entirely, or set a maximum expansion budget.".into(),
+                }],
+            });
+        }
+
+        // 8. GraphQL complexity bomb
+        let is_graphql_bomb = lower.contains("query") && (
+            lower.matches("...").count() >= 5
+            || lower.matches("__typename").count() >= 10
+            || (lower.contains('{') && max_depth >= 10)
+        );
+        
+        if is_graphql_bomb {
+            dets.push(L2Detection {
+                detection_type: "dos_graphql_complexity".into(),
+                confidence: 0.85,
+                detail: "GraphQL complexity bomb detected".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(100)].to_string(),
+                    interpretation: "GraphQL complexity bomb: deeply nested queries or massively spread fragments create O(n^depth) field resolution. Without query complexity limits, a single request can trigger millions of resolver calls, exhausting CPU and memory.".into(),
+                    offset: 0,
+                    property: "GraphQL endpoints must enforce query depth limits (typically ≤10), query complexity budgets, and field-count caps. Expensive queries must be rejected before execution begins.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -159,7 +244,10 @@ impl L2Evaluator for DosEvaluator {
             | "dos_deep_nesting"
             | "dos_hash_collision"
             | "dos_payload_size"
-            | "dos_quantifier_bomb" => Some(InvariantClass::DenialOfService),
+            | "dos_quantifier_bomb"
+            | "dos_slowloris"
+            | "dos_yaml_bomb"
+            | "dos_graphql_complexity" => Some(InvariantClass::DenialOfService),
             _ => None,
         }
     }
@@ -212,5 +300,29 @@ mod tests {
             eval.map_class("dos_xml_bomb"),
             Some(InvariantClass::DenialOfService)
         );
+    }
+
+    #[test]
+    fn test_slowloris_large_content_length() {
+        let eval = DosEvaluator;
+        let input = "POST /upload HTTP/1.1\r\nContent-Length: 100000\r\n\r\nX";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "dos_slowloris"));
+    }
+
+    #[test]
+    fn test_yaml_anchor_bomb() {
+        let eval = DosEvaluator;
+        let input = "---\na: &a [*a, *a, *a, *a, *a, *a, *a, *a, *a, *a]";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "dos_yaml_bomb"));
+    }
+
+    #[test]
+    fn test_graphql_complexity_bomb() {
+        let eval = DosEvaluator;
+        let input = "query { ...F1 ...F2 ...F3 ...F4 ...F5 }";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "dos_graphql_complexity"));
     }
 }

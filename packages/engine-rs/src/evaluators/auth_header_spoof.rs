@@ -273,6 +273,131 @@ impl L2Evaluator for AuthHeaderSpoofEvaluator {
             });
         }
 
+        let mut forwarded_hits = Vec::new();
+        for value in header_values(&headers, "Forwarded") {
+            let lower = value.to_ascii_lowercase();
+            if lower.contains("for=127.")
+                || lower.contains("for=10.")
+                || lower.contains("for=192.168.")
+                || lower.contains("for=::1")
+                || lower.contains("for=localhost")
+            {
+                forwarded_hits.push(format!("Forwarded: {}", value));
+            }
+        }
+        if !forwarded_hits.is_empty() {
+            detections.push(L2Detection {
+                detection_type: "auth_forwarded_header_spoof".into(),
+                confidence: 0.86,
+                detail: format!(
+                    "RFC 7239 Forwarded header includes internal/loopback for= values: {}",
+                    forwarded_hits.join("; ")
+                ),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: forwarded_hits.join("; "),
+                    interpretation: "RFC 7239 Forwarded header contains an internal/loopback IP in the for= parameter. This structured proxy header is increasingly supported by modern frameworks and can be used to bypass IP-based access controls in the same way as X-Forwarded-For.".into(),
+                    offset: 0,
+                    property: "RFC 7239 Forwarded header must not be trusted from untrusted clients. Only accept forwarding headers from verified proxy endpoints.".into(),
+                }],
+            });
+        }
+
+        let method_override_headers = [
+            "X-HTTP-Method-Override",
+            "X-Method-Override",
+            "X-HTTP-Method",
+        ];
+        let dangerous_methods = ["DELETE", "PUT", "PATCH", "CONNECT", "TRACE", "OPTIONS", "HEAD"];
+        let mut method_override_hits = Vec::new();
+        for name in method_override_headers {
+            for value in header_values(&headers, name) {
+                let upper = value.trim().to_ascii_uppercase();
+                if dangerous_methods.contains(&upper.as_str()) {
+                    method_override_hits.push(format!("{}: {}", name, value));
+                }
+            }
+        }
+        if !method_override_hits.is_empty() {
+            detections.push(L2Detection {
+                detection_type: "auth_method_override".into(),
+                confidence: 0.84,
+                detail: format!(
+                    "HTTP method override headers indicate unsafe method tunneling: {}",
+                    method_override_hits.join("; ")
+                ),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: method_override_hits.join("; "),
+                    interpretation: "HTTP method override headers (X-HTTP-Method-Override) allow changing the HTTP method on a request. Some frameworks honor these headers to work around firewall restrictions. Attackers can use them to invoke DELETE/PUT/PATCH endpoints through GET-only attack vectors or bypass method-based access controls.".into(),
+                    offset: 0,
+                    property: "Method override headers must not be accepted from untrusted clients. Method-based access controls must use the actual HTTP method, not override headers.".into(),
+                }],
+            });
+        }
+
+        let proxy_values = header_values(&headers, "Proxy");
+        if proxy_values.iter().any(|v| !v.trim().is_empty()) {
+            let proxy_hits: Vec<String> = proxy_values
+                .iter()
+                .map(|v| format!("Proxy: {}", v))
+                .collect();
+            detections.push(L2Detection {
+                detection_type: "auth_httpoxy".into(),
+                confidence: 0.90,
+                detail: format!(
+                    "Proxy header present (httpoxy risk): {}",
+                    proxy_hits.join("; ")
+                ),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: proxy_hits.join("; "),
+                    interpretation: "The Proxy: request header maps to the HTTP_PROXY environment variable in CGI/PHP environments (httpoxy, CVE-2016-5385). If the backend application uses HTTP_PROXY for outbound requests, an attacker can redirect all backend HTTP traffic through an attacker-controlled proxy, enabling MITM of outbound API calls, credential theft, and SSRF.".into(),
+                    offset: 0,
+                    property: "The Proxy: request header must be stripped at the gateway/load balancer before reaching CGI applications. Applications must not read HTTP_PROXY from the environment without explicit configuration.".into(),
+                }],
+            });
+        }
+
+        let extended_spoof_headers = [
+            "True-Client-IP",
+            "CF-Connecting-IP",
+            "X-Cluster-Client-IP",
+            "X-ProxyUser-Ip",
+            "X-Forwarded-User",
+            "X-Remote-User",
+            "Fastly-Client-IP",
+        ];
+        let mut extended_spoof_hits = Vec::new();
+        for name in extended_spoof_headers {
+            for value in header_values(&headers, name) {
+                if looks_internal_ip(value) {
+                    extended_spoof_hits.push(format!("{}: {}", name, value));
+                }
+            }
+        }
+        if !extended_spoof_hits.is_empty() {
+            detections.push(L2Detection {
+                detection_type: "auth_extended_ip_spoof".into(),
+                confidence: 0.83,
+                detail: format!(
+                    "Additional forwarding headers contain internal IPs: {}",
+                    extended_spoof_hits.join("; ")
+                ),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: extended_spoof_hits.join("; "),
+                    interpretation: "CDN/proxy-specific IP forwarding headers (True-Client-IP, CF-Connecting-IP, X-Cluster-Client-IP) contain internal IPs. These headers are trusted by some frameworks without validation, enabling IP-based access control bypass in the same manner as X-Forwarded-For spoofing.".into(),
+                    offset: 0,
+                    property: "CDN and cluster IP headers must only be trusted when originating from verified CDN/load balancer infrastructure, not from untrusted client requests.".into(),
+                }],
+            });
+        }
+
         detections
     }
 
@@ -280,7 +405,11 @@ impl L2Evaluator for AuthHeaderSpoofEvaluator {
         match detection_type {
             "auth_header_ip_spoofing"
             | "auth_header_host_injection"
-            | "auth_header_rewrite_override" => Some(InvariantClass::AuthHeaderSpoof),
+            | "auth_header_rewrite_override"
+            | "auth_forwarded_header_spoof"
+            | "auth_method_override"
+            | "auth_httpoxy"
+            | "auth_extended_ip_spoof" => Some(InvariantClass::AuthHeaderSpoof),
             _ => None,
         }
     }
@@ -336,6 +465,71 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "auth_header_rewrite_override")
+        );
+    }
+
+    #[test]
+    fn detects_forwarded_header_spoofing() {
+        let eval = AuthHeaderSpoofEvaluator;
+        let input = "GET / HTTP/1.1\r\nHost: app.example.com\r\nForwarded: for=127.0.0.1;proto=http;by=proxy\r\n\r\n";
+        let dets = eval.detect(input);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "auth_forwarded_header_spoof")
+            .expect("expected Forwarded spoofing detection");
+        assert_eq!(det.confidence, 0.86);
+        assert_eq!(
+            eval.map_class("auth_forwarded_header_spoof"),
+            Some(InvariantClass::AuthHeaderSpoof)
+        );
+    }
+
+    #[test]
+    fn detects_method_override_header() {
+        let eval = AuthHeaderSpoofEvaluator;
+        let input = "GET /resource HTTP/1.1\r\nHost: app.example.com\r\nX-HTTP-Method-Override: delete\r\n\r\n";
+        let dets = eval.detect(input);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "auth_method_override")
+            .expect("expected method override detection");
+        assert_eq!(det.confidence, 0.84);
+        assert_eq!(
+            eval.map_class("auth_method_override"),
+            Some(InvariantClass::AuthHeaderSpoof)
+        );
+    }
+
+    #[test]
+    fn detects_httpoxy_proxy_header() {
+        let eval = AuthHeaderSpoofEvaluator;
+        let input = "GET /api HTTP/1.1\r\nHost: app.example.com\r\nProxy: http://attacker-proxy.example:8080\r\n\r\n";
+        let dets = eval.detect(input);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "auth_httpoxy")
+            .expect("expected httpoxy detection");
+        assert_eq!(det.confidence, 0.90);
+        assert_eq!(
+            eval.map_class("auth_httpoxy"),
+            Some(InvariantClass::AuthHeaderSpoof)
+        );
+    }
+
+    #[test]
+    fn detects_extended_ip_spoofing_headers() {
+        let eval = AuthHeaderSpoofEvaluator;
+        let input =
+            "GET /admin HTTP/1.1\r\nHost: app.example.com\r\nTrue-Client-IP: 192.168.1.55\r\n\r\n";
+        let dets = eval.detect(input);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "auth_extended_ip_spoof")
+            .expect("expected extended spoofing detection");
+        assert_eq!(det.confidence, 0.83);
+        assert_eq!(
+            eval.map_class("auth_extended_ip_spoof"),
+            Some(InvariantClass::AuthHeaderSpoof)
         );
     }
 
