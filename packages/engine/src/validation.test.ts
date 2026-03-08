@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest'
 import { DefenseValidator } from './defense-validator.js'
 import { ATTACK_CHAINS } from './chain-detector.js'
 import { InvariantEngine } from './invariant-engine.js'
+import { MitreMapper } from './mitre-mapper.js'
 
 describe('DefenseValidator — Self-Test', () => {
     const validator = new DefenseValidator()
@@ -91,8 +92,8 @@ describe('DefenseValidator — Self-Test', () => {
 })
 
 describe('Attack Chain Definitions', () => {
-    it('has 12 attack chain definitions', () => {
-        expect(ATTACK_CHAINS.length).toBe(12)
+    it('has 20 attack chain definitions', () => {
+        expect(ATTACK_CHAINS.length).toBe(30)
     })
 
     it('all chains have required properties', () => {
@@ -141,6 +142,17 @@ describe('Attack Chain Definitions', () => {
         }
     })
 
+    it('all chains have confidence boost in valid range', () => {
+        for (const chain of ATTACK_CHAINS) {
+            expect(chain.confidenceBoost).toBeGreaterThan(0)
+            expect(chain.confidenceBoost).toBeLessThanOrEqual(0.5)
+            // Critical chains should have higher boosts
+            if (chain.severity === 'critical') {
+                expect(chain.confidenceBoost).toBeGreaterThanOrEqual(0.10)
+            }
+        }
+    })
+
     it('chain descriptions explain the attack narrative', () => {
         for (const chain of ATTACK_CHAINS) {
             // Description should be meaningful (not just the name)
@@ -151,5 +163,41 @@ describe('Attack Chain Definitions', () => {
                 expect(step.description.length).toBeGreaterThan(10)
             }
         }
+    })
+})
+
+describe('MITRE ATT&CK Coverage', () => {
+    it('all invariant classes have MITRE mappings', () => {
+        const engine = new InvariantEngine()
+        const mitre = new MitreMapper()
+        const allClasses = engine.classes
+
+        const unmapped: string[] = []
+        for (const cls of allClasses) {
+            const techniques = mitre.getTechniques(cls)
+            if (techniques.length === 0) {
+                unmapped.push(cls)
+            }
+        }
+
+        if (unmapped.length > 0) {
+            console.warn(`  Classes without MITRE mappings: ${unmapped.join(', ')}`)
+        }
+
+        // Allow header-only classes (auth_header_spoof) and simple heuristics (cors_origin_abuse)
+        // but the vast majority should be mapped
+        expect(unmapped.length).toBeLessThanOrEqual(3)
+    })
+
+    it('MITRE coverage spans multiple tactics', () => {
+        const mitre = new MitreMapper()
+        const report = mitre.getCoverageReport()
+
+        // Should cover at least 8 distinct MITRE tactics
+        const tacticCount = Object.keys(report.tacticDistribution).length
+        expect(tacticCount).toBeGreaterThanOrEqual(8)
+
+        // Should map at least 15 distinct techniques
+        expect(report.coveredCount).toBeGreaterThanOrEqual(15)
     })
 })

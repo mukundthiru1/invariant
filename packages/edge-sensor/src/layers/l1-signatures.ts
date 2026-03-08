@@ -1,6 +1,10 @@
 /**
  * Edge Sensor — Layer 1: Static Signature Detection
  *
+ * NOTE: These signatures are being replaced by the unified @santh/invariant-engine analyze() API
+ * which provides shared detection primitives across both Agent and Edge Sensor.
+ * Do not add new signatures here; add them to the invariant-engine instead.
+ *
  * High confidence, low false positive pattern matching.
  * 30+ signatures across SQLi, XSS, path traversal, SSRF,
  * command injection, SSTI, deserialization, and more.

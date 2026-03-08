@@ -398,3 +398,5 @@ function findNextOfType(
     }
     return undefined
 }
+
+export const shellTokenize = (input: string) => new ShellTokenizer().tokenize(input);

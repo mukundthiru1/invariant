@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2OpenRedirect, l2LDAPInjection } from '../../evaluators/l2-adapters.js'
 
 export const openRedirectBypass: InvariantClassModule = {
     id: 'open_redirect_bypass',
@@ -34,6 +35,7 @@ export const openRedirectBypass: InvariantClassModule = {
             || /\\\\[^\\]+\\/.test(d)
             || /(?:redirect|url|next|goto)=(?:\/\/|https?:|%2[fF]%2[fF])/i.test(input)
     },
+    detectL2: l2OpenRedirect,
     generateVariants: (count: number): string[] => {
         const v = ['?redirect=//evil.com', '?url=https://evil.com', '?next=%2F%2Fevil.com',
             '?redirect=\\\\evil.com\\path', '?goto=//evil.com%0d%0a']
@@ -105,6 +107,7 @@ export const ldapFilterInjection: InvariantClassModule = {
             || /\(\|\(\w+=\*\)\)/.test(d)
             || (/\x00/.test(d) && /\(/.test(d))
     },
+    detectL2: l2LDAPInjection,
     generateVariants: (count: number): string[] => {
         const v = ['*)(uid=*))(|(uid=*', '*(|(mail=*))', 'admin)(|(password=*)',
             '*)(&(objectClass=*)']

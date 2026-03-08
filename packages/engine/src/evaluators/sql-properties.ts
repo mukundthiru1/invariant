@@ -5,10 +5,10 @@
  * formal ISL specifications with multi-level detection.
  */
 
-import type { InvariantProperty, DetectionResult } from './property-spec'
-import { PROPERTY_REGISTRY } from './property-spec'
-import { detectTautologies } from './sql-expression-evaluator'
-import { detectSqlStructural } from './sql-structural-evaluator'
+import type { InvariantProperty, DetectionResult } from './property-spec.js'
+import { PROPERTY_REGISTRY } from './property-spec.js'
+import { detectTautologies } from './sql-expression-evaluator.js'
+import { detectSqlStructural } from './sql-structural-evaluator.js'
 
 
 // ── Shared Helpers ───────────────────────────────────────────────

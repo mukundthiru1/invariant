@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2CRLFHeader, l2CRLFLog } from '../../evaluators/l2-adapters.js'
 
 export const crlfHeaderInjection: InvariantClassModule = {
     id: 'crlf_header_injection',
@@ -18,6 +19,7 @@ export const crlfHeaderInjection: InvariantClassModule = {
         '%0d%0aSet-Cookie: admin=true',
         '%0d%0aLocation: http://evil.com',
         'value%0d%0a%0d%0a<script>alert(1)</script>',
+        '\\r\\nHTTP/1.1 200 OK\\r\\nContent-Type: text/html',
     ],
 
     knownBenign: [
@@ -29,8 +31,13 @@ export const crlfHeaderInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /%0[dD]%0[aA]/i.test(input) || (/\r\n/.test(d) && /(?:Set-Cookie|Location|Content-Type|HTTP\/)/i.test(d))
+        if (/%0[dD]%0[aA]/i.test(input)) return true
+        if (/\r\n/.test(d) && /(?:Set-Cookie|Location|Content-Type|HTTP\/)/i.test(d)) return true
+        // Literal escaped CRLF in string values (\\r\\n or \r\n as text, single or double backslash)
+        if (/(?:\\{1,2}r\\{1,2}n)/i.test(input) && /(?:Set-Cookie|Location|Content-Type|HTTP\/)/i.test(input)) return true
+        return false
     },
+    detectL2: l2CRLFHeader,
     generateVariants: (count: number): string[] => {
         const v = ['%0d%0aSet-Cookie: admin=true', '%0d%0aLocation: http://evil.com',
             'value%0d%0a%0d%0a<script>alert(1)</script>', '\\\\r\\\\nHTTP/1.1 200 OK\\\\r\\\\nContent-Type: text/html']
@@ -52,6 +59,7 @@ export const crlfLogInjection: InvariantClassModule = {
         'user%0d%0a[INFO] Login successful for admin',
         'input%0a[ALERT] ADMIN_ACCESS_GRANTED',
         'test\r\n[ALERT] Security bypass detected',
+        'input%0a[2024-01-01] ADMIN_ACCESS_GRANTED',
     ],
 
     knownBenign: [
@@ -63,13 +71,16 @@ export const crlfLogInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        // Check for newline characters (from URL encoding or literal) followed by log-like patterns
         const hasNewline = /%0[aAdD]/i.test(input) || /[\r\n]/.test(d)
         if (!hasNewline) return false
-        // Log-like prefix patterns in the decoded content
         return /\[(?:INFO|WARN|ERROR|DEBUG|ALERT|CRITICAL|NOTICE)\]/i.test(d) ||
-            /\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}/i.test(d)
+            /\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}/i.test(d) ||
+            // Date-only timestamps in brackets: [2024-01-01]
+            /\[\d{4}-\d{2}-\d{2}\]/i.test(d) ||
+            // Forged log keywords after newline
+            /(?:ADMIN|ACCESS|GRANTED|DENIED|LOGIN|LOGOUT|BYPASS|ELEVATED)/i.test(d)
     },
+    detectL2: l2CRLFLog,
     generateVariants: (count: number): string[] => {
         const v = [
             'user%0d%0a[INFO] Login successful for admin',

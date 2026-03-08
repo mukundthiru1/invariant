@@ -1,8 +1,9 @@
 /**
  * NoSQL injection classes — Operator injection + JS injection
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2NoSQLOperator, l2NoSQLJS } from '../../evaluators/l2-adapters.js'
 
 export const nosqlOperatorInjection: InvariantClassModule = {
     id: 'nosql_operator_injection',
@@ -34,6 +35,7 @@ export const nosqlOperatorInjection: InvariantClassModule = {
         return /\$(?:gt|gte|lt|lte|ne|eq|in|nin|regex|exists|type|where|or|and|not|nor|elemMatch)\b/i.test(d)
             || /\{"?\$(?:gt|ne|regex|where)"?\s*:/i.test(d)
     },
+    detectL2: l2NoSQLOperator,
     generateVariants: (count: number): string[] => {
         const v = ['{"$gt":""}', '{"$ne":null}', '{"$regex":".*"}', '{"$where":"this.password.length>0"}',
             '{"username":{"$ne":""},"password":{"$ne":""}}']
@@ -68,6 +70,7 @@ export const nosqlJsInjection: InvariantClassModule = {
         return /["']?\$where["']?\s*:\s*["']?(?:function|this\.|sleep|db\.|emit|tojson)/i.test(d)
             || (/mapReduce.*function/i.test(d) && /emit\(/i.test(d))
     },
+    detectL2: l2NoSQLJS,
     generateVariants: (count: number): string[] => {
         const v = ['{"$where":"sleep(5000)"}', '{"$where":"this.password.match(/^a/)"}',
             '{"$where":"function(){return this.admin==true;}"}']

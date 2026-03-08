@@ -8,7 +8,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { InvariantDB } from '../../agent/src/db.js'
+import { InvariantDB, type FindingStatus } from '../../agent/src/db.js'
 import { resolve, join, extname } from 'node:path'
 import { readFileSync, existsSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -37,12 +37,8 @@ const API_ROUTES: Record<string, ApiHandler> = {
         }
     },
 
-    '/api/findings': (db, params) => {
-        const severity = params.get('severity') as 'critical' | 'high' | 'medium' | 'low' | undefined
-        const status = params.get('status') as 'open' | 'resolved' | undefined
-        const type = params.get('type') ?? undefined
-        const limit = parseInt(params.get('limit') ?? '100')
-        return db.getFindings({ severity: severity || undefined, status: status || undefined, type: type || undefined, limit })
+    '/api/findings': (db) => {
+        return db.getFindings()
     },
 
     '/api/findings/detail': (db, params) => {
@@ -58,14 +54,14 @@ const API_ROUTES: Record<string, ApiHandler> = {
         const id = parseInt(params.get('id') ?? '0')
         if (!id) return { error: 'Missing id parameter' }
         const parsed = body ? safeParseJson(body) as Record<string, unknown> : {}
-        const status = parsed.status ?? 'resolved'
-        const notes = parsed.notes ?? null
+        const status = isFindingStatus(parsed.status) ? parsed.status : 'resolved'
+        const notes = typeof parsed.notes === 'string' ? parsed.notes : undefined
         db.updateFindingStatus(id, status, notes)
         return { success: true, id, status }
     },
 
     '/api/signals': (db, params) => {
-        const limit = parseInt(params.get('limit') ?? '100')
+        const limit = parseInt(params.get('limit') ?? '50')
         return db.getSignals(limit)
     },
 
@@ -83,8 +79,9 @@ const API_ROUTES: Record<string, ApiHandler> = {
         return db.getInvariantClassDistribution()
     },
 
-    '/api/posture': (db) => {
-        return db.getLatestPosture()
+    '/api/posture': (db, params) => {
+        const limit = parseInt(params.get('limit') ?? '30')
+        return db.getPostureHistory(limit)
     },
 
     '/api/posture/history': (db, params) => {
@@ -103,7 +100,7 @@ const API_ROUTES: Record<string, ApiHandler> = {
         if (!body) return { error: 'Missing body' }
         const parsed = safeParseJson(body) as Record<string, unknown>
         const mode = parsed.mode
-        if (!['observe', 'sanitize', 'defend', 'lockdown'].includes(mode)) {
+        if (typeof mode !== 'string' || !['observe', 'sanitize', 'defend', 'lockdown'].includes(mode)) {
             return { error: `Invalid mode: ${mode}` }
         }
         db.setConfig('mode', mode)
@@ -153,11 +150,19 @@ function safeParseJson(str: string): unknown {
     return stripPrototypePollution(JSON.parse(str))
 }
 
+function isFindingStatus(value: unknown): value is FindingStatus {
+    return value === 'open'
+        || value === 'acknowledged'
+        || value === 'resolved'
+        || value === 'false_positive'
+        || value === 'risk_accepted'
+}
+
 // ── Server ───────────────────────────────────────────────────────
 
 export function startDashboard(dbPath: string, port = 4444): { close: () => void } {
     const db = new InvariantDB(dbPath)
-    const uiDir = join(__dirname, 'ui')
+    const viewsDir = join(__dirname, 'views')
 
     const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
         const url = new URL(req.url ?? '/', `http://localhost:${port}`)
@@ -205,11 +210,11 @@ export function startDashboard(dbPath: string, port = 4444): { close: () => void
 
         // Static file serving
         let filePath = pathname === '/' ? '/index.html' : pathname
-        filePath = join(uiDir, filePath)
+        filePath = join(viewsDir, filePath)
 
         // Security: prevent directory traversal
         const resolved = resolve(filePath)
-        if (!resolved.startsWith(resolve(uiDir))) {
+        if (!resolved.startsWith(resolve(viewsDir))) {
             res.writeHead(403)
             res.end('Forbidden')
             return
@@ -217,7 +222,7 @@ export function startDashboard(dbPath: string, port = 4444): { close: () => void
 
         if (!existsSync(resolved)) {
             // SPA fallback
-            filePath = join(uiDir, 'index.html')
+            filePath = join(viewsDir, 'index.html')
         }
 
         try {

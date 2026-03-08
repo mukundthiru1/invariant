@@ -19,6 +19,7 @@
  */
 
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
+import { recordRaspEvent } from './request-session.js'
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -138,6 +139,9 @@ export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
 
         const action = resolveAction(violations, config.mode)
         const now = new Date().toISOString()
+        if (violations.length > 0) {
+            recordRaspEvent('sql', sql.slice(0, 200), violations.map(v => v.id), action === 'blocked' ? 0.95 : 0.85, action === 'blocked')
+        }
 
         // Record the finding
         for (const v of violations) {

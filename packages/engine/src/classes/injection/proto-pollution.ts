@@ -1,8 +1,9 @@
 /**
  * proto_pollution — Prototype pollution to modify object prototypes
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2ProtoPollution } from '../../evaluators/l2-adapters.js'
 
 export const protoPollution: InvariantClassModule = {
     id: 'proto_pollution',
@@ -31,6 +32,7 @@ export const protoPollution: InvariantClassModule = {
         const d = deepDecode(input)
         return /__proto__|constructor\s*\[\s*['"]?prototype['"]?\s*\]|constructor\.prototype|Object\.assign.*__proto__/i.test(d)
     },
+    detectL2: l2ProtoPollution,
     generateVariants: (count: number): string[] => {
         const v = [
             '__proto__[isAdmin]=true', 'constructor[prototype][isAdmin]=true',

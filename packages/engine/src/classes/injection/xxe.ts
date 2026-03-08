@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2XXEEntity, l2XMLInjection } from '../../evaluators/l2-adapters.js'
 
 export const xxeEntityExpansion: InvariantClassModule = {
     id: 'xxe_entity_expansion',
@@ -32,6 +33,7 @@ export const xxeEntityExpansion: InvariantClassModule = {
             || /<!ENTITY\s+\S+\s+["'](?:file:|http:|ftp:|php:|expect:|data:)/i.test(d)
             || /<!ENTITY\s+\S+\s+SYSTEM/i.test(d)
     },
+    detectL2: l2XXEEntity,
     generateVariants: (count: number): string[] => {
         const v = [
             '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>',
@@ -71,6 +73,7 @@ export const xmlInjection: InvariantClassModule = {
             || /<!\[CDATA\[.*\]\]>/i.test(d)
             || /&(?!amp;|lt;|gt;|quot;|apos;|#)\w+;/.test(d)
     },
+    detectL2: l2XMLInjection,
     generateVariants: (count: number): string[] => {
         const v = ['<![CDATA[<script>alert(1)</script>]]>', '<!DOCTYPE test [<!ENTITY foo "bar">]>',
             '<x>&custom_entity;</x>']

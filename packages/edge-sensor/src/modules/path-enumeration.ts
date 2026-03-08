@@ -25,9 +25,8 @@
  */
 
 
-import type { EndpointPrivilege, PrivilegeEdge, PrivilegeGraphSnapshot } from './privilege-graph'
-import type { ReactivationMatch } from './reactivation-engine'
-import type { VulnerabilityProfile } from './cve-stack-correlation'
+import type { EndpointPrivilege, PrivilegeGraphSnapshot } from './privilege-graph.js'
+import type { ReactivationMatch } from './reactivation-engine.js'
 
 
 // ═══════════════════════════════════════════════════════════════════

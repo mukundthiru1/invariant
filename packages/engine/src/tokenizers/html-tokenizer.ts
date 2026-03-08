@@ -148,6 +148,11 @@ export class HtmlTokenizer implements Tokenizer<HtmlTokenType> {
                     while (i < bounded.length && bounded[i] !== '<' && !(bounded[i] === '{' && bounded[i + 1] === '{')) {
                         i++
                     }
+                    // Guard: if we're stuck on a '<' that doesn't start a valid tag,
+                    // consume it as text to prevent infinite loop
+                    if (i === textStart && i < bounded.length) {
+                        i++
+                    }
                     if (i > textStart) {
                         tokens.push({ type: 'TEXT', value: bounded.slice(textStart, i), start: textStart, end: i })
                     }
@@ -322,11 +327,7 @@ export class HtmlTokenizer implements Tokenizer<HtmlTokenType> {
                     break
                 }
 
-                case 'COMMENT': {
-                    // Should not reach here — comments are handled inline in TEXT
-                    i++
-                    break
-                }
+// COMMENT case removed to fix TypeScript error
             }
         }
 
@@ -487,4 +488,37 @@ function findPrev<T extends string>(
         if (predicate(tokens[i])) return tokens[i]
     }
     return undefined
+}
+
+export function getXssProperties(input: string): Array<{ type: 'tag_inject' | 'event_handler' | 'protocol_handler' | 'attr_escape', confidence: number, evidence: string }> {
+    const tokenizer = new HtmlTokenizer();
+    const stream = tokenizer.tokenize(input);
+    const tokens = stream.all();
+    const props: Array<{ type: 'tag_inject' | 'event_handler' | 'protocol_handler' | 'attr_escape', confidence: number, evidence: string }> = [];
+
+    for (let i = 0; i < tokens.length; i++) {
+        const tok = tokens[i];
+        
+        if (tok.type === 'TAG_NAME' && ['script', 'iframe', 'object'].includes(tok.value.toLowerCase())) {
+            props.push({ type: 'tag_inject', confidence: 0.95, evidence: tok.value });
+        }
+        
+        if (tok.type === 'ATTR_NAME' && tok.value.toLowerCase().startsWith('on')) {
+            props.push({ type: 'event_handler', confidence: 0.90, evidence: tok.value });
+        }
+
+        if (tok.type === 'ATTR_VALUE') {
+            const val = tok.value.trim().toLowerCase();
+            if (val.startsWith('javascript:') || val.startsWith('vbscript:') || (val.startsWith('data:') && val.includes('text/html'))) {
+                props.push({ type: 'protocol_handler', confidence: 0.95, evidence: tok.value });
+            }
+        }
+        
+        if (tok.type === 'TEXT') {
+            if (tok.value.includes('">') || tok.value.includes("'>") || tok.value.includes('" >') || tok.value.includes("' >") || tok.value.includes('"/>') || tok.value.includes("'/>")) {
+                props.push({ type: 'attr_escape', confidence: 0.80, evidence: tok.value.trim() });
+            }
+        }
+    }
+    return props;
 }

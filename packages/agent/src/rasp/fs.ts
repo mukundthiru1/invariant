@@ -11,6 +11,7 @@
 
 import { resolve, relative } from 'node:path'
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
+import { recordRaspEvent } from './request-session.js'
 
 export interface FsRaspConfig {
     mode: 'observe' | 'sanitize' | 'defend' | 'lockdown'
@@ -142,6 +143,9 @@ export function wrapFsOperation<T extends (...args: unknown[]) => unknown>(
             config.mode === 'observe' ? 'monitored' :
                 config.mode === 'sanitize' ? 'normalized' :
                     (hasCritical || config.mode === 'lockdown') ? 'blocked' : 'monitored'
+        if (violations.length > 0) {
+            recordRaspEvent('fs', filePath, violations.map(v => v.id), action === 'blocked' ? 0.95 : 0.85, action === 'blocked')
+        }
 
         const now = new Date().toISOString()
         const resolvedPath = resolve(filePath)

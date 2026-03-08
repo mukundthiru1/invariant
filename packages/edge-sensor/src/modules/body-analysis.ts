@@ -204,9 +204,15 @@ export async function analyzeRequestBody(
  */
 export function extractFromJson(raw: string): string[] {
     try {
-        const parsed = JSON.parse(raw)
+        // SAA-091: Prototype pollution guard — parsing attacker-controlled request body
+        const parsed = JSON.parse(raw, (key, value) => {
+            if (key === '__proto__' && value && typeof value === 'object') {
+                return cloneForPrototypeSafeAccess(value)
+            }
+            return value
+        })
         const values: string[] = []
-        flattenJsonValues(parsed, values, 0)
+        flattenJsonValues(parsed, values, 0, '')
         return values
     } catch {
         // Invalid JSON — treat as raw text if it contains attack patterns
@@ -214,10 +220,31 @@ export function extractFromJson(raw: string): string[] {
     }
 }
 
+function cloneForPrototypeSafeAccess(value: object): object {
+    if (Array.isArray(value)) {
+        return value.map((entry) => {
+            if (entry && typeof entry === 'object') return cloneForPrototypeSafeAccess(entry)
+            return entry
+        })
+    }
+    const clone: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+        if (k === '__proto__' && v && typeof v === 'object') {
+            clone[k] = cloneForPrototypeSafeAccess(v)
+        } else if (v && typeof v === 'object') {
+            clone[k] = v
+        } else {
+            clone[k] = v
+        }
+    }
+    return clone
+}
+
 function flattenJsonValues(
     obj: unknown,
     out: string[],
     depth: number,
+    path: string,
 ): void {
     if (depth > MAX_JSON_DEPTH || out.length >= MAX_EXTRACTED_VALUES) return
 
@@ -241,11 +268,16 @@ function flattenJsonValues(
 
     if (obj !== null && typeof obj === 'object') {
         for (const key of Object.keys(obj)) {
+            const nextPath = path.length > 0 ? `${path}.${key}` : key
             // Keys can be attack vectors too (e.g., "__proto__", "$where")
             if (key.length > 0 && key.length < 1024) {
-                out.push(key)
+                out.push(
+                    key === '__proto__' || key === 'constructor' || key === 'prototype'
+                        ? nextPath
+                        : key,
+                )
             }
-            flattenJsonValues((obj as Record<string, unknown>)[key], out, depth + 1)
+            flattenJsonValues((obj as Record<string, unknown>)[key], out, depth + 1, nextPath)
         }
     }
 }

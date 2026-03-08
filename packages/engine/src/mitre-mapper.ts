@@ -110,6 +110,17 @@ const T1105 = T('T1105', 'Ingress Tool Transfer', 'command_and_control')
 const T1046 = T('T1046', 'Network Service Discovery', 'discovery')
 const T1552 = T('T1552', 'Unsecured Credentials', 'credential_access')
 const T1070 = T('T1070', 'Indicator Removal', 'defense_evasion')
+const T1195 = T('T1195', 'Supply Chain Compromise', 'initial_access')
+const T1195_001 = T('T1195.001', 'Compromise Software Dependencies', 'initial_access')
+const T1195_002 = T('T1195.002', 'Compromise Software Supply Chain', 'initial_access')
+const T1059_007 = T('T1059.007', 'JavaScript', 'execution')
+const T1040 = T('T1040', 'Network Sniffing', 'credential_access')
+const T1185 = T('T1185', 'Browser Session Hijacking', 'collection')
+const T1539 = T('T1539', 'Steal Web Session Cookie', 'credential_access')
+const T1565 = T('T1565', 'Data Manipulation', 'impact')
+const T1530 = T('T1530', 'Data from Cloud Storage', 'collection')
+const T1119 = T('T1119', 'Automated Collection', 'collection')
+const T1087 = T('T1087', 'Account Discovery', 'discovery')
 
 
 // ── Invariant Class → MITRE Mapping ──────────────────────────────
@@ -195,6 +206,47 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
 
     // ReDoS (1 class)
     regex_dos: { invariantClass: 'regex_dos', techniques: [T1499], rationale: 'Catastrophic regex backtracking causes CPU exhaustion' },
+
+    // HTTP Smuggling extensions (3 classes)
+    http_smuggle_chunk_ext: { invariantClass: 'http_smuggle_chunk_ext', techniques: [T1557, T1190], rationale: 'Chunk extension smuggling exploits HTTP/1.1 chunked encoding parser differences' },
+    http_smuggle_zero_cl: { invariantClass: 'http_smuggle_zero_cl', techniques: [T1557], rationale: 'Zero Content-Length smuggling exploits edge cases in request body parsing' },
+    http_smuggle_expect: { invariantClass: 'http_smuggle_expect', techniques: [T1557], rationale: 'Expect header smuggling exploits 100-Continue handling differences' },
+
+    // JSON-SQL WAF Bypass (1 class)
+    json_sql_bypass: { invariantClass: 'json_sql_bypass', techniques: [T1190], rationale: 'JSON-wrapped SQL payloads bypass WAF signature matching' },
+
+    // Prototype Pollution Gadget (1 class)
+    proto_pollution_gadget: { invariantClass: 'proto_pollution_gadget', techniques: [T1068, T1059_007], rationale: 'Prototype pollution gadget chains escalate to RCE via known library sink' },
+
+    // XML Injection (1 class)
+    xml_injection: { invariantClass: 'xml_injection', techniques: [T1190], rationale: 'XML injection modifies document structure to bypass access controls' },
+
+    // Supply Chain (3 classes)
+    dependency_confusion: { invariantClass: 'dependency_confusion', techniques: [T1195, T1195_001], rationale: 'Dependency confusion substitutes public package for private one via version priority' },
+    postinstall_injection: { invariantClass: 'postinstall_injection', techniques: [T1195_002, T1059], rationale: 'Package postinstall scripts execute arbitrary code during npm/pip install' },
+    env_exfiltration: { invariantClass: 'env_exfiltration', techniques: [T1552, T1005], rationale: 'Environment variable exfiltration steals credentials from process env' },
+
+    // LLM Injection (3 classes)
+    llm_prompt_injection: { invariantClass: 'llm_prompt_injection', techniques: [T1190, T1059], rationale: 'Prompt injection overrides LLM system instructions to alter behavior' },
+    llm_data_exfiltration: { invariantClass: 'llm_data_exfiltration', techniques: [T1005, T1119], rationale: 'LLM data exfiltration extracts training data or system prompts' },
+    llm_jailbreak: { invariantClass: 'llm_jailbreak', techniques: [T1553], rationale: 'LLM jailbreak bypasses safety controls to enable harmful outputs' },
+
+    // WebSocket (2 classes)
+    ws_injection: { invariantClass: 'ws_injection', techniques: [T1190, T1059_007], rationale: 'WebSocket message injection exploits bidirectional channel for code execution' },
+    ws_hijack: { invariantClass: 'ws_hijack', techniques: [T1185, T1557], rationale: 'WebSocket hijacking takes over established connections for session theft' },
+
+    // JWT Abuse (3 classes)
+    jwt_kid_injection: { invariantClass: 'jwt_kid_injection', techniques: [T1550, T1550_001, T1190], rationale: 'JWT kid parameter injection enables path traversal, SQLi, or command injection in key lookup' },
+    jwt_jwk_embedding: { invariantClass: 'jwt_jwk_embedding', techniques: [T1550, T1550_001], rationale: 'Embedded JWK in JWT header provides attacker-controlled signing key' },
+    jwt_confusion: { invariantClass: 'jwt_confusion', techniques: [T1550, T1550_001], rationale: 'Algorithm confusion attack uses public key as HMAC secret to forge tokens' },
+
+    // Cache Attacks (2 classes)
+    cache_poisoning: { invariantClass: 'cache_poisoning', techniques: [T1557, T1565], rationale: 'Cache poisoning serves malicious content to all users via unkeyed headers' },
+    cache_deception: { invariantClass: 'cache_deception', techniques: [T1539, T1530], rationale: 'Cache deception tricks CDN into caching sensitive user-specific responses' },
+
+    // API Logic Abuse (2 classes)
+    bola_idor: { invariantClass: 'bola_idor', techniques: [T1078, T1087], rationale: 'Broken object-level authorization allows accessing other users resources' },
+    api_mass_enum: { invariantClass: 'api_mass_enum', techniques: [T1119, T1087], rationale: 'Mass API enumeration extracts all records via sequential ID or filter bypass' },
 }
 
 // T1552 and T1070 declared above the map where they are referenced
@@ -336,4 +388,19 @@ export class MitreMapper {
             killChainPhase: this.getAttackPhase(classes, behaviors),
         }
     }
+
+    /**
+     * Map detection matches directly to MITRE technique IDs.
+     * Convenience for the unified runtime.
+     */
+    mapDetections(matches: Array<{ class: string }>): string[] {
+        const ids = new Set<string>()
+        for (const m of matches) {
+            for (const tech of this.getTechniques(m.class)) {
+                ids.add(tech.id)
+            }
+        }
+        return [...ids]
+    }
 }
+

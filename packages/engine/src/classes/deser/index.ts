@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2DeserJava, l2DeserPHP, l2DeserPython } from '../../evaluators/l2-adapters.js'
 
 export const deserJavaGadget: InvariantClassModule = {
     id: 'deser_java_gadget',
@@ -31,6 +32,7 @@ export const deserJavaGadget: InvariantClassModule = {
         return /aced0005|rO0ABX/i.test(d) ||
             /(?:java\.lang\.Runtime|ProcessBuilder|ChainedTransformer|InvokerTransformer|ConstantTransformer|commons-collections|ysoserial)/i.test(d)
     },
+    detectL2: l2DeserJava,
     generateVariants: (count: number): string[] => {
         const v = ['rO0ABXNyABdqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZQ==', 'aced00057372']
         const r: string[] = []
@@ -65,6 +67,7 @@ export const deserPhpObject: InvariantClassModule = {
         const d = deepDecode(input)
         return /O:\d+:"[^"]+"/.test(d) || /a:\d+:\{/.test(d)
     },
+    detectL2: l2DeserPHP,
     generateVariants: (count: number): string[] => {
         const v = [
             'O:4:"User":2:{s:4:"name";s:5:"admin";s:4:"role";s:5:"admin";}',
@@ -102,6 +105,7 @@ export const deserPythonPickle: InvariantClassModule = {
         const d = deepDecode(input)
         return /\x80\x04\x95|cos\nsystem|cbuiltins\n|c__builtin__|cposix\nsystem/i.test(d)
     },
+    detectL2: l2DeserPython,
     generateVariants: (count: number): string[] => {
         const v = ["cos\nsystem\n(S'id'\ntR.", "cbuiltins\neval\n(S'__import__(\"os\").system(\"id\")'\ntR."]
         const r: string[] = []

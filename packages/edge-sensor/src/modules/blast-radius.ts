@@ -24,10 +24,10 @@
  */
 
 
-import type { PrivilegeGraphSnapshot, EndpointPrivilege, PrivilegeLevel, PrivilegeObservation } from './privilege-graph'
-import type { PathEnumerationReport, AlternativePath } from './path-enumeration'
-import type { VulnerabilityProfile } from './cve-stack-correlation'
-import type { ReactivationMatch } from './reactivation-engine'
+import type { PrivilegeGraphSnapshot, EndpointPrivilege, PrivilegeLevel, PrivilegeObservation } from './privilege-graph.js'
+import type { PathEnumerationReport } from './path-enumeration.js'
+import type { VulnerabilityProfile } from './cve-stack-correlation.js'
+import type { ReactivationMatch } from './reactivation-engine.js'
 
 
 // ═══════════════════════════════════════════════════════════════════

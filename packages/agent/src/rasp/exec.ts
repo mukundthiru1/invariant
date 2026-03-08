@@ -10,6 +10,7 @@
  */
 
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
+import { recordRaspEvent } from './request-session.js'
 
 export interface ExecRaspConfig {
     mode: 'observe' | 'sanitize' | 'defend' | 'lockdown'
@@ -67,6 +68,9 @@ export function wrapExec<T extends (...args: unknown[]) => unknown>(
             config.mode === 'observe' ? 'monitored' :
                 config.mode === 'lockdown' ? 'blocked' :
                     violations.some(v => v.severity === 'critical') ? 'blocked' : 'monitored'
+        if (violations.length > 0) {
+            recordRaspEvent('exec', cmd, violations.map(v => v.id), action === 'blocked' ? 0.97 : 0.85, action === 'blocked')
+        }
 
         const now = new Date().toISOString()
 

@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INVARIANT Dashboard</title>
+    <style>
+        :root {
+            --bg: #FFFFFF;
+            --text: #1D1D1F;
+            --muted: #6E6E73;
+            --line: #D2D2D7;
+            --panel: #F5F5F7;
+            --blue: #0B4A8F;
+            --red: #D93025;
+            --high: #B54213;
+            --med: #8A6A00;
+            --low: #0B4A8F;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            background: var(--bg);
+            color: var(--text);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            line-height: 1.35;
+        }
+
+        .container {
+            max-width: 1280px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .header {
+            border: 1px solid var(--line);
+            background: var(--panel);
+            padding: 14px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .logo {
+            letter-spacing: 0.18em;
+            font-weight: 700;
+            font-size: 15px;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+
+        .chip {
+            border: 1px solid var(--line);
+            background: var(--bg);
+            padding: 6px 10px;
+            font-size: 12px;
+        }
+
+        .chip strong { color: var(--blue); }
+        .chip.mode strong { text-transform: uppercase; }
+
+        .stats {
+            margin-top: 14px;
+            display: grid;
+            grid-template-columns: repeat(6, minmax(120px, 1fr));
+            gap: 10px;
+        }
+
+        .stat {
+            border: 1px solid var(--line);
+            padding: 10px;
+            background: var(--bg);
+        }
+
+        .stat-label {
+            color: var(--muted);
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+
+        .stat-value {
+            margin-top: 4px;
+            font-size: 26px;
+            font-weight: 700;
+        }
+
+        .stat-critical .stat-value { color: var(--red); }
+        .stat-high .stat-value { color: var(--high); }
+        .stat-medium .stat-value { color: var(--med); }
+        .stat-low .stat-value { color: var(--low); }
+        .stat-blocked .stat-value { color: var(--red); }
+
+        .grid {
+            margin-top: 14px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .card {
+            border: 1px solid var(--line);
+            background: var(--bg);
+            min-height: 280px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .card h2 {
+            margin: 0;
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+        }
+
+        .timeline-list {
+            margin: 0;
+            padding: 0;
+            list-style: none;
+            overflow: auto;
+            max-height: 320px;
+        }
+
+        .timeline-item {
+            display: grid;
+            grid-template-columns: 90px 1.1fr 88px 1.4fr;
+            gap: 10px;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--line);
+            font-size: 12px;
+        }
+
+        .timeline-item:last-child { border-bottom: 0; }
+
+        .sev-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border: 1px solid var(--line);
+            font-size: 10px;
+            text-transform: uppercase;
+        }
+
+        .sev-critical { color: var(--red); border-color: var(--red); }
+        .sev-high { color: var(--high); border-color: var(--high); }
+        .sev-medium { color: var(--med); border-color: var(--med); }
+        .sev-low { color: var(--low); border-color: var(--low); }
+
+        .chart-wrap {
+            padding: 14px;
+            display: flex;
+            align-items: flex-end;
+            gap: 8px;
+            height: 320px;
+        }
+
+        .chart-col {
+            flex: 1;
+            min-width: 30px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .chart-score { font-size: 11px; color: var(--muted); }
+
+        .chart-bar {
+            width: 100%;
+            min-height: 4px;
+            background: linear-gradient(to top, #1D1D1F 0%, var(--blue) 100%);
+            border: 1px solid var(--line);
+        }
+
+        .chart-grade {
+            font-size: 11px;
+            font-weight: 700;
+        }
+
+        .table-card {
+            margin-top: 12px;
+            border: 1px solid var(--line);
+            background: var(--bg);
+        }
+
+        .table-head {
+            padding: 12px 14px;
+            border-bottom: 1px solid var(--line);
+            background: var(--panel);
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+        }
+
+        .controls {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        select, button {
+            border: 1px solid var(--line);
+            background: var(--bg);
+            color: var(--text);
+            font: inherit;
+            padding: 6px 8px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 12px;
+        }
+
+        th, td {
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--line);
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: var(--panel);
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        th.sortable { cursor: pointer; }
+
+        .sev-icon {
+            width: 11px;
+            height: 11px;
+            display: inline-block;
+            border-radius: 50%;
+            border: 1px solid var(--line);
+        }
+
+        .sev-icon.critical { background: var(--red); border-color: var(--red); }
+        .sev-icon.high { background: var(--high); border-color: var(--high); }
+        .sev-icon.medium { background: var(--med); border-color: var(--med); }
+        .sev-icon.low { background: var(--low); border-color: var(--low); }
+        .sev-icon.info { background: #1D1D1F; border-color: #1D1D1F; }
+
+        .muted { color: var(--muted); }
+
+        .fix-link {
+            display: inline-block;
+            text-decoration: none;
+            color: var(--blue);
+            border: 1px solid var(--blue);
+            padding: 4px 7px;
+            font-size: 11px;
+        }
+
+        .empty {
+            padding: 14px;
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        @media (max-width: 1000px) {
+            .stats { grid-template-columns: repeat(3, minmax(120px, 1fr)); }
+            .grid { grid-template-columns: 1fr; }
+            .timeline-item { grid-template-columns: 80px 1fr 80px 1fr; }
+            table { display: block; overflow-x: auto; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">INVARIANT</div>
+            <div class="header-right">
+                <div class="chip">Posture: <strong id="posture-grade">-</strong></div>
+                <div class="chip mode">Mode: <strong id="mode-value">-</strong></div>
+                <div class="chip">Updated: <span id="updated-at">-</span></div>
+            </div>
+        </header>
+
+        <section class="stats" id="stats"></section>
+
+        <section class="grid">
+            <article class="card">
+                <h2>Recent Detections</h2>
+                <ul id="timeline" class="timeline-list"></ul>
+            </article>
+            <article class="card">
+                <h2>Posture Score Over Time</h2>
+                <div id="posture-chart" class="chart-wrap"></div>
+            </article>
+        </section>
+
+        <section class="table-card">
+            <div class="table-head">
+                <div>Findings</div>
+                <div class="controls">
+                    <label for="category-filter">Category</label>
+                    <select id="category-filter"></select>
+                </div>
+            </div>
+            <table>
+                <thead>
+                    <tr>
+                        <th class="sortable" id="sort-severity" title="Sort by severity">Severity</th>
+                        <th>Class</th>
+                        <th>File / Path</th>
+                        <th>Line</th>
+                        <th>Description</th>
+                        <th>Fix</th>
+                    </tr>
+                </thead>
+                <tbody id="findings-body"></tbody>
+            </table>
+        </section>
+    </div>
+
+    <script>
+        const FIX_DOCS_URL = 'https://santh.io/invariant';
+        const REFRESH_MS = 10000;
+        const severityRank = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
+
+        const state = {
+            findings: [],
+            posture: [],
+            signals: [],
+            status: null,
+            sortDir: 'asc',
+            category: 'all'
+        };
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function timeLabel(ts) {
+            const date = ts ? new Date(ts) : null;
+            if (!date || Number.isNaN(date.getTime())) return '-';
+            return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        }
+
+        function splitLocation(location) {
+            const raw = String(location ?? '');
+            const match = raw.match(/^(.*?):(\d+)(?::\d+)?$/);
+            if (!match) return { path: raw || '-', line: '-' };
+            return { path: match[1] || '-', line: match[2] || '-' };
+        }
+
+        function renderStats() {
+            const findings = state.findings;
+            const counts = {
+                total: findings.length,
+                critical: findings.filter(f => f.severity === 'critical').length,
+                high: findings.filter(f => f.severity === 'high').length,
+                medium: findings.filter(f => f.severity === 'medium').length,
+                low: findings.filter(f => f.severity === 'low').length,
+                blocked: state.signals.filter(s => s.action === 'blocked').length
+            };
+
+            document.getElementById('stats').innerHTML = `
+                <div class="stat stat-total"><div class="stat-label">Total Findings</div><div class="stat-value">${counts.total}</div></div>
+                <div class="stat stat-critical"><div class="stat-label">Critical</div><div class="stat-value">${counts.critical}</div></div>
+                <div class="stat stat-high"><div class="stat-label">High</div><div class="stat-value">${counts.high}</div></div>
+                <div class="stat stat-medium"><div class="stat-label">Medium</div><div class="stat-value">${counts.medium}</div></div>
+                <div class="stat stat-low"><div class="stat-label">Low</div><div class="stat-value">${counts.low}</div></div>
+                <div class="stat stat-blocked"><div class="stat-label">Blocked Signals</div><div class="stat-value">${counts.blocked}</div></div>
+            `;
+        }
+
+        function renderTimeline() {
+            const el = document.getElementById('timeline');
+            if (!state.signals.length) {
+                el.innerHTML = '<li class="empty">No recent detections.</li>';
+                return;
+            }
+
+            el.innerHTML = state.signals.slice(0, 50).map(signal => `
+                <li class="timeline-item">
+                    <span>${escapeHtml(timeLabel(signal.timestamp))}</span>
+                    <span title="${escapeHtml(signal.type || '-')}">${escapeHtml(signal.type || '-')}</span>
+                    <span class="sev-badge sev-${escapeHtml(signal.severity || 'info')}">${escapeHtml(signal.severity || 'info')}</span>
+                    <span title="${escapeHtml(signal.path || '-')}">${escapeHtml(signal.path || '-')}</span>
+                </li>
+            `).join('');
+        }
+
+        function renderPosture() {
+            const chart = document.getElementById('posture-chart');
+            if (!state.posture.length) {
+                chart.innerHTML = '<div class="empty">No posture history.</div>';
+                document.getElementById('posture-grade').textContent = '-';
+                return;
+            }
+
+            const ordered = [...state.posture].reverse().slice(-14);
+            const latest = state.posture[0];
+            document.getElementById('posture-grade').textContent = latest && latest.grade ? latest.grade : '-';
+
+            chart.innerHTML = ordered.map(item => {
+                const score = Number(item.score || 0);
+                const height = Math.max(4, Math.min(100, score));
+                const grade = escapeHtml(item.grade || '-');
+                return `
+                    <div class="chart-col" title="${escapeHtml(timeLabel(item.timestamp))} · ${score}">
+                        <div class="chart-score">${score}</div>
+                        <div class="chart-bar" style="height:${height}%"></div>
+                        <div class="chart-grade">${grade}</div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderCategoryFilter() {
+            const select = document.getElementById('category-filter');
+            const categories = Array.from(new Set(state.findings.map(f => f.category).filter(Boolean))).sort();
+            const options = ['all', ...categories];
+            select.innerHTML = options.map(v => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('');
+            select.value = state.category;
+        }
+
+        function renderFindings() {
+            const body = document.getElementById('findings-body');
+            let findings = [...state.findings];
+
+            if (state.category !== 'all') {
+                findings = findings.filter(f => f.category === state.category);
+            }
+
+            findings.sort((a, b) => {
+                const left = severityRank[a.severity] ?? 5;
+                const right = severityRank[b.severity] ?? 5;
+                return state.sortDir === 'asc' ? left - right : right - left;
+            });
+
+            if (!findings.length) {
+                body.innerHTML = '<tr><td colspan="6" class="empty">No findings for this filter.</td></tr>';
+                return;
+            }
+
+            body.innerHTML = findings.map(finding => {
+                const loc = splitLocation(finding.location);
+                const sev = escapeHtml(finding.severity || 'info');
+                return `
+                    <tr>
+                        <td><span class="sev-icon ${sev}" title="${sev}"></span></td>
+                        <td>${escapeHtml(finding.type || '-')}</td>
+                        <td title="${escapeHtml(loc.path)}">${escapeHtml(loc.path)}</td>
+                        <td>${escapeHtml(loc.line)}</td>
+                        <td>${escapeHtml(finding.description || '-')}</td>
+                        <td><a class="fix-link" href="${FIX_DOCS_URL}" target="_blank" rel="noopener noreferrer">Fix</a></td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderStatus() {
+            document.getElementById('mode-value').textContent = (state.status && state.status.mode) ? state.status.mode : '-';
+            document.getElementById('updated-at').textContent = new Date().toLocaleTimeString();
+        }
+
+        async function fetchJson(path) {
+            const res = await fetch(path, { headers: { 'Accept': 'application/json' } });
+            if (!res.ok) throw new Error(`Failed ${path}: ${res.status}`);
+            return res.json();
+        }
+
+        async function refreshAll() {
+            const [findings, posture, signals, status] = await Promise.all([
+                fetchJson('/api/findings'),
+                fetchJson('/api/posture'),
+                fetchJson('/api/signals'),
+                fetchJson('/api/status')
+            ]);
+
+            state.findings = Array.isArray(findings) ? findings : [];
+            state.posture = Array.isArray(posture) ? posture : [];
+            state.signals = Array.isArray(signals) ? signals : [];
+            state.status = status && typeof status === 'object' ? status : null;
+
+            renderStats();
+            renderTimeline();
+            renderPosture();
+            renderCategoryFilter();
+            renderFindings();
+            renderStatus();
+        }
+
+        document.getElementById('sort-severity').addEventListener('click', () => {
+            state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+            renderFindings();
+        });
+
+        document.getElementById('category-filter').addEventListener('change', (event) => {
+            state.category = event.target.value;
+            renderFindings();
+        });
+
+        refreshAll().catch(err => {
+            console.error(err);
+            document.getElementById('findings-body').innerHTML = '<tr><td colspan="6" class="empty">Unable to load dashboard data.</td></tr>';
+        });
+
+        setInterval(refreshAll, REFRESH_MS);
+    </script>
+</body>
+</html>

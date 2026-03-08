@@ -1,7 +1,8 @@
 /**
  * Auth Bypass Invariant Classes — All 2
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
+import { jwtKidInjection, jwtJwkEmbedding, jwtConfusion } from './jwt-abuse.js'
 
 export const authNoneAlgorithm: InvariantClassModule = {
     id: 'auth_none_algorithm',
@@ -34,6 +35,19 @@ export const authNoneAlgorithm: InvariantClassModule = {
             return false
         }
     },
+    detectL2: (input: string): DetectionLevelResult | null => {
+        try {
+            if (!input.includes('.')) return null;
+            const parts = input.split('.');
+            if (parts.length === 3) {
+                const header = JSON.parse(atob(parts[0].replace('Bearer ', '').trim()));
+                if (/^none$/i.test(header.alg)) {
+                    return { detected: true, confidence: 0.97, explanation: 'JWT algorithm set to none', evidence: header.alg };
+                }
+            }
+            return null;
+        } catch { return null; }
+    },
     generateVariants: (count: number): string[] => {
         const v = [
             'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ.',
@@ -58,6 +72,9 @@ export const authHeaderSpoof: InvariantClassModule = {
         'X-Forwarded-For: 127.0.0.1',
         'X-Original-URL: /admin',
         'X-Rewrite-URL: /admin',
+        'X-Custom-IP-Authorization: 127.0.0.1',
+        'X-Real-IP: 127.0.0.1',
+        'X-Client-IP: 10.0.0.1',
     ],
 
     knownBenign: [
@@ -66,8 +83,30 @@ export const authHeaderSpoof: InvariantClassModule = {
         '/api/users',
     ],
 
-    // This invariant is checked differently — via dedicated header analysis, not input text
-    detect: (_input: string): boolean => false,
+    // Detects IP/URL spoofing headers used to bypass access controls
+    detect: (input: string): boolean => {
+        const i = input.toLowerCase();
+        // Standard proxy headers
+        if (i.includes('x-forwarded-for:') || i.includes('x-original-url:') || i.includes('x-rewrite-url:')) return true
+        // Additional IP spoofing headers
+        if (i.includes('x-real-ip:') || i.includes('x-client-ip:') || i.includes('x-cluster-client-ip:')) return true
+        // Custom auth/IP override headers (X-*-IP-*, X-*-Authorization-*)
+        if (/x-[a-z-]*(?:ip|authorization)[a-z-]*:\s*(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|0\.0\.0\.0|localhost)/i.test(input)) return true
+        return false
+    },
+    detectL2: (input: string): DetectionLevelResult | null => {
+        try {
+            const lowerInput = input.toLowerCase();
+            const forwardedMatches = lowerInput.match(/x-forwarded-[a-z-]+:/g) || [];
+            if (forwardedMatches.length >= 3) {
+                return { detected: true, confidence: 0.82, explanation: 'Multiple X-Forwarded headers detected, likely spoofing attempt' };
+            }
+            if (lowerInput.includes('x-original-url:') || lowerInput.includes('x-rewrite-url:')) {
+                return { detected: true, confidence: 0.87, explanation: 'URL rewrite header spoofing detected' };
+            }
+            return null;
+        } catch { return null; }
+    },
     generateVariants: (count: number): string[] => {
         const v = [
             'X-Forwarded-For: 127.0.0.1', 'X-Original-URL: /admin',
@@ -79,4 +118,12 @@ export const authHeaderSpoof: InvariantClassModule = {
     },
 }
 
-export const AUTH_CLASSES: InvariantClassModule[] = [authNoneAlgorithm, authHeaderSpoof]
+export { jwtKidInjection, jwtJwkEmbedding, jwtConfusion } from './jwt-abuse.js'
+
+export const AUTH_CLASSES: InvariantClassModule[] = [
+    authNoneAlgorithm,
+    authHeaderSpoof,
+    jwtKidInjection,
+    jwtJwkEmbedding,
+    jwtConfusion,
+]

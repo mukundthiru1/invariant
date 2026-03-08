@@ -64,7 +64,7 @@ const HEADER_CHECKS: HeaderCheck[] = [
         check: (value) => {
             if (!value) {
                 return {
-                    finding: 'No HSTS header — browsers will accept HTTP connections',
+                    finding: 'Missing Strict-Transport-Security header — browsers will accept HTTP connections',
                     severity: 'critical',
                     category: 'header',
                     remediation: 'Add Strict-Transport-Security: max-age=31536000; includeSubDomains; preload',
@@ -295,7 +295,9 @@ interface CookieFinding {
 
 function auditCookies(headers: Headers): PostureFinding[] {
     const findings: PostureFinding[] = []
-    const setCookies = headers.getAll?.('set-cookie') ?? []
+    const setCookies = typeof (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie === 'function'
+        ? (headers as Headers & { getSetCookie: () => string[] }).getSetCookie()
+        : []
 
     // Fallback: some implementations don't support getAll
     if (setCookies.length === 0) {

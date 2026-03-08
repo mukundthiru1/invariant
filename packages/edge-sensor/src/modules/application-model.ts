@@ -129,10 +129,13 @@ export function detectAuthType(headers: Headers): AuthType {
         return 'api_key'
     }
 
-    // Check for session cookies
+    // PRIVACY (SAA-072): Cookie header is inspected for auth type CLASSIFICATION only.
+    // Only cookie NAMES are regex-tested — no values are extracted, stored, or transmitted.
+    // This backs the Principles page claim: "cookie names and flags inspected [...] 
+    // cookie values never read, stored, or transmitted."
     const cookie = headers.get('cookie')
     if (cookie) {
-        // Look for common session cookie names
+        // Look for common session cookie names (name pattern only, values ignored)
         if (/(?:^|;\s*)(sess|session|sid|token|auth|jwt|connect\.sid|PHPSESSID|JSESSIONID|ASP\.NET_SessionId)/i.test(cookie)) {
             return 'cookie'
         }

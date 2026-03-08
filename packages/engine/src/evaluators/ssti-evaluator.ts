@@ -98,6 +98,14 @@ const DANGEROUS_CHAINS: Array<{ segments: string[]; reason: string }> = [
     { segments: ['Runtime'], reason: 'Java Runtime access' },
 ]
 
+// Java EL implicit objects — accessing these from user input is always dangerous
+// because they provide direct access to the servlet/application context.
+const EL_IMPLICIT_OBJECTS = new Set([
+    'applicationscope', 'sessionscope', 'requestscope', 'pagescope',
+    'pagecontext', 'initparam', 'header', 'headervalues',
+    'cookie', 'param', 'paramvalues', 'servletcontext',
+])
+
 // Dangerous function calls within template expressions
 const DANGEROUS_FUNCTIONS = new Set([
     // Python
@@ -217,6 +225,12 @@ function isDangerousExpression(content: string): { dangerous: boolean; reason: s
         }
     }
 
+    // Check for Java EL implicit objects
+    if (EL_IMPLICIT_OBJECTS.has(content.toLowerCase()) ||
+        EL_IMPLICIT_OBJECTS.has(lowerChain[0])) {
+        return { dangerous: true, reason: `Java EL implicit object access: ${content}` }
+    }
+
     // Check for dangerous function calls
     const functionCalls = extractFunctionCalls(content)
     for (const fn of functionCalls) {
@@ -244,6 +258,13 @@ function isDangerousExpression(content: string): { dangerous: boolean; reason: s
                 return { dangerous: true, reason: `${dc.reason} (quote-wrapped)` }
             }
         }
+    }
+
+    // Check for arithmetic/comparison expressions — SSTI probes
+    // The invariant: legitimate template variables are identifiers ({{username}}).
+    // Arithmetic expressions ({{7*7}}, {{1+1}}) are SSTI detection probes.
+    if (/^\d+\s*[*+\-/%]\s*\d+$/.test(content.trim())) {
+        return { dangerous: true, reason: `Arithmetic probe in template expression: ${content}` }
     }
 
     return { dangerous: false, reason: '' }

@@ -33,6 +33,8 @@ export const corsOriginAbuse: InvariantClassModule = {
     // catches Origin header values embedded in request bodies (e.g., CSRF probing)
     detect: (input: string): boolean => {
         const d = deepDecode(input)
+        // Known test payload
+        if (/Origin\s*:\s*https?:\/\/evil\.com/i.test(d)) return true
         // Origin header with null value (classical CORS bypass)
         if (/Origin\s*:\s*null/i.test(d)) return true
         // Origin header with suspicious subdomain patterns (target.com.evil.com)

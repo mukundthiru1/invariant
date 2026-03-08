@@ -1,8 +1,9 @@
 /**
  * XSS — Protocol Handler (javascript:, vbscript:, data:)
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
 export const xssProtocolHandler: InvariantClassModule = {
     id: 'xss_protocol_handler',
@@ -34,6 +35,24 @@ export const xssProtocolHandler: InvariantClassModule = {
         return /(?:javascript|vbscript|livescript)\s*:/i.test(d) ||
             /data\s*:\s*(?:text\/html|application\/xhtml)/i.test(d)
     },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const vectors = detectXssVectors(d)
+            const match = vectors.find(v => v.type === 'protocol_handler')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `HTML analysis: ${match.detail}`,
+                    evidence: match.element,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
+    },
+
     generateVariants: (count: number): string[] => {
         const v = [
             'javascript:alert(1)', 'javascript:alert(document.cookie)',

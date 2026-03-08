@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2GraphQLIntrospection, l2GraphQLBatch } from '../../evaluators/l2-adapters.js'
 
 export const graphqlIntrospection: InvariantClassModule = {
     id: 'graphql_introspection',
@@ -31,6 +32,7 @@ export const graphqlIntrospection: InvariantClassModule = {
         return /__schema\s*\{/i.test(d) || /__type\s*\(/i.test(d)
             || /\{\s*__schema\s*\{.*queryType/i.test(d)
     },
+    detectL2: l2GraphQLIntrospection,
     generateVariants: (count: number): string[] => {
         const v = ['{__schema{queryType{name}}}', '{__schema{types{name fields{name}}}}',
             'query{__type(name:"User"){fields{name type{name}}}}']
@@ -65,6 +67,7 @@ export const graphqlBatchAbuse: InvariantClassModule = {
         return aliasCount >= 5
             || /^\s*\[.*\{.*query.*\}.*\{.*query.*\}/s.test(d)
     },
+    detectL2: l2GraphQLBatch,
     generateVariants: (count: number): string[] => {
         const v = [
             '[{"query":"{ user(id:1) { name } }"},{"query":"{ user(id:2) { name } }"},{"query":"{ user(id:3) { name } }"},{"query":"{ user(id:4) { name } }"},{"query":"{ user(id:5) { name } }"},{"query":"{ user(id:6) { name } }"}]',

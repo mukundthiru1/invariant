@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { InvariantEngine } from './invariant-engine.js'
+import type { InvariantClass } from './classes/types.js'
 import {
     InvariantRegistry,
     ALL_CLASS_MODULES,
@@ -43,7 +44,7 @@ describe('InvariantRegistry', () => {
     it('filters by category', () => {
         const registry = new InvariantRegistry()
         registry.registerAll(ALL_CLASS_MODULES)
-        expect(registry.getByCategory('sqli').length).toBe(7)
+        expect(registry.getByCategory('sqli').length).toBe(8)
     })
 
     it('filters by severity', () => {
@@ -65,22 +66,22 @@ describe('InvariantRegistry', () => {
         registry.registerAll(ALL_CLASS_MODULES)
         const stats = registry.stats()
         expect(stats.totalClasses).toBe(ALL_CLASS_MODULES.length)
-        expect(stats.byCategory['sqli']).toBe(7)
+        expect(stats.byCategory['sqli']).toBe(8)
     })
 })
 
 
 // 2. Class Module Counts
 describe('Class Module Counts', () => {
-    it('SQL: 7', () => expect(SQL_CLASSES.length).toBe(7))
+    it('SQL: 8', () => expect(SQL_CLASSES.length).toBe(8))
     it('XSS: 5', () => expect(XSS_CLASSES.length).toBe(5))
     it('CMDi: 3', () => expect(CMD_CLASSES.length).toBe(3))
     it('Path: 4', () => expect(PATH_CLASSES.length).toBe(4))
     it('SSRF: 3', () => expect(SSRF_CLASSES.length).toBe(3))
     it('Deser: 3', () => expect(DESER_CLASSES.length).toBe(3))
-    it('Auth: 2', () => expect(AUTH_CLASSES.length).toBe(2))
-    it('Injection: 19', () => expect(INJECTION_CLASSES.length).toBe(19))
-    it('Total: 46', () => expect(ALL_CLASS_MODULES.length).toBe(46))
+    it('Auth: 5', () => expect(AUTH_CLASSES.length).toBe(5))
+    it('Injection: 35', () => expect(INJECTION_CLASSES.length).toBe(35))
+    it('Total: 66', () => expect(ALL_CLASS_MODULES.length).toBe(66))
 })
 
 
@@ -266,4 +267,146 @@ describe('knownBenign Regression', () => {
             }
         })
     }
+})
+
+
+// ─── v3: Multi-Level Pipeline Tests ──────────────────────────────
+
+describe('v3: detectDeep() Multi-Level Pipeline', () => {
+    const engine = new InvariantEngine()
+
+    it('returns DeepDetectionResult structure', () => {
+        const result = engine.detectDeep("' OR 1=1--", [])
+        expect(result).toHaveProperty('matches')
+        expect(result).toHaveProperty('novelByL2')
+        expect(result).toHaveProperty('convergent')
+        expect(result).toHaveProperty('processingTimeUs')
+        expect(Array.isArray(result.matches)).toBe(true)
+        expect(typeof result.processingTimeUs).toBe('number')
+    })
+
+    it('detects SQL tautology via both L1 and L2', () => {
+        const result = engine.detectDeep("' OR 1=1--", [])
+        const taut = result.matches.find(m => m.class === 'sql_tautology')
+        expect(taut).toBeDefined()
+        // Should have detection level info
+        expect(taut!.detectionLevels).toBeDefined()
+        expect(taut!.detectionLevels!.l1).toBe(true)
+    })
+
+    it('detects XSS via L1', () => {
+        const result = engine.detectDeep('<script>alert(1)</script>', [])
+        const tag = result.matches.find(m => m.class === 'xss_tag_injection')
+        expect(tag).toBeDefined()
+        expect(tag!.detectionLevels!.l1).toBe(true)
+    })
+
+    it('returns zero matches for clean input', () => {
+        const result = engine.detectDeep('hello world', [])
+        expect(result.matches.length).toBe(0)
+        expect(result.novelByL2).toBe(0)
+        expect(result.convergent).toBe(0)
+    })
+
+    it('processes in sub-millisecond for typical inputs', () => {
+        const result = engine.detectDeep("' OR 1=1--", [])
+        // processingTimeUs should be < 5000 (5ms) for sub-millisecond path
+        expect(result.processingTimeUs).toBeLessThan(5000)
+    })
+
+    it('backward compatible: detect() returns same classes as detectDeep()', () => {
+        const input = "' UNION SELECT 1,2,3--"
+        const v2 = engine.detect(input, [])
+        const v3 = engine.detectDeep(input, [])
+        const v2Classes = new Set(v2.map(m => m.class))
+        // v3 should catch at least everything v2 catches
+        for (const cls of v2Classes) {
+            const found = v3.matches.find(m => m.class === cls)
+            expect(found, `v3 missed class ${cls} that v2 caught`).toBeDefined()
+        }
+    })
+
+    it('detects multiple classes in a compound payload', () => {
+        // This payload expresses: string_termination + tautology + comment_truncation
+        const result = engine.detectDeep("' OR 1=1--", [])
+        const classes = new Set(result.matches.map(m => m.class))
+        expect(classes.has('sql_tautology')).toBe(true)
+        expect(classes.has('sql_string_termination')).toBe(true)
+    })
+
+    it('marks clean-input as not novel', () => {
+        const result = engine.detectDeep("'; DROP TABLE users--", ['static_rule_1'])
+        const match = result.matches.find(m => m.class === 'sql_stacked_execution')
+        if (match) {
+            // When static rules already matched, it's NOT novel
+            expect(match.isNovelVariant).toBe(false)
+        }
+    })
+})
+
+
+describe('v3: L2 Evaluator Wiring', () => {
+    // Verify that L2 evaluators are wired into the class modules
+    const engine = new InvariantEngine()
+
+    const classesWithL2 = [
+        'sql_tautology',
+        'sql_string_termination',
+        'sql_union_extraction',
+        'sql_stacked_execution',
+        'sql_time_oracle',
+        'sql_error_oracle',
+        'sql_comment_truncation',
+        'xss_tag_injection',
+        'xss_event_handler',
+        'xss_protocol_handler',
+        'xss_attribute_escape',
+        'xss_template_expression',
+    ]
+
+    for (const classId of classesWithL2) {
+        it(`${classId} has detectL2 wired`, () => {
+            const mod = engine.registry.get(classId as InvariantClass)
+            expect(mod).toBeDefined()
+            expect(mod!.detectL2).toBeDefined()
+            expect(typeof mod!.detectL2).toBe('function')
+        })
+    }
+
+    it('SQL classes total with L2: 8', () => {
+        const sqlWithL2 = SQL_CLASSES.filter(c => c.detectL2)
+        expect(sqlWithL2.length).toBe(8)
+    })
+
+    it('XSS classes total with L2: 5', () => {
+        const xssWithL2 = XSS_CLASSES.filter(c => c.detectL2)
+        expect(xssWithL2.length).toBe(5)
+    })
+
+    it('total classes with L2: at least 43', () => {
+        const allWithL2 = ALL_CLASS_MODULES.filter(c => c.detectL2)
+        expect(allWithL2.length).toBeGreaterThanOrEqual(43)
+    })
+})
+
+
+describe('v3: DetectionLevelResult Contract', () => {
+    it('DetectionLevelResult has required fields', () => {
+        const mod = ALL_CLASS_MODULES.find(m => m.id === 'sql_tautology')!
+        const result = mod.detectL2!("' OR 1=1--")
+        // If it detects, verify structure
+        if (result && result.detected) {
+            expect(typeof result.confidence).toBe('number')
+            expect(result.confidence).toBeGreaterThan(0)
+            expect(result.confidence).toBeLessThanOrEqual(1)
+            expect(typeof result.explanation).toBe('string')
+            expect(result.explanation.length).toBeGreaterThan(0)
+        }
+    })
+
+    it('L2 returns null for non-matching input', () => {
+        const mod = ALL_CLASS_MODULES.find(m => m.id === 'sql_tautology')!
+        const result = mod.detectL2!('hello world')
+        expect(result === null || result?.detected === false).toBe(true)
+    })
 })

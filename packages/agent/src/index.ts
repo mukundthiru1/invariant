@@ -29,6 +29,7 @@ import { type HttpRaspConfig, wrapFetch } from './rasp/http.js'
 import { type ExecRaspConfig } from './rasp/exec.js'
 import { type DeserRaspConfig, wrapJsonParse } from './rasp/deser.js'
 import { AutonomousDefenseController, type DefenseDecision } from './autonomous-defense.js'
+import { AdaptiveCalibrator, type CalibrationReport } from './calibration.js'
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -66,6 +67,7 @@ export class InvariantAgent {
     private scanTimer: ReturnType<typeof setInterval> | null = null
     private started = false
     private defenseController: AutonomousDefenseController
+    private calibrator: AdaptiveCalibrator
 
     constructor(config: AgentConfig = {}) {
         const projectDir = config.projectDir ?? process.cwd()
@@ -83,6 +85,7 @@ export class InvariantAgent {
         this.db = new InvariantDB(this.config.dbPath)
         this.startTime = Date.now()
         this.defenseController = new AutonomousDefenseController(this.config.mode, this.db)
+        this.calibrator = new AdaptiveCalibrator(this.db)
 
         // Store config
         this.db.setConfig('mode', this.config.mode)
@@ -254,6 +257,16 @@ export class InvariantAgent {
         )
     }
 
+    /** Record whether a detected class was confirmed as a real attack or false positive. */
+    recordAttackOutcome(classId: string, wasAttack: boolean): void {
+        this.calibrator.recordOutcome(classId, wasAttack)
+    }
+
+    /** Get calibration quality and uncertainty report across tracked classes. */
+    getCalibrationReport(): CalibrationReport {
+        return this.calibrator.getCalibrationReport()
+    }
+
     /** Run a manual dependency scan */
     async rescan(): Promise<ScanResult> {
         return scanDependencies(this.config.projectDir, this.db)
@@ -321,3 +334,5 @@ export { wrapJsonParse, checkDeserInvariants } from './rasp/deser.js'
 export { AutonomousDefenseController, type DefenseDecision, type DefenseLevel, type SourceReputation } from './autonomous-defense.js'
 export { ChainCorrelator, ATTACK_CHAINS, type ChainMatch, type ChainSignal } from '../../engine/src/chain-detector.js'
 export { BehavioralAnalyzer, type BehaviorSignal, type BehaviorResult, type RequestContext } from './behavioral.js'
+export { type RequestSessionData, type RaspEvent, type CompoundDetection, recordRaspEvent, startRequestSession, finalizeRequestSession, getCurrentSession, runWithSession } from './rasp/request-session.js'
+export { AdaptiveCalibrator, type ClassCalibrationState, type CalibrationReport } from './calibration.js'

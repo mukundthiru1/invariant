@@ -66,8 +66,14 @@ async function sha256(data: string): Promise<string> {
         .join('')
 }
 
+/**
+ * SAA-089: Domain-separated internal node hash per RFC 6962.
+ * Prepends '0x01' to distinguish internal node hashing from leaf hashing.
+ * Without this, an attacker can forge a Merkle proof by finding inputs
+ * where H(A||B) equals H(C||D) via boundary manipulation.
+ */
 async function sha256Pair(left: string, right: string): Promise<string> {
-    return sha256(left + right)
+    return sha256('\x01' + left + right)
 }
 
 async function hmacSign(data: string, key: string): Promise<string> {
@@ -81,6 +87,20 @@ async function hmacSign(data: string, key: string): Promise<string> {
     return Array.from(new Uint8Array(signature))
         .map(b => b.toString(16).padStart(2, '0'))
         .join('')
+}
+
+/**
+ * SAA-090: Constant-time hex string comparison.
+ * Uses XOR accumulation over full string — no early exit.
+ * Length check is safe since HMAC outputs are always 64 hex chars.
+ */
+function timingSafeCompare(a: string, b: string): boolean {
+    if (a.length !== b.length) return false
+    let result = 0
+    for (let i = 0; i < a.length; i++) {
+        result |= a.charCodeAt(i) ^ b.charCodeAt(i)
+    }
+    return result === 0
 }
 
 
@@ -237,11 +257,12 @@ export class EvidenceSealer {
 
     /**
      * Verify the HMAC signature of a seal.
+     * SAA-090: Uses constant-time comparison to prevent timing oracle.
      */
     async verifySeal(seal: EvidenceSeal): Promise<boolean> {
         const sealData = `${seal.sealId}:${seal.merkleRoot}:${seal.signalCount}:${seal.sensorId}:${seal.sealedAt}`
         const expectedSignature = await hmacSign(sealData, this.signingKey)
-        return seal.signature === expectedSignature
+        return timingSafeCompare(seal.signature, expectedSignature)
     }
 
     private async generateSealId(): Promise<string> {
@@ -252,7 +273,7 @@ export class EvidenceSealer {
         const randomHex = Array.from(randomBytes)
             .map(b => b.toString(16).padStart(2, '0'))
             .join('')
-        
+
         const entropy = `${this.sensorId}:${Date.now()}:${randomHex}`
         const hash = await sha256(entropy)
         return `seal_${hash.slice(0, 16)}`

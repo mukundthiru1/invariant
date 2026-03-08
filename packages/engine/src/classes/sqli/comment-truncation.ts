@@ -5,8 +5,9 @@
  *   Phase 1: Check RAW input for SQL comment syntax
  *   Phase 2: Check DECODED input for SQL keywords
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.js'
 
 const COMMENT_SYNTAX = /\/\*|--\s|--$|#/
 const SQL_KEYWORDS = /\b(?:SELECT|UNION|FROM|WHERE|AND|OR|INSERT|UPDATE|DELETE|DROP|TABLE|DATABASE|EXEC|INTO|CREATE|ALTER|GRANT|REVOKE)\b/i
@@ -44,6 +45,24 @@ export const sqlCommentTruncation: InvariantClassModule = {
         if (!hasComment) return false
         return SQL_KEYWORDS.test(d) || TERMINATE_COMMENT.test(input)
     },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const detections = detectSqlStructural(d)
+            const match = detections.find(det => det.type === 'comment_truncation')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `Token analysis: ${match.detail}`,
+                    evidence: match.detail,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
+    },
+
     generateVariants: (count: number): string[] => {
         const v = [
             "' OR 1=1-- comment", "' UNION/**/SELECT/**/1,2,3--",

@@ -1,0 +1,37 @@
+name: 'Invariant Security Scan'
+description: 'Scan your codebase for vulnerability patterns using Invariant Engine'
+inputs:
+  path:
+    description: 'Directory to scan'
+    required: false
+    default: '.'
+  severity-threshold:
+    description: 'Fail when findings at or above this severity are detected'
+    required: false
+    default: 'high'
+  fail-on-findings:
+    description: 'Fail the job when findings exceed the severity threshold'
+    required: false
+    default: 'true'
+  fail-on:
+    description: "Failure mode: one of 'critical', 'high', 'medium', 'any', 'none'"
+    required: false
+    default: 'high'
+  extensions:
+    description: 'Comma-separated extensions to include'
+    required: false
+    default: '.ts,.js,.tsx,.jsx'
+  exclude:
+    description: 'Comma-separated directories/files to skip while scanning'
+    required: false
+    default: 'node_modules,.git,dist,build'
+outputs:
+  findings-count:
+    description: 'Total number of findings returned by the scanner'
+  critical-count:
+    description: 'Number of critical findings'
+  high-count:
+    description: 'Number of high findings'
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

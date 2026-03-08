@@ -15,6 +15,7 @@
  */
 
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
+import { recordRaspEvent } from './request-session.js'
 
 export interface DeserRaspConfig {
     mode: 'observe' | 'sanitize' | 'defend' | 'lockdown'
@@ -109,6 +110,9 @@ export function wrapJsonParse(
                 config.mode === 'lockdown' ? 'blocked' :
                     config.mode === 'defend' ? (hasCriticalOrHigh ? 'blocked' : 'monitored') :
                         'monitored'
+        if (violations.length > 0) {
+            recordRaspEvent('deser', text.slice(0, 200), violations.map(v => v.id), action === 'blocked' ? 0.96 : 0.85, action === 'blocked')
+        }
 
         const now = new Date().toISOString()
 

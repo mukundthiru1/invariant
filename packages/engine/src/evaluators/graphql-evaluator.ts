@@ -1,225 +1,261 @@
 /**
- * GraphQL Abuse Evaluator — Level 2 Invariant Detection
- *
- * The invariant property for GraphQL abuse is:
- *   ∃ query ∈ parse(input, GRAPHQL_GRAMMAR) :
- *     query.depth > DEPTH_THRESHOLD
- *     ∨ query.contains("__schema") ∨ query.contains("__type")
- *     ∨ query.is_batch ∧ query.batch_size > BATCH_THRESHOLD
- *     → attacker enumerates schema or causes resource exhaustion
- *
- * Unlike regex matching __schema, this evaluator:
- *   1. Measures actual query depth via brace counting
- *   2. Detects batch query arrays with operation counting
- *   3. Identifies field alias abuse for brute force
- *   4. Recognizes fragment-based depth amplification
- *   5. Extracts introspection field targets
- *
- * Covers:
- *   - graphql_introspection: schema enumeration queries
- *   - graphql_batch_abuse:   batch/depth/alias resource exhaustion
+ * GraphQL Abuse Evaluator — structural L2 analysis.
  */
-
-
-// ── Result Type ──────────────────────────────────────────────────
 
 export interface GraphQLDetection {
     type: 'introspection' | 'depth_abuse' | 'batch_abuse' | 'alias_abuse' | 'fragment_abuse'
     detail: string
     depth: number
     confidence: number
+    l1: boolean
+    l2: boolean
+    evidence: string
 }
 
+const INTROSPECTION_FIELDS = ['__schema', '__type', '__inputvalue', '__field', '__enumvalue', '__directive']
+const GRAPHQL_KEYWORDS = ['query', 'mutation', 'subscription', 'fragment', 'on']
 
-// ── Introspection Field Detection ────────────────────────────────
+function stripQuotedAndComments(input: string): string {
+    let out = ''
+    let i = 0
+    let inSingle = false
+    let inDouble = false
+    let inBlock = false
 
-const INTROSPECTION_FIELDS = new Set([
-    '__schema', '__type', '__inputvalue',
-    '__field', '__enumvalue', '__directive',
-])
+    while (i < input.length) {
+        const ch = input[i]
+        const next = input[i + 1]
+        if (!inSingle && !inDouble && !inBlock && ch === '#' ) {
+            while (i < input.length && input[i] !== '\n') i++
+            continue
+        }
+        if (!inSingle && !inDouble && ch === '"' && next === '"' && input[i + 2] === '"') {
+            inBlock = !inBlock
+            i += 3
+            continue
+        }
+        if (!inDouble && !inBlock && ch === "'" && input[i - 1] !== '\\') {
+            inSingle = !inSingle
+            i++
+            continue
+        }
+        if (!inSingle && !inBlock && ch === '"' && input[i - 1] !== '\\') {
+            inDouble = !inDouble
+            i++
+            continue
+        }
+        if (!inSingle && !inDouble && !inBlock) out += ch
+        i++
+    }
+    return out
+}
 
-function detectIntrospection(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
-    const lower = input.toLowerCase()
-
-    // Find introspection fields used
-    // Use word-boundary matching to prevent __type matching __typename
-    const fields: string[] = []
-    for (const field of INTROSPECTION_FIELDS) {
-        const pattern = new RegExp(`\\b${field}\\b`)
-        if (pattern.test(lower)) {
-            fields.push(field)
+function maxDepth(structural: string): number {
+    let depth = 0
+    let max = 0
+    for (const ch of structural) {
+        if (ch === '{') {
+            depth++
+            if (depth > max) max = depth
+        } else if (ch === '}') {
+            depth = Math.max(0, depth - 1)
         }
     }
+    return max
+}
 
-    if (fields.length === 0) return detections
+function detectIntrospection(structural: string): GraphQLDetection[] {
+    const lower = structural.toLowerCase()
+    const used = INTROSPECTION_FIELDS.filter(field => new RegExp(`\\b${field}\\b`).test(lower))
+    if (used.length === 0) return []
 
-    // Check for full introspection query patterns
-    const isFullIntrospection = lower.includes('__schema') && (
-        lower.includes('types') || lower.includes('querytype') ||
-        lower.includes('mutationtype') || lower.includes('subscriptiontype')
-    )
-
-    const isTypeEnumeration = lower.includes('__type') && (
-        lower.includes('fields') || lower.includes('inputfields') ||
-        lower.includes('enumvalues') || lower.includes('interfaces')
-    )
-
-    detections.push({
+    const fullSchema = lower.includes('__schema') && /(types|querytype|mutationtype|subscriptiontype)/.test(lower)
+    return [{
         type: 'introspection',
-        detail: `GraphQL introspection: ${fields.join(', ')}${isFullIntrospection ? ' (FULL SCHEMA DUMP)' : ''}${isTypeEnumeration ? ' (TYPE ENUMERATION)' : ''}`,
+        detail: `GraphQL introspection fields used: ${used.join(', ')}`,
         depth: 0,
-        confidence: isFullIntrospection ? 0.96 : isTypeEnumeration ? 0.92 : 0.85,
-    })
-
-    return detections
+        confidence: fullSchema ? 0.96 : 0.88,
+        l1: false,
+        l2: true,
+        evidence: used.join(','),
+    }]
 }
 
-
-// ── Query Depth Analysis ─────────────────────────────────────────
-
-function measureQueryDepth(input: string): number {
-    let maxDepth = 0
-    let currentDepth = 0
-
-    for (const char of input) {
-        if (char === '{') {
-            currentDepth++
-            maxDepth = Math.max(maxDepth, currentDepth)
-        } else if (char === '}') {
-            currentDepth--
-        }
-    }
-
-    return maxDepth
+function detectDepthAbuse(structural: string): GraphQLDetection[] {
+    const depth = maxDepth(structural)
+    if (depth <= 10) return []
+    return [{
+        type: 'depth_abuse',
+        detail: `GraphQL depth ${depth} exceeds threshold 10`,
+        depth,
+        confidence: depth > 20 ? 0.96 : depth > 15 ? 0.92 : 0.86,
+        l1: false,
+        l2: true,
+        evidence: `depth=${depth}`,
+    }]
 }
-
-function detectDepthAbuse(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
-
-    const depth = measureQueryDepth(input)
-
-    if (depth > 10) {
-        detections.push({
-            type: 'depth_abuse',
-            detail: `GraphQL query depth: ${depth} levels (threshold: 10) — resource exhaustion risk`,
-            depth,
-            confidence: depth > 20 ? 0.96 : depth > 15 ? 0.92 : 0.85,
-        })
-    }
-
-    return detections
-}
-
-
-// ── Batch Query Detection ────────────────────────────────────────
 
 function detectBatchAbuse(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
-
-    // JSON array of queries
     const trimmed = input.trim()
-    if (trimmed.startsWith('[')) {
-        try {
-            const parsed = JSON.parse(trimmed)
-            if (Array.isArray(parsed)) {
-                const queryCount = parsed.length
-                if (queryCount > 5) {
-                    detections.push({
-                        type: 'batch_abuse',
-                        detail: `GraphQL batch: ${queryCount} queries in single request — brute force / enumeration risk`,
-                        depth: 0,
-                        confidence: queryCount > 50 ? 0.96 : queryCount > 20 ? 0.92 : 0.85,
-                    })
-                }
-            }
-        } catch { /* not valid JSON array */ }
+    if (!trimmed.startsWith('[')) return []
+    try {
+        const parsed = JSON.parse(trimmed)
+        if (!Array.isArray(parsed)) return []
+        const queryItems = parsed.filter(item =>
+            typeof item === 'object' && item !== null &&
+            ('query' in (item as Record<string, unknown>) || 'operationName' in (item as Record<string, unknown>)),
+        ).length
+        if (queryItems <= 5) return []
+        return [{
+            type: 'batch_abuse',
+            detail: `GraphQL batched request with ${queryItems} operations`,
+            depth: 0,
+            confidence: queryItems > 25 ? 0.95 : 0.88,
+            l1: false,
+            l2: true,
+            evidence: `batch_count=${queryItems}`,
+        }]
+    } catch {
+        return []
     }
-
-    return detections
 }
 
-
-// ── Alias Abuse Detection ────────────────────────────────────────
-//
-// Alias abuse: using aliases to repeat the same query many times
-//   { a1:user(id:1){name} a2:user(id:2){name} ... a100:user(id:100){name} }
-// This bypasses rate limiting since it's a single HTTP request.
-
-function detectAliasAbuse(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
-
-    // Count unique aliases (word followed by colon at top query level)
-    const aliasPattern = /\b([a-zA-Z_]\w*)\s*:/g
+function detectAliasAbuse(structural: string): GraphQLDetection[] {
     const aliases = new Set<string>()
+    const aliasPattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\(|\{)/g
     let match: RegExpExecArray | null
-    while ((match = aliasPattern.exec(input)) !== null) {
-        // Exclude known GraphQL keywords
-        const name = match[1].toLowerCase()
-        if (name !== 'query' && name !== 'mutation' && name !== 'subscription' &&
-            name !== 'fragment' && name !== 'on' && name !== 'type' && name !== 'name') {
-            aliases.add(match[1])
+    while ((match = aliasPattern.exec(structural)) !== null) {
+        const alias = match[1].toLowerCase()
+        if (!GRAPHQL_KEYWORDS.includes(alias)) aliases.add(alias)
+    }
+    if (aliases.size <= 10) return []
+    return [{
+        type: 'alias_abuse',
+        detail: `GraphQL alias fan-out detected (${aliases.size} unique aliases)`,
+        depth: 0,
+        confidence: aliases.size > 30 ? 0.95 : 0.87,
+        l1: false,
+        l2: true,
+        evidence: `alias_count=${aliases.size}`,
+    }]
+}
+
+function extractFragmentBodies(structural: string): Map<string, string> {
+    const fragments = new Map<string, string>()
+    const startPattern = /\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/g
+    let match: RegExpExecArray | null
+    while ((match = startPattern.exec(structural)) !== null) {
+        const name = match[1]
+        let i = startPattern.lastIndex
+        let depth = 1
+        while (i < structural.length && depth > 0) {
+            if (structural[i] === '{') depth++
+            if (structural[i] === '}') depth--
+            i++
         }
+        const body = structural.slice(startPattern.lastIndex, i - 1)
+        fragments.set(name, body)
+        startPattern.lastIndex = i
     }
-
-    if (aliases.size > 10) {
-        detections.push({
-            type: 'alias_abuse',
-            detail: `GraphQL alias abuse: ${aliases.size} unique aliases — rate limit bypass / brute force`,
-            depth: 0,
-            confidence: aliases.size > 50 ? 0.96 : aliases.size > 25 ? 0.92 : 0.85,
-        })
-    }
-
-    return detections
+    return fragments
 }
 
+function hasFragmentCycle(edges: Map<string, Set<string>>): string[] | null {
+    const visiting = new Set<string>()
+    const visited = new Set<string>()
+    const trail: string[] = []
 
-// ── Fragment Abuse Detection ─────────────────────────────────────
-//
-// Fragment spreading can amplify query depth/breadth:
-//   fragment A on User { friends { ...B } }
-//   fragment B on User { friends { ...A } }  ← circular!
+    const dfs = (node: string): string[] | null => {
+        if (visiting.has(node)) {
+            const cycleStart = trail.indexOf(node)
+            return cycleStart >= 0 ? trail.slice(cycleStart).concat(node) : [node, node]
+        }
+        if (visited.has(node)) return null
+        visiting.add(node)
+        trail.push(node)
+        for (const next of edges.get(node) ?? []) {
+            const cycle = dfs(next)
+            if (cycle) return cycle
+        }
+        trail.pop()
+        visiting.delete(node)
+        visited.add(node)
+        return null
+    }
 
-function detectFragmentAbuse(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
+    for (const node of edges.keys()) {
+        const cycle = dfs(node)
+        if (cycle) return cycle
+    }
+    return null
+}
 
-    // Count fragments and fragment spreads
-    const fragmentDefs = (input.match(/\bfragment\s+\w+\s+on\s+/g) || []).length
-    const fragmentSpreads = (input.match(/\.\.\.\s*\w+/g) || []).length
+function detectFragmentAbuse(structural: string): GraphQLDetection[] {
+    const fragments = extractFragmentBodies(structural)
+    if (fragments.size === 0) return []
 
-    if (fragmentDefs >= 3 && fragmentSpreads > fragmentDefs) {
-        detections.push({
+    const edges = new Map<string, Set<string>>()
+    let spreadCount = 0
+    for (const [name, body] of fragments) {
+        const refs = new Set<string>()
+        const spreadPattern = /\.\.\.\s*([A-Za-z_][A-Za-z0-9_]*)/g
+        let match: RegExpExecArray | null
+        while ((match = spreadPattern.exec(body)) !== null) {
+            refs.add(match[1])
+            spreadCount++
+        }
+        edges.set(name, refs)
+    }
+
+    const cycle = hasFragmentCycle(edges)
+    if (cycle) {
+        return [{
             type: 'fragment_abuse',
-            detail: `GraphQL fragment explosion: ${fragmentDefs} definitions, ${fragmentSpreads} spreads — depth amplification`,
+            detail: `Circular fragment references detected: ${cycle.join(' -> ')}`,
             depth: 0,
-            confidence: 0.88,
-        })
+            confidence: 0.94,
+            l1: false,
+            l2: true,
+            evidence: cycle.join('->'),
+        }]
     }
 
-    return detections
+    if (fragments.size >= 4 && spreadCount >= fragments.size * 2) {
+        return [{
+            type: 'fragment_abuse',
+            detail: `Fragment spread amplification detected (${fragments.size} fragments, ${spreadCount} spreads)`,
+            depth: 0,
+            confidence: 0.86,
+            l1: false,
+            l2: true,
+            evidence: `fragments=${fragments.size},spreads=${spreadCount}`,
+        }]
+    }
+
+    return []
 }
-
-
-// ── Public API ───────────────────────────────────────────────────
 
 export function detectGraphQLAbuse(input: string): GraphQLDetection[] {
-    const detections: GraphQLDetection[] = []
-
-    if (input.length < 5) return detections
-
-    // Quick bail: must contain GraphQL-like structures
-    const lower = input.toLowerCase()
-    if (!lower.includes('{') && !lower.includes('query') &&
-        !lower.includes('mutation') && !lower.includes('[')) {
-        return detections
+    if (input.length < 5) return []
+    const structural = stripQuotedAndComments(input)
+    const lower = structural.toLowerCase()
+    if (!lower.includes('{') && !lower.includes('query') && !lower.includes('fragment') && !lower.includes('[')) {
+        return []
     }
 
-    try { detections.push(...detectIntrospection(input)) } catch { /* safe */ }
-    try { detections.push(...detectDepthAbuse(input)) } catch { /* safe */ }
-    try { detections.push(...detectBatchAbuse(input)) } catch { /* safe */ }
-    try { detections.push(...detectAliasAbuse(input)) } catch { /* safe */ }
-    try { detections.push(...detectFragmentAbuse(input)) } catch { /* safe */ }
+    const detections = [
+        ...detectIntrospection(structural),
+        ...detectDepthAbuse(structural),
+        ...detectBatchAbuse(input),
+        ...detectAliasAbuse(structural),
+        ...detectFragmentAbuse(structural),
+    ]
 
-    return detections
+    const deduped = new Map<string, GraphQLDetection>()
+    for (const d of detections) {
+        const key = `${d.type}:${d.evidence}`
+        const existing = deduped.get(key)
+        if (!existing || d.confidence > existing.confidence) deduped.set(key, d)
+    }
+    return [...deduped.values()]
 }

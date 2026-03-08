@@ -2,8 +2,9 @@
  * Path Traversal Invariant Classes — All 4
  * (Added path_normalization_bypass)
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2PathDotdot, l2PathNull, l2PathEncoding, l2PathNormalization } from '../../evaluators/l2-adapters.js'
 
 export const pathDotdotEscape: InvariantClassModule = {
     id: 'path_dotdot_escape',
@@ -35,6 +36,7 @@ export const pathDotdotEscape: InvariantClassModule = {
         return /(?:\.{2,}[\/\\]+){2,}/i.test(d) ||
             /(?:\.\.%2[fF]|%2[eE]%2[eE]%2[fF]|\.\.%5[cC]){2,}/.test(input)
     },
+    detectL2: l2PathDotdot,
     generateVariants: (count: number): string[] => {
         const targets = ['/etc/passwd', '/etc/shadow', '/proc/self/environ', '/windows/win.ini']
         const prefixes = [
@@ -72,6 +74,7 @@ export const pathNullTerminate: InvariantClassModule = {
     ],
 
     detect: (input: string): boolean => /%00|\\x00|\\0|\0/.test(input),
+    detectL2: l2PathNull,
     generateVariants: (count: number): string[] => {
         const v = [
             '../../../etc/passwd%00.jpg', '..\\..\\..\\etc\\passwd%00.png',
@@ -107,9 +110,22 @@ export const pathEncodingBypass: InvariantClassModule = {
     ],
 
     detect: (input: string): boolean => {
-        return /%252[eE]%252[eE]|%25252|%c0%ae|%c0%af|%e0%80%ae|\.%00\./.test(input) ||
-            /\/etc\/(?:passwd|shadow|hosts)|\/proc\/self\/(?:environ|cmdline|maps)|\/windows\/(?:system32|win\.ini)/i.test(deepDecode(input))
+        // Multi-layer encoding patterns are always suspicious
+        if (/%252[eE]%252[eE]|%25252|%c0%ae|%c0%af|%e0%80%ae|\.%00\./.test(input)) return true
+        // Sensitive system paths require traversal context (../ prefix, encoded dots,
+        // or the path being the dominant content — not just mentioned in English prose)
+        const d = deepDecode(input)
+        const sensitivePathRe = /\/etc\/(?:passwd|shadow|hosts)|\/proc\/self\/(?:environ|cmdline|maps)|\/windows\/(?:system32|win\.ini)/i
+        if (sensitivePathRe.test(d)) {
+            // Require traversal prefix OR the sensitive path is near-total input content
+            const hasTraversal = /(?:\.\.[\\/]|%2e|%252e)/i.test(input)
+            const pathMatch = sensitivePathRe.exec(d)
+            const isPathDominant = pathMatch && d.trim().length < pathMatch[0].length * 3
+            return hasTraversal || !!isPathDominant
+        }
+        return false
     },
+    detectL2: l2PathEncoding,
     generateVariants: (count: number): string[] => {
         const v = [
             '%252e%252e%252fetc%252fpasswd', '..%c0%af..%c0%afetc/passwd',
@@ -132,6 +148,7 @@ export const pathNormalizationBypass: InvariantClassModule = {
     cwe: 'CWE-22',
 
     knownPayloads: [
+        '/admin/./',
         '/admin../',
         '/Admin%20/',
         '/admin;/secret',
@@ -150,7 +167,9 @@ export const pathNormalizationBypass: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         // Trailing dots in path segments (IIS/Windows normalization)
-        if (/\/[^\/]+\.{2,}\//.test(d)) return true
+        if (/\/[^\/]+\.{1,}\//.test(d)) return true
+        // Single-dot segment after a sensitive path segment (/admin/. , /admin/./)
+        if (/\/(?:admin|config|internal|secret|private|\.env|\.git)\/\.(?:\/|$)/i.test(d)) return true
         // Trailing spaces in path segments
         if (/\/[^\/]+\s+\//.test(d)) return true
         // Semicolon path parameter injection (Tomcat, Spring)
@@ -159,6 +178,7 @@ export const pathNormalizationBypass: InvariantClassModule = {
         if (/^\/.*\\.*\w/.test(d) && /\/(?:admin|config|internal|secret|private|\.env|\.git)[\\/]/i.test(d)) return true
         return false
     },
+    detectL2: l2PathNormalization,
     generateVariants: (count: number): string[] => {
         const v = [
             '/admin/.', '/admin../', '/admin%20/',

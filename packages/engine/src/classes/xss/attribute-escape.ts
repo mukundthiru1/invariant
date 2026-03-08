@@ -1,8 +1,9 @@
 /**
  * XSS — Attribute Escape
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
 export const xssAttributeEscape: InvariantClassModule = {
     id: 'xss_attribute_escape',
@@ -32,6 +33,24 @@ export const xssAttributeEscape: InvariantClassModule = {
         const d = deepDecode(input)
         return /['"][\s/]*(?:>|on\w+\s*=|style\s*=|xmlns\s*=|src\s*=|href\s*=|action\s*=|formaction\s*=)/i.test(d)
     },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const vectors = detectXssVectors(d)
+            const match = vectors.find(v => v.type === 'attribute_escape')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `HTML analysis: ${match.detail}`,
+                    evidence: match.element,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
+    },
+
     generateVariants: (count: number): string[] => {
         const v = [
             '" onmouseover="alert(1)" x="', "' onfocus='alert(1)' autofocus='",

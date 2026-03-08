@@ -13,8 +13,34 @@ export interface Env {
     PROBE_ENABLED: string          // "true" | "false"
     AI?: Ai                        // Optional Workers AI binding
     SENSOR_API_KEY: string         // API key for authenticated signal flush
+    WS_ALLOWED_ORIGINS?: string    // Comma-separated allowed WS Origin values
     INTROSPECTION_KEY?: string     // Key for /__invariant/* endpoint access
     SEAL_SECRET?: string           // Cryptographic key for evidence sealing
+
+    // ── Encrypted Architecture (set via wrangler secret put) ─────
+    // These three secrets enable the collective intelligence network.
+    // Without them the worker runs in standalone mode — full detection,
+    // no encrypted signal upload, no dispatched rule bundles applied.
+
+    /** Subscriber's X25519 private key (32 bytes, base64url). Decrypts
+     *  rule bundles dispatched by Santh central. Generate with: npx @santh/invariant init */
+    SUBSCRIBER_PRIVATE_KEY?: string
+
+    /** Santh central's Ed25519 verify key (32 bytes, base64url).
+     *  Validates rule bundle signatures — prevents rule injection attacks. */
+    SANTH_RULE_VERIFY_KEY?: string
+
+    /** Santh central's X25519 public key (32 bytes, base64url).
+     *  Encrypts novel-variant signals before upload to central ingest. */
+    SANTH_SIGNAL_ENCRYPT_KEY?: string
+
+    /** AES-256-GCM key (32 bytes, base64url) for encrypting local KV state.
+     *  At-rest encryption for everything written to SENSOR_STATE KV. */
+    INVARIANT_STORAGE_KEY?: string
+
+    /** Product category from `invariant init`. Drives collective intelligence segmentation.
+     *  Set automatically by `invariant deploy` from invariant.config.json. */
+    INVARIANT_CATEGORY?: string
 }
 
 // ── Signal ────────────────────────────────────────────────────────

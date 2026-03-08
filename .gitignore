@@ -26,6 +26,9 @@ Thumbs.db
 .env.*
 !.env.example
 
+# Rust build artifacts
+packages/engine-rs/target/
+
 # Test coverage
 coverage/
 

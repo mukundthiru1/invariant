@@ -24,7 +24,7 @@
  *   - Novel evasions that bypass regex are caught because the property persists
  */
 
-import type { InvariantClass } from '../invariant-engine'
+import type { InvariantClass } from '../invariant-engine.js'
 
 
 // ═══════════════════════════════════════════════════════════════════

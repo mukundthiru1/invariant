@@ -10,6 +10,7 @@
  */
 
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
+import { recordRaspEvent } from './request-session.js'
 
 export interface HttpRaspConfig {
     mode: 'observe' | 'sanitize' | 'defend' | 'lockdown'
@@ -88,6 +89,9 @@ export function wrapFetch(
         const action: DefenseAction =
             config.mode === 'observe' ? 'monitored' :
                 (hasCritical || config.mode === 'defend' || config.mode === 'lockdown') ? 'blocked' : 'monitored'
+        if (violations.length > 0) {
+            recordRaspEvent('http', url, violations.map(v => v.id), hasCritical ? 0.95 : 0.85, action === 'blocked')
+        }
 
         const now = new Date().toISOString()
 

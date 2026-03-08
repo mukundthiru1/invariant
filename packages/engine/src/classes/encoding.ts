@@ -17,6 +17,12 @@
 const MAX_DECODE_DEPTH = 6
 const MAX_INPUT_SIZE = 8192
 
+/** Valid Unicode 0–0x10FFFF excluding surrogates; avoids invalid chars from entity abuse. */
+function safeFromCodePoint(cp: number): string {
+    if (Number.isNaN(cp) || cp < 0 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return '\uFFFD'
+    return cp <= 0xffff ? String.fromCharCode(cp) : String.fromCodePoint(cp)
+}
+
 /**
  * Recursively decode a string through common encoding layers.
  * Returns the fully decoded form.
@@ -35,10 +41,10 @@ export function deepDecode(input: string, depth = 0): string {
         }
     } catch { /* invalid encoding, keep original */ }
 
-    // HTML entity decode (numeric + named)
+    // HTML entity decode (numeric + named). Clamp to valid Unicode.
     decoded = decoded
-        .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-        .replace(/&#(\d+);?/g, (_, dec) => String.fromCharCode(parseInt(dec)))
+        .replace(/&#x([0-9a-f]+);?/gi, (_, hex) => safeFromCodePoint(parseInt(hex, 16)))
+        .replace(/&#(\d+);?/g, (_, dec) => safeFromCodePoint(parseInt(dec, 10)))
         .replace(/&quot;/gi, '"')
         .replace(/&apos;/gi, "'")
         .replace(/&lt;/gi, '<')
@@ -47,11 +53,11 @@ export function deepDecode(input: string, depth = 0): string {
 
     // Unicode escapes
     decoded = decoded.replace(/\\u([0-9a-f]{4})/gi, (_, hex) =>
-        String.fromCharCode(parseInt(hex, 16)))
+        safeFromCodePoint(parseInt(hex, 16)))
 
     // Hex escapes
     decoded = decoded.replace(/\\x([0-9a-f]{2})/gi, (_, hex) =>
-        String.fromCharCode(parseInt(hex, 16)))
+        safeFromCodePoint(parseInt(hex, 16)))
 
     // C-style escape sequences: \r → CR, \n → LF, \t → TAB
     decoded = decoded.replace(/\\r/g, '\r').replace(/\\n/g, '\n').replace(/\\t/g, '\t')

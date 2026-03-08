@@ -31,8 +31,8 @@ describe('ChainCorrelator', () => {
         correlator = new ChainCorrelator()
     })
 
-    it('has 12 registered attack chains', () => {
-        expect(correlator.chainCount).toBe(12)
+    it('has 20 registered attack chains', () => {
+        expect(correlator.chainCount).toBe(30)
     })
 
     it('detects a SQLi multi-step chain', () => {

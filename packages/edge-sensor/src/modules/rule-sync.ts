@@ -15,7 +15,7 @@
  * runs these fetched rules against incoming requests.
  */
 
-import { SensorStateManager, type DynamicRule, type DynamicRulePattern } from './sensor-state'
+import { SensorStateManager, type DynamicRule, type DynamicRulePattern } from './sensor-state.js'
 
 
 // ── Rule Sync ────────────────────────────────────────────────────
@@ -275,6 +275,40 @@ export function matchDynamicRules(
 const _regexCache = new Map<string, RegExp | null>()
 const MAX_REGEX_CACHE_SIZE = 1000
 
+/**
+ * SAA-087: Detect potentially catastrophic regex patterns before compilation.
+ *
+ * ReDoS vectors this catches:
+ *   - Nested quantifiers: (a+)+, (a*)*b, (a|b+)+
+ *   - Overlapping character class quantifiers: [a-zA-Z]+[a-z]+
+ *   - Backreferences (can cause exponential backtracking)
+ *   - Patterns exceeding safe length
+ *
+ * This is defense-in-depth: the intel pipeline validates regex on submission
+ * (rule-submit.ts), but a compromised pipeline or KV poisoning attack could
+ * inject dangerous patterns. The sensor must reject them independently.
+ */
+function isRegexSafe(pattern: string): boolean {
+    // Length bound — extremely long patterns are suspicious and slow to compile
+    if (pattern.length > 256) return false
+
+    // Detect nested quantifiers: (X+)+, (X*)+, (X+)*, (X+){n,m}
+    // These are the primary ReDoS source
+    if (/(\+|\*|\{[0-9,]+\})\s*\)(\+|\*|\{[0-9,]+\}|\?)/.test(pattern)) return false
+
+    // Detect alternation with quantified groups: (a|b+)+
+    if (/\([^)]*\|[^)]*(\+|\*)\)\s*(\+|\*)/.test(pattern)) return false
+
+    // Reject backreferences (\\1 through \\9) — exponential backtracking risk
+    if (/\\[1-9]/.test(pattern)) return false
+
+    // Reject lookahead/lookbehind with quantifiers inside
+    // These can cause catastrophic backtracking in many engines
+    if (/\(\?[<=!][^)]*(\+|\*|\{)/.test(pattern)) return false
+
+    return true
+}
+
 function getCompiledRegex(pattern: string): RegExp | null {
     const cached = _regexCache.get(pattern)
     if (cached !== undefined) return cached
@@ -283,6 +317,13 @@ function getCompiledRegex(pattern: string): RegExp | null {
     if (_regexCache.size >= MAX_REGEX_CACHE_SIZE) {
         const firstKey = _regexCache.keys().next().value
         if (firstKey !== undefined) _regexCache.delete(firstKey)
+    }
+
+    // SAA-087: Reject ReDoS-capable patterns before compilation
+    if (!isRegexSafe(pattern)) {
+        console.warn(`[rule-sync] ReDoS-unsafe regex rejected: ${pattern.slice(0, 50)}`)
+        _regexCache.set(pattern, null)
+        return null
     }
 
     try {

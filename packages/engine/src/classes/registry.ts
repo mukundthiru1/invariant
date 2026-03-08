@@ -21,7 +21,145 @@ import type {
     AttackCategory,
     Severity,
     CalibrationConfig,
+    InvariantMatch,
+    InterClassCorrelation,
 } from './types.js'
+
+
+// ── Correlation Rules (data-driven inter-class pattern table) ─────
+
+interface CorrelationRule {
+    /** AND groups of OR alternatives — each inner array is OR, all outer must match */
+    required: string[][]
+    /** Fixed confidence or delta above max individual confidence */
+    confidence: { type: 'fixed'; value: number } | { type: 'relative'; delta: number }
+    /** Human-readable explanation */
+    reason: string
+    /** Exclusive group — only the first match per group fires (higher = higher priority) */
+    group?: string
+}
+
+/**
+ * Data table of inter-class correlation patterns.
+ * Ordered by priority within each exclusive group (first match wins).
+ * Adding a new correlation = adding ONE entry here.
+ */
+const CORRELATION_RULES: readonly CorrelationRule[] = [
+    // SQL injection — exclusive group (triad > double > timing)
+    {
+        required: [['sql_string_termination'], ['sql_tautology', 'sql_union_extraction'], ['sql_comment_truncation', 'sql_stacked_execution']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Complete SQL injection structure: escape + payload + termination',
+        group: 'sql',
+    },
+    {
+        required: [['sql_string_termination'], ['sql_union_extraction']],
+        confidence: { type: 'relative', delta: 0.12 },
+        reason: 'String escape + data extraction',
+        group: 'sql',
+    },
+    {
+        required: [['sql_string_termination'], ['sql_time_oracle']],
+        confidence: { type: 'relative', delta: 0.10 },
+        reason: 'String escape + time oracle',
+        group: 'sql',
+    },
+    // XSS patterns
+    {
+        required: [['xss_tag_injection'], ['xss_event_handler']],
+        confidence: { type: 'relative', delta: 0.12 },
+        reason: 'Tag injection + event handler',
+    },
+    {
+        required: [['xss_template_expression'], ['proto_pollution']],
+        confidence: { type: 'relative', delta: 0.15 },
+        reason: 'Template expression + prototype pollution',
+    },
+    // SSRF escalation
+    {
+        required: [['ssrf_internal_reach'], ['ssrf_cloud_metadata']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Internal reach + cloud metadata escalation',
+    },
+    {
+        required: [['ssrf_protocol_smuggle'], ['ssrf_cloud_metadata']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Protocol smuggle + cloud metadata = credential theft bypass',
+    },
+    // Auth chain
+    {
+        required: [['auth_none_algorithm'], ['auth_header_spoof']],
+        confidence: { type: 'relative', delta: 0.10 },
+        reason: 'None algorithm + header spoof',
+    },
+    // Command chain
+    {
+        required: [['cmd_separator'], ['cmd_substitution']],
+        confidence: { type: 'relative', delta: 0.10 },
+        reason: 'Command separator + substitution',
+    },
+    // JWT forgery — exclusive group
+    {
+        required: [['jwt_kid_injection'], ['jwt_jwk_embedding']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'JWT kid injection + JWK embedding = full token forgery',
+        group: 'jwt',
+    },
+    {
+        required: [['jwt_confusion'], ['jwt_kid_injection', 'auth_none_algorithm']],
+        confidence: { type: 'relative', delta: 0.15 },
+        reason: 'JWT algorithm confusion + key manipulation',
+        group: 'jwt',
+    },
+    // Cache poisoning + XSS
+    {
+        required: [['cache_poisoning'], ['xss_tag_injection', 'xss_event_handler']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Cache poisoning + XSS = persistent stored XSS for all visitors',
+    },
+    // API abuse compound
+    {
+        required: [['bola_idor'], ['api_mass_enum']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'IDOR + mass enumeration = complete data exfiltration',
+    },
+    // LLM compound
+    {
+        required: [['llm_jailbreak'], ['llm_data_exfiltration']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'LLM jailbreak + data exfiltration = confirmed extraction',
+    },
+    // Supply chain compound
+    {
+        required: [['dependency_confusion'], ['postinstall_injection']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Dependency confusion + postinstall injection = supply chain RCE',
+    },
+    // Deser + command → RCE chain
+    {
+        required: [['deser_java_gadget', 'deser_python_pickle'], ['cmd_separator', 'cmd_substitution']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Deserialization gadget + command injection = confirmed RCE',
+    },
+    // SSTI + command → server takeover
+    {
+        required: [['ssti_jinja_twig', 'ssti_el_expression'], ['cmd_separator', 'cmd_substitution']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'SSTI + command injection = server-side code execution',
+    },
+    // HTTP smuggling + cache poisoning
+    {
+        required: [['http_smuggle_cl_te', 'http_smuggle_h2'], ['cache_poisoning']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'HTTP smuggling + cache poisoning = mass-impact stored attack',
+    },
+    // Path traversal + SSRF → internal pivot
+    {
+        required: [['path_dotdot_escape', 'path_encoding_bypass'], ['ssrf_internal_reach']],
+        confidence: { type: 'relative', delta: 0.12 },
+        reason: 'Path traversal + SSRF = internal filesystem + network pivot',
+    },
+]
 
 
 // ── Registry Errors ───────────────────────────────────────────────
@@ -61,6 +199,26 @@ export class InvariantRegistry {
         // No duplicates
         if (this.modules.has(module.id)) {
             throw new RegistryError(`Duplicate class ID: ${module.id}`)
+        }
+
+        // Formal contract: verify knownPayloads are actually detected
+        const payloadFailures: string[] = []
+        for (const payload of module.knownPayloads) {
+            try { if (!module.detect(payload)) payloadFailures.push(payload.slice(0, 50)) }
+            catch { payloadFailures.push(`ERROR:${payload.slice(0, 30)}`) }
+        }
+        if (payloadFailures.length > 0) {
+            throw new RegistryError(`${module.id}: detect() misses knownPayloads: ${payloadFailures.join(' | ')}`)
+        }
+
+        // Formal contract: verify knownBenign do NOT false-positive
+        const fpViolations: string[] = []
+        for (const benign of module.knownBenign) {
+            try { if (module.detect(benign)) fpViolations.push(benign.slice(0, 50)) }
+            catch { /* detection errors on benign = no false positive */ }
+        }
+        if (fpViolations.length > 0) {
+            throw new RegistryError(`${module.id}: detect() false-positives on knownBenign: ${fpViolations.join(' | ')}`)
         }
 
         // Register
@@ -203,6 +361,72 @@ export class InvariantRegistry {
 
         // Clamp to [0, 1]
         return Math.max(0, Math.min(1, confidence))
+    }
+
+    /**
+     * Compute inter-class compound patterns using data-driven correlation rules.
+     *
+     * Each rule defines:
+     *   - required: AND groups of OR alternatives (all groups must have at least one match)
+     *   - confidence: fixed value or delta above max individual confidence
+     *   - reason: human-readable explanation
+     *   - group: exclusive group ID (only highest-priority match per group fires)
+     */
+    computeCorrelations(matches: InvariantMatch[]): InterClassCorrelation[] {
+        const classes = new Set(matches.map(m => m.class))
+        const max = matches.length > 0 ? Math.max(...matches.map(m => m.confidence)) : 0
+
+        const correlations: InterClassCorrelation[] = []
+        const firedGroups = new Set<string>()
+
+        for (const rule of CORRELATION_RULES) {
+            // Skip if exclusive group already fired
+            if (rule.group && firedGroups.has(rule.group)) continue
+
+            // Check all required groups (AND of ORs)
+            const matched = rule.required.every(
+                orGroup => orGroup.some(cls => classes.has(cls as InvariantClass))
+            )
+            if (!matched) continue
+
+            // Compute output classes
+            const outputClasses = rule.required.flatMap(
+                orGroup => orGroup.filter(cls => classes.has(cls as InvariantClass))
+            ) as InvariantClass[]
+
+            const confidence = rule.confidence.type === 'fixed'
+                ? rule.confidence.value
+                : max + rule.confidence.delta
+
+            correlations.push({
+                classes: outputClasses,
+                compoundConfidence: Math.min(0.99, confidence),
+                reason: rule.reason,
+            })
+
+            if (rule.group) firedGroups.add(rule.group)
+        }
+
+        // Special: Novel variant + 3+ classes → encoding evasion signal
+        if (classes.size >= 3 && matches.some(m => m.isNovelVariant)) {
+            correlations.push({
+                classes: Array.from(classes),
+                compoundConfidence: Math.min(0.99, max + 0.08),
+                reason: 'Novel variant + 3+ classes',
+            })
+        }
+
+        // Deduplicate by reason
+        const deduped: InterClassCorrelation[] = []
+        const seenReasons = new Set<string>()
+        for (const corr of correlations) {
+            if (!seenReasons.has(corr.reason)) {
+                seenReasons.add(corr.reason)
+                deduped.push(corr)
+            }
+        }
+
+        return deduped
     }
 
     /**

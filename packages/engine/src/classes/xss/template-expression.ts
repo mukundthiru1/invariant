@@ -1,8 +1,9 @@
 /**
  * XSS — Template Expression ({{...}}, ${...})
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
 export const xssTemplateExpression: InvariantClassModule = {
     id: 'xss_template_expression',
@@ -32,6 +33,24 @@ export const xssTemplateExpression: InvariantClassModule = {
         return /\{\{.*(?:constructor|__proto__|prototype|\$on|\$emit|\$eval|alert|prompt|confirm|document|window|globalThis|Function).*\}\}/i.test(d) ||
             /\$\{.*(?:alert|document|window|constructor|eval|Function)\s*\(.*\}\s*/i.test(d)
     },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const vectors = detectXssVectors(d)
+            const match = vectors.find(v => v.type === 'template_expression')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `HTML analysis: ${match.detail}`,
+                    evidence: match.element,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
+    },
+
     generateVariants: (count: number): string[] => {
         const v = [
             '{{constructor.constructor("alert(1)")()}}',

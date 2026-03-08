@@ -13,10 +13,15 @@
  * entire class of SQL injection attacks that begin with context escape.
  */
 
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.js'
 
-const SQL_KEYWORDS_AFTER_TERMINATOR = /['\"`]\s*\)?\s*(?:;|\bOR\b|\bAND\b|\bUNION\b|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bDROP\b|\bEXEC\b)/i
+// OR/AND after a terminator must be followed by a SQL-like expression
+// (digit, quote, paren, comparison operator, NULL/TRUE/FALSE, subquery)
+// to avoid false positives on English prose like "'OR contact support".
+// Other SQL keywords (UNION, SELECT, DROP, etc.) are unambiguous.
+const SQL_KEYWORDS_AFTER_TERMINATOR = /['\"`]\s*\)?\s*(?:;|\bOR\b\s+(?:\d|['"`(]|\S+\s*[=<>!]|NULL\b|TRUE\b|FALSE\b|NOT\b)|\bAND\b\s+(?:\d|['"`(]|\S+\s*[=<>!]|NULL\b|TRUE\b|FALSE\b|NOT\b)|\bUNION\b|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bDROP\b|\bEXEC\b)/i
 
 export const sqlStringTermination: InvariantClassModule = {
     id: 'sql_string_termination',
@@ -57,6 +62,23 @@ export const sqlStringTermination: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         return SQL_KEYWORDS_AFTER_TERMINATOR.test(d)
+    },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const detections = detectSqlStructural(d)
+            const match = detections.find(det => det.type === 'string_termination')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `Token analysis: ${match.detail}`,
+                    evidence: match.detail,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
     },
 
     generateVariants: (count: number): string[] => {

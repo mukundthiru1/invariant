@@ -169,22 +169,37 @@ function detectBillionLaughs(declarations: EntityDeclaration[]): XXEDetection[] 
     const detections: XXEDetection[] = []
     const internalEntities = declarations.filter(d => !d.isExternal)
 
-    // Billion laughs: internal entities that reference other entities
-    // Entity A references B, B references C, etc. → exponential expansion
-    let entityRefChain = 0
+    // Billion laughs: internal entities that reference other entities.
+    // The invariant: an entity value should not contain entity references,
+    // because this creates recursive/exponential expansion.
+    //
+    // Even ONE entity referencing another is suspicious — that's the
+    // fundamental amplification pattern. Multiple cross-refs or
+    // repeated refs within a single value are high-confidence bombs.
+    let totalCrossRefs = 0
+    let entitiesWithRefs = 0
+    let maxRefsInSingleEntity = 0
+
     for (const entity of internalEntities) {
         const refsInValue = findEntityReferences(entity.source)
         if (refsInValue.length > 0) {
-            entityRefChain++
+            entitiesWithRefs++
+            totalCrossRefs += refsInValue.length
+            maxRefsInSingleEntity = Math.max(maxRefsInSingleEntity, refsInValue.length)
         }
     }
 
-    if (entityRefChain >= 2) {
+    if (entitiesWithRefs >= 1) {
+        // Confidence scales with amplification factor
+        const confidence = maxRefsInSingleEntity >= 3 ? 0.94  // repeated refs = bomb
+            : entitiesWithRefs >= 2 ? 0.92        // chain of entities
+            : 0.85                                  // single entity with ref
+
         detections.push({
             type: 'billion_laughs',
-            detail: `${entityRefChain} entities with cross-references — exponential expansion (Billion Laughs DoS)`,
+            detail: `${entitiesWithRefs} entity/entities with ${totalCrossRefs} cross-references — expansion amplification (Billion Laughs)`,
             entityName: 'chain',
-            confidence: 0.94,
+            confidence,
         })
     }
 

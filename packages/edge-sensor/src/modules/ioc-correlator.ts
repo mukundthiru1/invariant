@@ -121,10 +121,15 @@ export class IOCCorrelator {
         // Length limit — legitimate IOC patterns are short
         if (pattern.length > 200) return null
 
-        // Reject common catastrophic backtracking constructs
-        // Nested quantifiers: (a+)+, (a*)+, (a+)*, etc.
-        if (/([+*])\)[\+\*]/.test(pattern)) return null
-        if (/\([^)]*[+*][^)]*\)[+*]/.test(pattern)) return null
+        // SAA-093: Comprehensive ReDoS defense (matches rule-sync isRegexSafe)
+        // Nested quantifiers: (a+)+, (a*)+, (a+)*, (a+){n,m}
+        if (/(\+|\*|\{[0-9,]+\})\s*\)(\+|\*|\{[0-9,]+\}|\?)/.test(pattern)) return null
+        // Alternation with quantified groups: (a|b+)+
+        if (/\([^)]*\|[^)]*(\+|\*)\)\s*(\+|\*)/.test(pattern)) return null
+        // Backreferences: exponential backtracking risk
+        if (/\\[1-9]/.test(pattern)) return null
+        // Lookahead/lookbehind with quantifiers inside
+        if (/\(\?[<=!][^)]*(\+|\*|\{)/.test(pattern)) return null
 
         try {
             return new RegExp(pattern, 'i')

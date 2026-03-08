@@ -17,7 +17,7 @@
  * we check for TOKEN SEQUENCES, not character patterns.
  */
 
-import { sqlTokenize, type SqlToken } from './sql-expression-evaluator'
+import { sqlTokenize, type SqlToken } from './sql-expression-evaluator.js'
 
 
 // ── Result Type ──────────────────────────────────────────────────
@@ -94,7 +94,7 @@ function detectStringTermination(tokens: SqlToken[], rawInput?: string): SqlStru
         if (quoteMatch) {
             const rest = quoteMatch[3]
             const restTokens = sqlTokenize(rest)
-            const restMeaningful = restTokens.filter(t => t.type !== 'WHITESPACE')
+            const restMeaningful = restTokens.filter((t: SqlToken) => t.type !== 'WHITESPACE')
             if (restMeaningful.length > 0) {
                 const first = restMeaningful[0]
                 if (

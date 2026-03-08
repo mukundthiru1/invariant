@@ -2,20 +2,66 @@ name = "invariant-sensor"
 main = "src/index.ts"
 compatibility_date = "2026-03-03"
 
-# Scheduled: flush signals + rule sync
+# X25519 and Ed25519 are available on all CF Workers runtimes.
+# Node.js compatibility flag is NOT needed — we use globalThis.crypto.subtle directly.
+compatibility_flags = []
+
+# ── Cron ──────────────────────────────────────────────────────────
+# Every 5 minutes:
+#   - Flush encrypted novel-variant signals to Santh central
+#   - Check for dispatched rule bundles in KV → verify + decrypt + apply
+#   - Internal probing (L8) + drift detection (L9)
+#   - State persistence
 [triggers]
 crons = ["*/5 * * * *"]
 
+
+# ── Non-Secret Configuration ─────────────────────────────────────
 [vars]
 SANTH_INGEST_URL = "https://intel.santh.io/v1/signals"
 SIGNAL_BATCH_SIZE = "50"
 DEFENSE_MODE = "monitor"
+PROBE_ENABLED = "true"
 
-# Workers AI — L9 AI classification
+# ── Workers AI ───────────────────────────────────────────────────
 [ai]
 binding = "AI"
 
-# KV — persistent sensor state across cold starts
+
+# ── KV Namespaces ────────────────────────────────────────────────
+# Create before deploying:
+#   wrangler kv:namespace create SENSOR_STATE
+#   wrangler kv:namespace create SENSOR_STATE --preview   (for local dev)
+# Then replace the id values below.
 [[kv_namespaces]]
 binding = "SENSOR_STATE"
-id = "placeholder"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
+
+
+# ── Secrets ──────────────────────────────────────────────────────
+# Set via: npx wrangler secret put SECRET_NAME
+# These are NOT in this file — they exist only in CF's encrypted secret store.
+#
+# REQUIRED for basic operation:
+#   SENSOR_ID               — unique identifier, e.g. "mysite-prod"
+#   SENSOR_API_KEY          — legacy signal upload key (pre-crypto)
+#
+# REQUIRED for encrypted collective intelligence:
+#   SUBSCRIBER_PRIVATE_KEY  — X25519 private key (base64url, 32 bytes)
+#                             Generate: npx @santh/invariant init
+#                             The public key is registered with Santh central.
+#
+#   SANTH_RULE_VERIFY_KEY   — Santh central's Ed25519 verify key (base64url, 32 bytes)
+#                             Provided by Santh on account creation.
+#                             Prevents rule injection — validate before trusting.
+#
+#   SANTH_SIGNAL_ENCRYPT_KEY — Santh central's X25519 public key (base64url, 32 bytes)
+#                             Encrypts novel-variant signals before upload.
+#                             Provided by Santh on account creation.
+#
+# OPTIONAL:
+#   INVARIANT_STORAGE_KEY   — AES-256-GCM key (base64url, 32 bytes) for at-rest
+#                             KV encryption. Generate: openssl rand -base64 32
+#   INTROSPECTION_KEY       — Key for /__invariant/health and /__invariant/posture
+#   SEAL_SECRET             — Minimum 32 chars, cryptographic evidence sealing key

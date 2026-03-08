@@ -1,8 +1,17 @@
 /**
  * Command Injection Invariant Classes — All 3
+ *
+ * L1: Regex fast-path (detects obvious patterns)
+ * L2: Structural invariant analysis via shell tokenizer (detects obfuscated variants)
+ *
+ * L2 detects what L1 misses: quote fragmentation, IFS bypass, glob paths,
+ * variable expansion, empty substitution — because it checks STRUCTURAL
+ * PROPERTIES, not command name signatures.
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { shellTokenize } from '../../tokenizers/shell-tokenizer.js'
+import { l2CmdArgInjection, l2CmdSeparator, l2CmdSubstitution } from '../../evaluators/l2-adapters.js'
 
 export const cmdSeparator: InvariantClassModule = {
     id: 'cmd_separator',
@@ -33,7 +42,15 @@ export const cmdSeparator: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /[;&|`\n\r]\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic)\b/i.test(d)
+        if (!/[;&|`\n\r]\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic)\b/i.test(d)) return false
+        // Suppress when the command appears inside backtick-quoted code within
+        // English prose (documentation context). Real injection uses raw separators,
+        // not code-fenced examples surrounded by narrative text.
+        if (/\w{2,}\s+`[^`]+`\s+\w{2,}/.test(d)) return false
+        return true
+    },
+    detectL2: (input: string): DetectionLevelResult | null => {
+        return l2CmdSeparator(input)
     },
     generateVariants: (count: number): string[] => {
         const seps = [';', '|', '&&', '||', '\n', '`', '$IFS']
@@ -70,8 +87,15 @@ export const cmdSubstitution: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh|python|perl|ruby|php|nc|ncat)[^)]*\)/i.test(d) ||
-            /`[^`]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^`]*`/i.test(d)
+        const hasDollarSub = /\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh|python|perl|ruby|php|nc|ncat)[^)]*\)/i.test(d)
+        const hasBacktickSub = /`[^`]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^`]*`/i.test(d)
+        if (!hasDollarSub && !hasBacktickSub) return false
+        // Backtick-quoted commands within English prose are documentation, not injection
+        if (hasBacktickSub && !hasDollarSub && /\w{2,}\s+`[^`]+`\s+\w{2,}/.test(d)) return false
+        return true
+    },
+    detectL2: (input: string): DetectionLevelResult | null => {
+        return l2CmdSubstitution(input)
     },
     generateVariants: (count: number): string[] => {
         const v = [
@@ -114,6 +138,9 @@ export const cmdArgumentInjection: InvariantClassModule = {
         const d = deepDecode(input)
         return /(?:^|\s)--(?:output|exec|post-file|upload-file|config|shell)\b/i.test(d) ||
             /(?:^|\s)-[oe]\s+(?:\/|http)/i.test(d)
+    },
+    detectL2: (input: string): DetectionLevelResult | null => {
+        return l2CmdArgInjection(input)
     },
     generateVariants: (count: number): string[] => {
         const v = ['--output=/tmp/pwned', '-o /tmp/shell.php', '--exec=bash', '--post-file=/etc/passwd']

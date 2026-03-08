@@ -1,8 +1,9 @@
 /**
  * SSRF Invariant Classes — All 3
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2SsrfInternal, l2SsrfCloudMetadata, l2SsrfProtocolSmuggle } from '../../evaluators/l2-adapters.js'
 
 export const ssrfInternalReach: InvariantClassModule = {
     id: 'ssrf_internal_reach',
@@ -33,6 +34,7 @@ export const ssrfInternalReach: InvariantClassModule = {
         const d = deepDecode(input)
         return /(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|0177\.0\.0\.01)/i.test(d)
     },
+    detectL2: l2SsrfInternal,
     generateVariants: (count: number): string[] => {
         const v = [
             'http://127.0.0.1', 'http://localhost', 'http://0.0.0.0',
@@ -72,6 +74,7 @@ export const ssrfCloudMetadata: InvariantClassModule = {
         const d = deepDecode(input)
         return /169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254|metadata\.azure\.com/i.test(d)
     },
+    detectL2: l2SsrfCloudMetadata,
     generateVariants: (count: number): string[] => {
         const v = [
             'http://169.254.169.254/latest/meta-data/',
@@ -115,6 +118,7 @@ export const ssrfProtocolSmuggle: InvariantClassModule = {
         const d = deepDecode(input)
         return /(?:file|gopher|dict|ldap|tftp|ftp|jar|netdoc|phar):\/\//i.test(d)
     },
+    detectL2: l2SsrfProtocolSmuggle,
     generateVariants: (count: number): string[] => {
         const v = [
             'file:///etc/passwd', 'gopher://127.0.0.1:6379/_*1%0d%0a$8%0d%0aflushall',

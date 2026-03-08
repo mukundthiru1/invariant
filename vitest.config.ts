@@ -5,6 +5,8 @@ export default defineConfig({
         include: [
             'packages/*/src/**/*.test.ts',
             'packages/*/tests/**/*.test.ts',
+            'src/**/*.test.ts',
+            'tests/**/*.test.ts',
         ],
         exclude: [
             'packages/edge-sensor/tests/sensor.test.ts',

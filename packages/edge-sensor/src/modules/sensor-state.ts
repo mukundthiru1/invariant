@@ -38,6 +38,13 @@
 // ── KV Key Schema ────────────────────────────────────────────────
 
 const KEY_PREFIX = 'sensor'
+const REMOTE_CONFIG_KEY = 'remote_config'
+const REMOTE_CONFIG_CACHE_TTL_MS = 60_000
+
+type RemoteConfig = {
+    mode?: 'monitor' | 'enforce' | 'off'
+    thresholds?: Record<string, number>
+}
 
 function key(sensorId: string, segment: string): string {
     return `${KEY_PREFIX}:${sensorId}:${segment}`
@@ -192,6 +199,8 @@ export class SensorStateManager {
     private initialized = false
     private dirty = false
     private requestsSinceLastPersist = 0
+    private remoteConfigCache: RemoteConfig | null = null
+    private remoteConfigCacheExpiresAt = 0
 
     // Cached state
     private _model: PersistedModelState | null = null
@@ -328,6 +337,37 @@ export class SensorStateManager {
     get rules(): PersistedRules | null { return this._rules }
     get stats(): PersistedStats | null { return this._stats }
     get config(): SensorConfig { return this._config }
+
+    async getRemoteConfig(): Promise<RemoteConfig | null> {
+        if (Date.now() < this.remoteConfigCacheExpiresAt) {
+            return this.remoteConfigCache
+        }
+
+        let config: RemoteConfig | null = null
+        try {
+            const rawConfig = await this.kv.get(REMOTE_CONFIG_KEY)
+            const parsed = safeParse<unknown>(rawConfig)
+            config = this.normalizeRemoteConfig(parsed)
+        } catch {
+            config = null
+        }
+
+        this.remoteConfigCache = config
+        this.remoteConfigCacheExpiresAt = Date.now() + REMOTE_CONFIG_CACHE_TTL_MS
+        return config
+    }
+
+    async setRemoteConfig(config: object): Promise<void> {
+        const normalized = this.normalizeRemoteConfig(config)
+        if (normalized === null) {
+            throw new Error('Invalid remote config payload')
+        }
+
+        const json = JSON.stringify(normalized)
+        await this.kv.put(REMOTE_CONFIG_KEY, json)
+        this.remoteConfigCache = normalized
+        this.remoteConfigCacheExpiresAt = Date.now() + REMOTE_CONFIG_CACHE_TTL_MS
+    }
 
     // ── Model Updates ────────────────────────────────────────────
 
@@ -529,6 +569,45 @@ export class SensorStateManager {
         return { written, errors }
     }
 
+    // ── Remote Config ──────────────────────────────────────────
+
+    private normalizeRemoteConfig(raw: unknown): RemoteConfig | null {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+
+        const candidate = raw as Record<string, unknown>
+
+        if ('mode' in candidate && candidate.mode !== undefined && !this.isValidRemoteMode(candidate.mode)) {
+            return null
+        }
+
+        if ('thresholds' in candidate && candidate.thresholds !== undefined && !this.isValidThresholds(candidate.thresholds)) {
+            return null
+        }
+
+        const mode = candidate.mode as RemoteConfig['mode']
+        const thresholds = candidate.thresholds as RemoteConfig['thresholds']
+
+        if (mode === undefined && thresholds === undefined) return {}
+
+        return {
+            ...(mode !== undefined ? { mode } : {}),
+            ...(thresholds !== undefined ? { thresholds } : {}),
+        }
+    }
+
+    private isValidRemoteMode(value: unknown): value is RemoteConfig['mode'] {
+        return value === 'monitor' || value === 'enforce' || value === 'off'
+    }
+
+    private isValidThresholds(value: unknown): value is Record<string, number> {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+
+        const values = Object.values(value)
+        if (values.length === 0) return true
+
+        return values.every(v => typeof v === 'number' && Number.isFinite(v))
+    }
+
     // ── Internal ─────────────────────────────────────────────────
 
     private async safeWrite(kvKey: string, value: unknown, ttl: number): Promise<void> {
@@ -544,12 +623,23 @@ export class SensorStateManager {
 }
 
 
-// ── Safe JSON Parser ─────────────────────────────────────────────
-
+/**
+ * SAA-091: Safe JSON parser with prototype pollution prevention.
+ * KV state is a trust boundary — a poisoned KV value can inject
+ * __proto__ or constructor.prototype properties that propagate to
+ * Object.prototype and corrupt all subsequent sensor logic.
+ * The reviver rejects these keys at parse-time before they can
+ * enter the JavaScript object model.
+ */
 function safeParse<T>(raw: string | null): T | null {
     if (!raw) return null
     try {
-        return JSON.parse(raw) as T
+        return JSON.parse(raw, (key, value) => {
+            if (key === '__proto__' || key === 'constructor' || key === 'prototype') {
+                return undefined
+            }
+            return value
+        }) as T
     } catch {
         return null
     }

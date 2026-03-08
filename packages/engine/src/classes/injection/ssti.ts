@@ -1,8 +1,9 @@
 /**
  * SSTI — Jinja/Twig + Expression Language
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2SSTIJinja, l2SSTIEL } from '../../evaluators/l2-adapters.js'
 
 export const sstiJinjaTwig: InvariantClassModule = {
     id: 'ssti_jinja_twig',
@@ -34,6 +35,7 @@ export const sstiJinjaTwig: InvariantClassModule = {
             || /\{%.*(?:import|include|extends|block|macro|call).*%\}/i.test(d)
             || (/\{\{.*(?:\d+\s*[+\-*/]\s*\d+).*\}\}/.test(d) && /\{\{.*\|.*\}\}/.test(d))
     },
+    detectL2: l2SSTIJinja,
     generateVariants: (count: number): string[] => {
         const v = [
             '{{config.__class__.__init__.__globals__}}',
@@ -75,6 +77,7 @@ export const sstiElExpression: InvariantClassModule = {
             || /#\{.*(?:T\(|new |java\.).*\}/i.test(d)
             || /%\{.*(?:#cmd|#context|#attr|@java).*\}/i.test(d)
     },
+    detectL2: l2SSTIEL,
     generateVariants: (count: number): string[] => {
         const v = [
             '${T(java.lang.Runtime).getRuntime().exec("id")}',

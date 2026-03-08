@@ -37,14 +37,18 @@
  *   - Drift Detection (temporal posture comparison)
  *   - IOC Feed Correlation (IP/domain/payload/UA/CVE)
  *
- * Privacy:
- *   - Source IPs: SHA-256 hashed with daily-rotating salt
- *   - Request bodies: Analyzed in-memory only. NEVER persisted.
- *   - Cookies/tokens: NEVER accessed
+ * Privacy (see santh.io/principles#privacy):
+ *   - Source IPs: SHA-256 hashed with daily-rotating salt, irreversible
+ *   - Request bodies: READ via clone() for in-memory security analysis only.
+ *     Body content and extracted values are NEVER persisted, NEVER transmitted
+ *     to intel. Only detection metadata (signal type, confidence) is reported.
+ *   - Cookie NAMES + FLAGS: inspected for auth classification and
+ *     posture auditing (SAA-072). Cookie VALUES: NEVER read or stored.
  *   - Only metadata + attack patterns analyzed — no PII extraction
+ *   - PoW challenges required for signal submission (SAA-073)
  */
 
-import { InvariantEngine, type InvariantMatch, type InvariantClass } from '../../engine/src/invariant-engine.js'
+import { InvariantEngine, type InvariantMatch, type InvariantClass, type EngineThresholdOverride } from '../../engine/src/invariant-engine.js'
 import { runL2Evaluators, mergeL2Results, type L2DetectionResult } from '../../engine/src/evaluators/evaluator-bridge.js'
 import { ChainCorrelator, type ChainSignal } from '../../engine/src/chain-detector.js'
 import { MitreMapper } from '../../engine/src/mitre-mapper.js'
@@ -83,6 +87,22 @@ import { BehaviorTracker } from './layers/l2-behavior.js'
 import { classifyClient } from './layers/l3-fingerprint.js'
 import { detectTechnology } from './layers/l4-tech-detect.js'
 import { SignalBuffer } from './layers/signal-buffer.js'
+import { analyzeWebSocketUpgrade } from './layers/ws-interceptor.js'
+
+// ── Encrypted Collective Intelligence ────────────────────────────
+// These modules implement the forward-secret, E2E-encrypted channel
+// between this sensor and Santh central. They activate only when the
+// subscriber has configured SUBSCRIBER_PRIVATE_KEY + SANTH_RULE_VERIFY_KEY.
+// The worker runs in standalone mode (full detection) without them.
+import { DynamicRuleStore } from './modules/dynamic-rules.js'
+import { loadPendingRules } from './modules/rule-loader.js'
+import {
+    SignalBuffer as CryptoSignalBuffer,
+    flushSignalBuffer,
+    isDuplicateSignal,
+    makeSignalBundle,
+} from './modules/signal-uploader.js'
+import { SignalDeduplicator } from './modules/signal-dedup.js'
 import { hashSource, detectHeaderAnomalies, blockResponse, normalizePath, timingSafeEqual, setSaltKey } from './layers/utils.js'
 
 
@@ -111,6 +131,18 @@ let signalBuffer: SignalBuffer | null = null
 let stateManager: SensorStateManager | null = null
 let initialized = false
 
+// ── Encrypted collective intelligence state ───────────────────────
+// Instantiated once per Worker process. Survives across requests.
+const dynamicRuleStore = new DynamicRuleStore()
+let cryptoSignalBuf: CryptoSignalBuffer | null = null
+const signalDeduplicator = new SignalDeduplicator()
+let rulesInitialized = false
+
+function isFiniteRecord(value: unknown): value is Record<string, number> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    return Object.values(value).every(v => typeof v === 'number' && Number.isFinite(v))
+}
+
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
         // Initialize on first request
@@ -122,6 +154,11 @@ export default {
             )
             // SAA-060: Initialize deterministic salt for cross-isolate IP hash consistency
             if (env.SENSOR_API_KEY) setSaltKey(env.SENSOR_API_KEY)
+        }
+
+        // Initialize encrypted signal buffer (additive — runs alongside existing buffer)
+        if (!cryptoSignalBuf) {
+            cryptoSignalBuf = new CryptoSignalBuffer()
         }
 
         if (!stateManager && env.SENSOR_STATE) {
@@ -139,8 +176,8 @@ export default {
             }
         }
 
-        const mode = stateManager?.config.defenseMode ?? env.DEFENSE_MODE ?? 'monitor'
-        if (mode === 'off') return fetch(request)
+        const remoteConfig = stateManager ? await stateManager.getRemoteConfig() : null
+        const mode = remoteConfig?.mode ?? stateManager?.config.defenseMode ?? env.DEFENSE_MODE ?? 'monitor'
 
         const url = new URL(request.url)
         const path = url.pathname
@@ -148,14 +185,21 @@ export default {
 
         // ── Introspection endpoints ──────────────────────────────
         // Require INTROSPECTION_KEY when configured (defense against WAF fingerprinting)
-        if (path === '/__invariant/health' || path === '/__invariant/posture') {
+        if (
+            path === '/__invariant/health'
+            || path === '/__invariant/posture'
+            || path === '/__invariant/config'
+        ) {
             if (env.INTROSPECTION_KEY) {
-                const authParam = url.searchParams.get('key')
+                // SAA-067: Moved from query param to header. Secrets in URLs
+                // leak to access logs, CDN logs, Referer headers, browser history,
+                // and any proxy between client and worker.
+                const keyFromHeader = request.headers.get('X-Introspection-Key')
                 // SECURITY (SAA-035): Constant-time comparison prevents timing
                 // side-channel that would leak the key byte by byte.
-                const keyValid = authParam !== null
-                    && authParam.length === env.INTROSPECTION_KEY.length
-                    && await timingSafeEqual(authParam, env.INTROSPECTION_KEY)
+                const keyValid = keyFromHeader !== null
+                    && keyFromHeader.length === env.INTROSPECTION_KEY.length
+                    && await timingSafeEqual(keyFromHeader, env.INTROSPECTION_KEY)
                 if (!keyValid) {
                     return new Response(JSON.stringify({ error: 'unauthorized' }), {
                         status: 401,
@@ -184,6 +228,113 @@ export default {
             return new Response(JSON.stringify(report), {
                 headers: { 'Content-Type': 'application/json' },
             })
+        }
+
+        if (path === '/__invariant/config') {
+            if (request.method === 'GET') {
+                return new Response(JSON.stringify({
+                    mode: mode,
+                    thresholds: remoteConfig?.thresholds ?? null,
+                    source: remoteConfig
+                        ? 'remote'
+                        : env.DEFENSE_MODE
+                            ? 'env'
+                            : 'default',
+                }), {
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            if (request.method !== 'POST') {
+                return new Response(JSON.stringify({ error: 'method not allowed' }), {
+                    status: 405,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            if (!stateManager) {
+                return new Response(JSON.stringify({ error: 'state storage unavailable' }), {
+                    status: 503,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            let rawBody: unknown
+            try {
+                const text = await request.text()
+                rawBody = text.trim().length > 0 ? JSON.parse(text) : {}
+            } catch {
+                return new Response(JSON.stringify({ error: 'invalid json body' }), {
+                    status: 400,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+                return new Response(JSON.stringify({ error: 'invalid config payload' }), {
+                    status: 400,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            const body = rawBody as Record<string, unknown>
+            const candidateMode = body.mode
+            const candidateThresholds = body.thresholds
+
+            if (candidateMode !== undefined && candidateMode !== 'monitor' && candidateMode !== 'enforce' && candidateMode !== 'off') {
+                return new Response(JSON.stringify({ error: 'invalid mode' }), {
+                    status: 400,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            if (candidateThresholds !== undefined) {
+                if (!isFiniteRecord(candidateThresholds)) {
+                    return new Response(JSON.stringify({ error: 'invalid thresholds payload' }), {
+                        status: 400,
+                        headers: { 'Content-Type': 'application/json' },
+                    })
+                }
+            }
+
+            if (candidateMode === undefined && candidateThresholds === undefined) {
+                return new Response(JSON.stringify({ error: 'mode or thresholds required' }), {
+                    status: 400,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            const newConfig: { mode?: 'monitor' | 'enforce' | 'off'; thresholds?: Record<string, number> } = {}
+            if (candidateMode !== undefined) newConfig.mode = candidateMode
+            if (candidateThresholds !== undefined) newConfig.thresholds = candidateThresholds as Record<string, number>
+
+            try {
+                await stateManager.setRemoteConfig(newConfig)
+            } catch (error) {
+                return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'failed to store config' }), {
+                    status: 500,
+                    headers: { 'Content-Type': 'application/json' },
+                })
+            }
+
+            return new Response(JSON.stringify({
+                mode: newConfig.mode,
+                thresholds: newConfig.thresholds,
+                source: 'remote',
+            }), {
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }
+
+        if (mode === 'off') return fetch(request)
+
+        // WebSocket upgrade interception — validate handshake before proxy.
+        const wsUpgrade = analyzeWebSocketUpgrade(request, env)
+        if (wsUpgrade.isWebSocketUpgrade) {
+            if (wsUpgrade.shouldBlock) {
+                return blockResponse('high')
+            }
+            return fetch(request)
         }
 
         // Skip static assets — comprehensive list of non-executable formats
@@ -575,6 +726,54 @@ export default {
             if (signalBuffer.shouldFlush()) {
                 ctx.waitUntil(signalBuffer.flush())
             }
+
+            // Queue novel L2/L3 variants for encrypted upload to Santh central.
+            // Only novel variants carry collective-intelligence value — L1 matches
+            // are already known and do not improve the shared detection model.
+            // Privacy: makeSignalBundle() strips all PII before queueing. No raw
+            // values, no IPs, no user agent strings — only structural metadata.
+            if (
+                isNovelVariant
+                && cryptoSignalBuf
+                && env.SANTH_SIGNAL_ENCRYPT_KEY
+                && invariantMatches.length > 0
+            ) {
+                // Determine injection surface from where the payload was found
+                const surface: 'query_param' | 'body_param' | 'header' | 'cookie' | 'path' | 'unknown' =
+                    bodyValues.length > 0 && bodyText ? 'body_param'
+                    : query.length > 1 ? 'query_param'
+                    : headerInvariants.length > 0 ? 'header'
+                    : decodedPath !== path ? 'path'
+                    : 'unknown'
+
+                // Read product category from env (set by `invariant deploy` from config)
+                const category = env.INVARIANT_CATEGORY as import('../../engine/src/crypto/types.js').SignalProductCategory | undefined
+
+                for (const inv of invariantMatches) {
+                    if (!inv.isNovelVariant) continue
+                    const bundle = makeSignalBundle(
+                        {
+                            class: inv.class,
+                            confidence: inv.confidence,
+                            detectionLevel: { l1: !inv.isNovelVariant, l2: inv.isNovelVariant },
+                            l2Evidence: inv.description,
+                        },
+                        { method: reqCtx.method, pathname: path },
+                        0, // encodingDepth tracked per-request in L3 decomposer; 0 default
+                        {
+                            rawPayload: inv.description,
+                            surface,
+                            category,
+                            framework: targetTech ?? undefined,
+                        },
+                    )
+                    const pending = { bundle, queuedAt: Date.now() }
+                    if (isDuplicateSignal(pending, signalDeduplicator)) {
+                        continue
+                    }
+                    cryptoSignalBuf.push(pending)
+                }
+            }
         }
 
         // ── Block Response ───────────────────────────────────────
@@ -644,12 +843,69 @@ export default {
             await stateManager.initialize()
         }
 
-        // Flush remaining signals
+        // Flush remaining signals (local analytics buffer)
         if (signalBuffer) {
             await signalBuffer.flush()
         }
 
-        // Sync rules from intel pipeline
+        // ── Encrypted Signal Upload ──────────────────────────────
+        // Upload novel L2/L3 signals to Santh central, encrypted with
+        // the central's X25519 public key. Each signal is independently
+        // encrypted (ephemeral ECDH key per signal) for forward secrecy.
+        // Failure here is non-blocking — signals are best-effort.
+        if (cryptoSignalBuf && env.SANTH_SIGNAL_ENCRYPT_KEY && !cryptoSignalBuf.isEmpty) {
+            try {
+                await flushSignalBuffer(
+                    cryptoSignalBuf,
+                    env.SANTH_SIGNAL_ENCRYPT_KEY,
+                    env.SANTH_INGEST_URL,
+                    env.SENSOR_ID ?? 'unknown',
+                )
+            } catch {
+                // Upload failure must not crash cron — signals are best-effort
+            }
+        }
+        // Reset Bloom filter periodically to avoid saturation growth over time.
+        signalDeduplicator.reset()
+
+        // ── Encrypted Rule Bundle Application ───────────────────
+        // Check if central has dispatched a new rule bundle to the KV slot.
+        // Verify Ed25519 signature → decrypt with subscriber X25519 key →
+        // apply thresholds + priorities to the engine for next request cycle.
+        // The dispatched bundle may lower block thresholds for actively
+        // exploited CVEs (EPSS weighting) and adjust per-tech class priorities.
+        if (env.SUBSCRIBER_PRIVATE_KEY && env.SANTH_RULE_VERIFY_KEY && env.SENSOR_STATE) {
+            try {
+                const result = await loadPendingRules(
+                    env.SENSOR_STATE,
+                    dynamicRuleStore,
+                    env.SUBSCRIBER_PRIVATE_KEY,
+                    env.SANTH_RULE_VERIFY_KEY,
+                )
+                if (result.applied && result.bundle) {
+                    // Apply EPSS-weighted thresholds and tech-stack priorities
+                    // to the running engine without reconstruction.
+                    engine.updateConfig({
+                        thresholdOverrides: result.bundle.thresholdOverrides.map(o => ({
+                            invariantClass: o.invariantClass as InvariantClass,
+                            adjustedThreshold: o.adjustedThreshold,
+                            validUntil: o.validUntil,
+                        } satisfies EngineThresholdOverride)),
+                        classPriorities: new Map(
+                            result.bundle.classPriorities.map(p => [
+                                p.invariantClass as InvariantClass,
+                                p.priorityMultiplier,
+                            ])
+                        ),
+                    })
+                    rulesInitialized = true
+                }
+            } catch {
+                // Rule load failure must not crash cron or affect detection
+            }
+        }
+
+        // Sync rules from intel pipeline (legacy path — runs alongside encrypted bundles)
         if (stateManager) {
             await syncRulesFromIntel(stateManager, env.SENSOR_API_KEY)
         }

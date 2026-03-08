@@ -1,8 +1,9 @@
 /**
  * XSS — Tag Injection
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
 export const xssTagInjection: InvariantClassModule = {
     id: 'xss_tag_injection',
@@ -34,6 +35,24 @@ export const xssTagInjection: InvariantClassModule = {
         const d = deepDecode(input)
         return /<\s*(?:script|iframe|object|embed|applet|form|meta|link|style|base|svg|math|video|audio|source|details|marquee|isindex|frameset|frame|body|img|input|button|textarea|select|keygen)\b[^>]*>/i.test(d)
     },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const vectors = detectXssVectors(d)
+            const match = vectors.find(v => v.type === 'tag_injection')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `HTML analysis: ${match.detail}`,
+                    evidence: match.element,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
+    },
+
     generateVariants: (count: number): string[] => {
         const v = [
             '<script>alert(1)</script>', '<img src=x onerror=alert(1)>',

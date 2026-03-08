@@ -11,8 +11,9 @@
  * arbitrary tables (users, credentials, schema metadata).
  */
 
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.js'
 
 export const sqlUnionExtraction: InvariantClassModule = {
     id: 'sql_union_extraction',
@@ -47,6 +48,23 @@ export const sqlUnionExtraction: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         return /UNION\s+(?:ALL\s+)?SELECT\s/i.test(d)
+    },
+
+    detectL2: (input: string): DetectionLevelResult | null => {
+        const d = deepDecode(input)
+        try {
+            const detections = detectSqlStructural(d)
+            const match = detections.find(det => det.type === 'union_extraction')
+            if (match) {
+                return {
+                    detected: true,
+                    confidence: match.confidence,
+                    explanation: `Token analysis: ${match.detail}`,
+                    evidence: match.detail,
+                }
+            }
+        } catch { /* L2 failure must not affect pipeline */ }
+        return null
     },
 
     generateVariants: (count: number): string[] => {

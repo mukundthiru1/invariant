@@ -112,6 +112,137 @@ export interface ChainMatch {
     sourceHash: string
 }
 
+interface ChainStateNode {
+    chainId: string
+    sourceHash: string
+    satisfiedSteps: Map<number, { signal: ChainSignal, confidence: number }>
+    startTime: number
+    lastUpdate: number
+    status: 'in_progress' | 'completed' | 'expired'
+    completedAt?: number
+    stepsMatched: number
+}
+
+class ChainStateStore {
+    // outer key = sourceHash, inner key = chainId
+    private states: Map<string, Map<string, ChainStateNode>> = new Map()
+    private readonly maxSources: number
+
+    constructor(maxSources = 5_000) {
+        this.maxSources = maxSources
+    }
+
+    getOrCreate(sourceHash: string, chainId: string, windowSeconds: number): ChainStateNode {
+        if (!this.states.has(sourceHash)) this.states.set(sourceHash, new Map())
+        const bySource = this.states.get(sourceHash)!
+        if (!bySource.has(chainId)) {
+            const now = Date.now()
+            bySource.set(chainId, {
+                chainId,
+                sourceHash,
+                satisfiedSteps: new Map(),
+                startTime: now,
+                lastUpdate: now,
+                status: 'in_progress',
+                stepsMatched: 0,
+            })
+        }
+        const state = bySource.get(chainId)!
+        const now = Date.now()
+
+        // Check expiry: if started > windowSeconds ago with no completion, expire it
+        if (state.status === 'in_progress' && now - state.startTime > windowSeconds * 1000) {
+            state.status = 'expired'
+        }
+        return state
+    }
+
+    advance(
+        sourceHash: string,
+        chainId: string,
+        stepIndex: number,
+        signal: ChainSignal,
+        windowSeconds: number,
+    ): void {
+        const state = this.getOrCreate(sourceHash, chainId, windowSeconds)
+        if (state.status !== 'in_progress') return
+
+        // If this is the first step, record its signal timestamp as the chain start.
+        // All subsequent steps are checked against this signal-space start time,
+        // not wall-clock time, so tests using explicit timestamps work correctly.
+        if (state.satisfiedSteps.size === 0) {
+            state.startTime = signal.timestamp
+        } else {
+            // Expire if the incoming signal's timestamp is beyond the chain window
+            // relative to the first signal's timestamp.
+            if (signal.timestamp - state.startTime > windowSeconds * 1000) {
+                state.status = 'expired'
+                return
+            }
+        }
+
+        if (state.satisfiedSteps.has(stepIndex)) return // already satisfied
+        state.satisfiedSteps.set(stepIndex, { signal, confidence: signal.confidence })
+        state.stepsMatched = state.satisfiedSteps.size
+        state.lastUpdate = signal.timestamp
+    }
+
+    complete(sourceHash: string, chainId: string): void {
+        const state = this.states.get(sourceHash)?.get(chainId)
+        if (state) {
+            state.status = 'completed'
+            state.completedAt = Date.now()
+            state.lastUpdate = state.completedAt
+        }
+    }
+
+    getState(sourceHash: string, chainId: string): ChainStateNode | undefined {
+        return this.states.get(sourceHash)?.get(chainId)
+    }
+
+    getAllForSource(sourceHash: string): ChainStateNode[] {
+        return Array.from(this.states.get(sourceHash)?.values() ?? [])
+    }
+
+    getAllSources(): string[] {
+        return Array.from(this.states.keys())
+    }
+
+    removeSource(sourceHash: string): void {
+        this.states.delete(sourceHash)
+    }
+
+    pruneExpired(maxWindowSeconds: number): void {
+        const cutoff = Date.now() - maxWindowSeconds * 1000 * 2 // 2x window to keep completed chains for forensics
+        for (const [sourceHash, byChain] of this.states) {
+            let allExpired = true
+            for (const [chainId, state] of byChain) {
+                if (state.lastUpdate < cutoff) {
+                    byChain.delete(chainId)
+                } else {
+                    allExpired = false
+                }
+            }
+            if (allExpired || byChain.size === 0) this.states.delete(sourceHash)
+        }
+        // Hard cap: evict oldest sources if over max
+        if (this.states.size > this.maxSources) {
+            const sorted = [...this.states.entries()]
+                .map(([k, v]) => ({
+                    k,
+                    latest: Math.max(...[...v.values()].map(s => s.lastUpdate)),
+                }))
+                .sort((a, b) => a.latest - b.latest)
+            const evict = this.states.size - this.maxSources
+            for (let i = 0; i < evict; i++) this.states.delete(sorted[i].k)
+        }
+    }
+
+    get sourceCount(): number {
+        return this.states.size
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // CHAIN DEFINITIONS — Real-world attack sequences
 // ═══════════════════════════════════════════════════════════════════
@@ -446,6 +577,519 @@ export const ATTACK_CHAINS: ChainDefinition[] = [
         minimumSteps: 1,
         confidenceBoost: 0.3,
     },
+
+    // ═══════════════════════════════════════════════════════════════
+    // NATION-STATE / APT ATTACK CHAINS
+    // These model sophisticated multi-phase attacks observed in
+    // real-world APT campaigns (APT28, APT29, Lazarus, Hafnium, etc.)
+    // ═══════════════════════════════════════════════════════════════
+
+    // ── 13. Supply Chain: Deser → SSRF → Cloud Pivot ─────────────
+    {
+        id: 'supply_chain_pivot',
+        name: 'Supply Chain Exploit → Cloud Pivot',
+        description: 'Exploit deserialization vulnerability in a dependency to gain initial access, use SSRF to reach cloud metadata, extract IAM credentials, and pivot to cloud infrastructure. Modeled after SolarWinds/Log4Shell patterns.',
+        mitre: ['T1195.002', 'T1190', 'T1552.005'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle', 'log_jndi_lookup'],
+                description: 'Initial access via deserialization or JNDI injection in third-party component',
+                defense: 'block',
+            },
+            {
+                classes: ['cmd_separator', 'cmd_substitution'],
+                behaviors: ['outbound_connection', 'class_loading'],
+                description: 'Establish execution capability via command injection or class loading',
+                defense: 'block',
+            },
+            {
+                classes: ['ssrf_cloud_metadata', 'ssrf_internal_reach'],
+                behaviors: ['credential_extraction'],
+                description: 'Reach cloud metadata endpoint to extract IAM credentials for lateral movement',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 600,
+        minimumSteps: 2,
+        confidenceBoost: 0.4,
+    },
+
+    // ── 14. DNS Rebinding → SSRF → Internal Service Access ───────
+    {
+        id: 'dns_rebinding_ssrf',
+        name: 'DNS Rebinding → SSRF → Internal Access',
+        description: 'Use DNS rebinding to bypass same-origin and SSRF filters. Initial request resolves to allowed IP, TTL expires, second resolution points to internal IP (169.254.169.254, 10.x, etc.).',
+        mitre: ['T1557', 'T1210'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['ssrf_internal_reach'],
+                description: 'Probe SSRF with external URL (DNS rebinding setup)',
+                defense: 'alert',
+            },
+            {
+                classes: ['ssrf_cloud_metadata', 'ssrf_protocol_smuggle'],
+                description: 'Rebinding resolves to internal target — cloud metadata or internal service',
+                defense: 'block',
+            },
+            {
+                classes: ['auth_header_spoof'],
+                behaviors: ['credential_extraction', 'admin_access'],
+                description: 'Use extracted credentials to access internal services',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 120,
+        minimumSteps: 2,
+        confidenceBoost: 0.35,
+    },
+
+    // ── 15. HTTP Desync → Request Smuggling → Auth Bypass ────────
+    {
+        id: 'http_desync_auth_bypass',
+        name: 'HTTP Desync → Request Smuggling → Auth Bypass',
+        description: 'Exploit CL.TE or H2 downgrade desync to smuggle a second request through reverse proxy, bypassing authentication applied at the proxy layer. Used by APT groups to bypass WAF + auth in one step.',
+        mitre: ['T1557', 'T1190', 'T1078'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['http_smuggle_cl_te', 'http_smuggle_h2'],
+                description: 'Exploit Transfer-Encoding/Content-Length desync or H2→H1 downgrade',
+                defense: 'block',
+            },
+            {
+                classes: ['auth_header_spoof', 'auth_none_algorithm'],
+                behaviors: ['admin_access', 'privilege_escalation'],
+                description: 'Smuggled request reaches upstream with forged identity, bypassing proxy auth',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 60,
+        minimumSteps: 1,
+        confidenceBoost: 0.4,
+    },
+
+    // ── 16. SSRF → Cloud IAM → Cross-Account Pivot ──────────────
+    {
+        id: 'cloud_iam_escalation',
+        name: 'SSRF → Cloud IAM → Cross-Account Escalation',
+        description: 'Use SSRF to extract IAM temporary credentials from instance metadata, then assume roles across AWS accounts using sts:AssumeRole. Modeled after Capital One breach and Pacu framework TTPs.',
+        mitre: ['T1552.005', 'T1078.004', 'T1550.001'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['ssrf_cloud_metadata'],
+                description: 'Extract IAM credentials from cloud metadata endpoint (169.254.169.254)',
+                defense: 'block',
+            },
+            {
+                classes: ['ssrf_internal_reach', 'ssrf_protocol_smuggle'],
+                behaviors: ['credential_extraction'],
+                description: 'Use extracted credentials to enumerate and access internal cloud services',
+                defense: 'block',
+            },
+            {
+                classes: [],
+                behaviors: ['outbound_connection', 'admin_access'],
+                description: 'Pivot to additional cloud accounts using assumed role credentials',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 900,
+        minimumSteps: 2,
+        confidenceBoost: 0.4,
+    },
+
+    // ── 17. Multi-Stage Web Shell Deployment ─────────────────────
+    {
+        id: 'webshell_deployment',
+        name: 'Vuln Exploit → File Write → Web Shell → C2',
+        description: 'Exploit any RCE-class vulnerability to write a web shell, then use it for persistent command execution. Modeled after Hafnium Exchange attacks (ProxyShell → China Chopper).',
+        mitre: ['T1190', 'T1505.003', 'T1059'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['sql_stacked_execution', 'ssti_jinja_twig', 'ssti_el_expression',
+                    'deser_java_gadget', 'deser_php_object', 'log_jndi_lookup'],
+                description: 'Exploit RCE-class vulnerability for initial code execution',
+                defense: 'block',
+            },
+            {
+                classes: ['cmd_separator', 'cmd_substitution', 'cmd_argument_injection'],
+                behaviors: ['code_execution', 'reverse_shell'],
+                description: 'Use RCE to write web shell file to web-accessible directory',
+                defense: 'block',
+            },
+            {
+                classes: ['path_dotdot_escape', 'path_encoding_bypass'],
+                behaviors: ['outbound_connection'],
+                description: 'Verify web shell access and establish persistent C2 channel',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 1800,
+        minimumSteps: 2,
+        confidenceBoost: 0.35,
+    },
+
+    // ── 18. OOB Data Exfiltration Chain ──────────────────────────
+    {
+        id: 'oob_data_exfil',
+        name: 'Blind Injection → OOB Exfiltration',
+        description: 'Use blind injection (SQLi time oracle, XXE, SSRF) with out-of-band exfiltration via DNS or HTTP to attacker-controlled server. Bypasses all output-based detection because data never appears in the response.',
+        mitre: ['T1190', 'T1048'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['sql_time_oracle', 'sql_error_oracle', 'xxe_entity_expansion'],
+                description: 'Detect blind injection point via timing or error side channels',
+                defense: 'alert',
+            },
+            {
+                classes: ['ssrf_internal_reach', 'ssrf_protocol_smuggle'],
+                behaviors: ['outbound_connection'],
+                description: 'Use injection to trigger outbound connection to attacker DNS or HTTP callback',
+                minConfidence: 0.4,
+                defense: 'block',
+            },
+            {
+                classes: ['sql_union_extraction', 'sql_stacked_execution'],
+                description: 'Full data exfiltration via OOB channel (DNS encoding, HTTP body)',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 1200,
+        minimumSteps: 2,
+        confidenceBoost: 0.3,
+    },
+
+    // ── 19. CORS + XSS → Credential Theft ───────────────────────
+    {
+        id: 'cors_credential_theft',
+        name: 'CORS Abuse → XSS → Credential Harvest',
+        description: 'Exploit permissive CORS policy to enable cross-origin XSS, then steal authentication tokens and session cookies. The attacker never directly touches the target — the victim\'s browser does the work.',
+        mitre: ['T1189', 'T1539', 'T1557'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['cors_origin_abuse'],
+                description: 'Detect permissive CORS policy allowing arbitrary cross-origin access',
+                defense: 'alert',
+            },
+            {
+                classes: ['xss_tag_injection', 'xss_event_handler', 'xss_protocol_handler'],
+                description: 'Inject XSS payload that executes in the permissive CORS context',
+                defense: 'block',
+            },
+            {
+                classes: ['auth_header_spoof'],
+                behaviors: ['cookie_exfil', 'privilege_escalation'],
+                description: 'Stolen credentials used for authenticated access',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 3600,
+        minimumSteps: 2,
+        confidenceBoost: 0.25,
+    },
+
+    // ── 20. Slow SQLi Reconnaissance Campaign ───────────────────
+    {
+        id: 'slow_sqli_recon',
+        name: 'Low-and-Slow SQLi Reconnaissance',
+        description: 'Patient, distributed SQL injection reconnaissance: one probe per minute across many parameters over hours. Each individual request is low-confidence. The campaign model detects the pattern.',
+        mitre: ['T1190', 'T1595.002'],
+        severity: 'high',
+        steps: [
+            {
+                classes: ['sql_string_termination'],
+                minConfidence: 0.3,
+                description: 'Single-quote probing across multiple parameters',
+                defense: 'alert',
+            },
+            {
+                classes: ['sql_error_oracle', 'sql_time_oracle'],
+                minConfidence: 0.3,
+                description: 'Error/timing detection on discovered injectable parameters',
+                defense: 'alert',
+            },
+            {
+                classes: ['sql_tautology', 'sql_comment_truncation'],
+                description: 'Confirm injection with boolean-based or comment-based techniques',
+                defense: 'block',
+            },
+            {
+                classes: ['sql_union_extraction'],
+                description: 'Begin data extraction after confirming injection',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 7200, // 2 hours — nation-state patience
+        minimumSteps: 3,
+        confidenceBoost: 0.25,
+    },
+
+    // ── Chain 21: JWT Forgery Pipeline ────────────────────────
+    {
+        id: 'jwt_forgery_pipeline',
+        name: 'JWT Forgery Pipeline',
+        description: 'Multi-step JWT attack: alg:none probing → kid injection → JWK embedding to achieve authentication bypass with forged tokens.',
+        mitre: ['T1550.001'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['auth_none_algorithm' as InvariantClass],
+                description: 'alg:none probing to test signature bypass',
+                defense: 'alert',
+            },
+            {
+                classes: ['jwt_kid_injection' as InvariantClass],
+                description: 'kid header injection to control key resolution',
+                defense: 'block',
+            },
+            {
+                classes: ['jwt_jwk_embedding' as InvariantClass, 'jwt_confusion' as InvariantClass],
+                description: 'Self-signed key injection or algorithm confusion for signature forgery',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 300,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 22: Supply Chain Compromise Pipeline ────────────
+    {
+        id: 'supply_chain_full_compromise',
+        name: 'Supply Chain Full Compromise',
+        description: 'Complete supply chain attack: dependency confusion → malicious postinstall → credential exfiltration. The attacker plants a package, executes code on install, and steals secrets.',
+        mitre: ['T1195.001', 'T1059.006', 'T1114'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['dependency_confusion' as InvariantClass],
+                description: 'Dependency confusion / typosquat package planted',
+                defense: 'alert',
+            },
+            {
+                classes: ['postinstall_injection' as InvariantClass],
+                description: 'Malicious lifecycle script executes on install',
+                defense: 'block',
+            },
+            {
+                classes: ['env_exfiltration' as InvariantClass],
+                description: 'Environment variables exfiltrated to attacker server',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 600,
+        minimumSteps: 2,
+        confidenceBoost: 0.25,
+    },
+
+    // ── Chain 23: LLM Jailbreak Escalation ──────────────────
+    {
+        id: 'llm_jailbreak_escalation',
+        name: 'LLM Jailbreak Escalation',
+        description: 'Progressive LLM jailbreak: prompt injection → role override → data exfiltration. Attacker first hijacks the model, then extracts confidential data.',
+        mitre: ['T1059.003'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['llm_prompt_injection' as InvariantClass],
+                description: 'Prompt boundary crossing / instruction override',
+                defense: 'alert',
+            },
+            {
+                classes: ['llm_jailbreak' as InvariantClass],
+                description: 'Known jailbreak framework (DAN/STAN/DUDE) applied',
+                defense: 'block',
+            },
+            {
+                classes: ['llm_data_exfiltration' as InvariantClass],
+                description: 'Confidential data extraction after jailbreak',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 300,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 24: Cache Poisoning to XSS ────────────────────
+    {
+        id: 'cache_poison_xss',
+        name: 'Cache Poisoning to Stored XSS',
+        description: 'Web cache poisoning chain: manipulate unkeyed headers to inject XSS payload, then serve poisoned response from cache to all visitors.',
+        mitre: ['T1557', 'T1189'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['cache_poisoning' as InvariantClass],
+                description: 'Unkeyed header manipulation to poison cache entry',
+                defense: 'alert',
+            },
+            {
+                classes: ['xss_tag_injection', 'xss_event_handler', 'xss_protocol_handler'],
+                description: 'XSS payload injected via poisoned cache response',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 120,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 25: API IDOR to Mass Exfiltration ──────────────
+    {
+        id: 'api_idor_mass_exfil',
+        name: 'API IDOR to Mass Data Exfiltration',
+        description: 'BOLA/IDOR exploitation followed by mass enumeration to exfiltrate all user records from the API.',
+        mitre: ['T1078', 'T1087', 'T1530'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['bola_idor' as InvariantClass],
+                description: 'IDOR probing to test authorization boundary',
+                defense: 'alert',
+            },
+            {
+                classes: ['api_mass_enum' as InvariantClass],
+                description: 'Mass enumeration / bulk extraction after IDOR confirmed',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 300,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 26: JWT Forgery to IDOR Escalation ────────────
+    {
+        id: 'jwt_idor_escalation',
+        name: 'JWT Forgery to IDOR Privilege Escalation',
+        description: 'Attacker forges JWT token (via algorithm confusion, kid injection, or JWK embedding) then uses the forged identity to access other users\' resources via IDOR.',
+        mitre: ['T1550.001', 'T1078'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['jwt_kid_injection', 'jwt_jwk_embedding', 'jwt_confusion', 'auth_none_algorithm'],
+                description: 'JWT manipulation to forge authentication token',
+                defense: 'alert',
+            },
+            {
+                classes: ['bola_idor' as InvariantClass],
+                description: 'IDOR exploitation using forged identity',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 300,
+        minimumSteps: 2,
+        confidenceBoost: 0.25,
+    },
+
+    // ── Chain 27: Cache Deception to Session Hijack ─────────
+    {
+        id: 'cache_deception_session_theft',
+        name: 'Cache Deception to Session Theft',
+        description: 'Attacker tricks CDN into caching authenticated response (cache deception), then accesses the cached page to steal session tokens or PII visible in the response.',
+        mitre: ['T1557', 'T1539'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['cache_deception' as InvariantClass],
+                description: 'Cache deception: append static extension to dynamic endpoint',
+                defense: 'alert',
+            },
+            {
+                classes: ['cache_poisoning' as InvariantClass],
+                description: 'Cache poisoning to serve stolen content to other users',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 180,
+        minimumSteps: 1,
+        confidenceBoost: 0.15,
+    },
+
+    // ── Chain 28: LLM Jailbreak to Supply Chain Pivot ──────
+    {
+        id: 'llm_supply_chain_pivot',
+        name: 'LLM Jailbreak to Supply Chain Compromise',
+        description: 'Attacker jailbreaks an AI coding assistant to inject malicious dependencies or postinstall scripts into generated code, pivoting from LLM compromise to supply chain attack.',
+        mitre: ['T1059.003', 'T1195.001'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['llm_jailbreak' as InvariantClass, 'llm_prompt_injection' as InvariantClass],
+                description: 'Jailbreak or prompt injection targeting AI assistant',
+                defense: 'alert',
+            },
+            {
+                classes: ['dependency_confusion' as InvariantClass, 'postinstall_injection' as InvariantClass],
+                description: 'Malicious dependency or postinstall script in generated output',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 600,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 29: SSRF to API Mass Enumeration ─────────────
+    {
+        id: 'ssrf_api_exfil',
+        name: 'SSRF to Internal API Mass Exfiltration',
+        description: 'Attacker uses SSRF to reach internal APIs, then mass-enumerates internal endpoints to exfiltrate data that is not exposed to the public internet.',
+        mitre: ['T1090', 'T1087', 'T1530'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['ssrf_internal_reach'],
+                description: 'SSRF to reach internal network or API',
+                defense: 'alert',
+            },
+            {
+                classes: ['api_mass_enum' as InvariantClass, 'bola_idor' as InvariantClass],
+                description: 'Mass enumeration or IDOR on internal API endpoints',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 300,
+        minimumSteps: 2,
+        confidenceBoost: 0.20,
+    },
+
+    // ── Chain 30: SQLi Probe to LFI to Credential Exfil ────
+    {
+        id: 'sqli_lfi_credential_theft',
+        name: 'SQLi Probe to LFI Credential Extraction',
+        description: 'Attacker probes SQL injection to map the application, discovers path traversal, then extracts credential files (passwd, shadow, .env) via LFI — a common dual-vector attack on PHP apps.',
+        mitre: ['T1190', 'T1005', 'T1552.001'],
+        severity: 'critical',
+        steps: [
+            {
+                classes: ['sql_error_oracle', 'sql_tautology', 'sql_string_termination'],
+                description: 'SQL injection probing to map application',
+                defense: 'alert',
+            },
+            {
+                classes: ['path_dotdot_escape', 'path_encoding_bypass'],
+                description: 'Path traversal to access server files',
+                defense: 'throttle',
+            },
+            {
+                classes: ['path_dotdot_escape', 'path_encoding_bypass'],
+                behaviors: ['path_sensitive_file'],
+                description: 'Credential file extraction via LFI',
+                defense: 'block',
+            },
+        ],
+        windowSeconds: 600,
+        minimumSteps: 2,
+        confidenceBoost: 0.25,
+    },
 ]
 
 // ═══════════════════════════════════════════════════════════════════
@@ -463,6 +1107,8 @@ export class ChainCorrelator {
     private sourceWindows: Map<string, ChainSignal[]> = new Map()
     private readonly maxSignalsPerSource: number
     private readonly chainDefs: ChainDefinition[]
+    private readonly chainById: Map<string, ChainDefinition>
+    private readonly stateStore: ChainStateStore
     private lastPrune: number = Date.now()
     // SECURITY (SAA-044): Cap source count to prevent memory exhaustion
     // under distributed botnet attacks (10k+ unique IPs)
@@ -474,8 +1120,10 @@ export class ChainCorrelator {
         maxSources = 5_000,
     ) {
         this.chainDefs = chains
+        this.chainById = new Map(chains.map(chain => [chain.id, chain]))
         this.maxSignalsPerSource = maxSignalsPerSource
         this.maxSources = maxSources
+        this.stateStore = new ChainStateStore(maxSources)
     }
 
     /**
@@ -486,7 +1134,7 @@ export class ChainCorrelator {
      * an invariant match or behavioral signal.
      */
     ingest(signal: ChainSignal): ChainMatch[] {
-        // Store the signal
+        // Store signal window for metrics + stale source eviction.
         let window = this.sourceWindows.get(signal.sourceHash)
         if (!window) {
             window = []
@@ -517,27 +1165,75 @@ export class ChainCorrelator {
                     .sort((a, b) => a.latest - b.latest)
                 const evictCount = this.sourceWindows.size - this.maxSources
                 for (let i = 0; i < evictCount; i++) {
-                    this.sourceWindows.delete(sortedSources[i].key)
+                    const sourceHash = sortedSources[i].key
+                    this.sourceWindows.delete(sourceHash)
+                    this.stateStore.removeSource(sourceHash)
                 }
             }
         }
 
-        // Evaluate all chains against this source's signals
-        return this.evaluateChains(signal.sourceHash, window)
+        const touchedChainIds = new Set<string>()
+
+        // Find all chain/step pairs this signal satisfies (out-of-order allowed).
+        for (const chain of this.chainDefs) {
+            for (let stepIndex = 0; stepIndex < chain.steps.length; stepIndex++) {
+                const step = chain.steps[stepIndex]
+                const minConf = step.minConfidence ?? 0.3
+                const classSatisfied = step.classes.length === 0 ||
+                    step.classes.some(c => signal.classes.includes(c))
+                const behaviorSatisfied = step.behaviors?.some(b => signal.behaviors.includes(b)) ?? false
+
+                if ((classSatisfied || behaviorSatisfied) && signal.confidence >= minConf) {
+                    this.stateStore.advance(
+                        signal.sourceHash,
+                        chain.id,
+                        stepIndex,
+                        signal,
+                        chain.windowSeconds,
+                    )
+                    // Only track this chain if the state is still active after advance()
+                    // (advance() is a no-op on expired/completed states)
+                    const advancedState = this.stateStore.getState(signal.sourceHash, chain.id)
+                    if (!advancedState || advancedState.status === 'expired') continue
+                    touchedChainIds.add(chain.id)
+
+                    const minSteps = chain.minimumSteps ?? chain.steps.length
+                    const state = this.stateStore.getState(signal.sourceHash, chain.id)
+                    if (state && state.status === 'in_progress' && state.stepsMatched >= minSteps) {
+                        this.stateStore.complete(signal.sourceHash, chain.id)
+                    }
+                }
+            }
+        }
+
+        // Only return states touched by this signal to avoid repeated chain re-fire spam.
+        const matches: ChainMatch[] = []
+        for (const chainId of touchedChainIds) {
+            const chain = this.chainById.get(chainId)
+            if (!chain) continue
+            const state = this.stateStore.getState(signal.sourceHash, chainId)
+            if (!state) continue
+            const match = this.stateToChainMatch(state, chain)
+            if (match) matches.push(match)
+        }
+        return matches
     }
 
     /**
      * Evaluate all chain definitions against a source's signal window.
      * Returns all chains where sufficient steps match.
      */
-    private evaluateChains(sourceHash: string, signals: ChainSignal[]): ChainMatch[] {
+    private evaluateChains(sourceHash: string, _signals: ChainSignal[]): ChainMatch[] {
         const matches: ChainMatch[] = []
-
-        for (const chain of this.chainDefs) {
-            const match = this.evaluateChain(chain, sourceHash, signals)
-            if (match) matches.push(match)
+        const states = this.stateStore.getAllForSource(sourceHash)
+        for (const state of states) {
+            const chain = this.chainById.get(state.chainId)
+            if (!chain) continue
+            const match = this.stateToChainMatch(state, chain)
+            if (match) {
+                matches.push(match)
+            }
         }
-
         return matches
     }
 
@@ -554,78 +1250,52 @@ export class ChainCorrelator {
     private evaluateChain(
         chain: ChainDefinition,
         sourceHash: string,
-        signals: ChainSignal[],
+        _signals: ChainSignal[],
     ): ChainMatch | null {
-        const now = Date.now()
-        const windowStart = now - (chain.windowSeconds * 1000)
+        const state = this.stateStore.getState(sourceHash, chain.id)
+        if (!state) return null
+        return this.stateToChainMatch(state, chain)
+    }
 
-        // Filter signals within the chain's time window
-        const relevantSignals = signals.filter(s => s.timestamp >= windowStart)
-        if (relevantSignals.length === 0) return null
+    private stateToChainMatch(state: ChainStateNode, chain: ChainDefinition): ChainMatch | null {
+        if (state.status === 'expired') return null
+        if (state.stepsMatched < 1) return null
 
-        // Sort by timestamp (defensive — should already be ordered)
-        relevantSignals.sort((a, b) => a.timestamp - b.timestamp)
-
-        // Try to match each step
-        const stepMatches: ChainMatch['stepMatches'] = []
-        let lastMatchTime = 0
-
-        for (let stepIndex = 0; stepIndex < chain.steps.length; stepIndex++) {
-            const step = chain.steps[stepIndex]
-            const minConf = step.minConfidence ?? 0.3
-
-            // Find the first signal after the last match that satisfies this step
-            for (const signal of relevantSignals) {
-                if (signal.timestamp <= lastMatchTime && stepMatches.length > 0) continue
-
-                // Check if this signal satisfies the step
-                const classMatch = step.classes.length === 0 ||
-                    step.classes.some(c => signal.classes.includes(c))
-                const behaviorMatch = !step.behaviors || step.behaviors.length === 0 ||
-                    step.behaviors.some(b => signal.behaviors.includes(b))
-
-                if ((classMatch || behaviorMatch) && signal.confidence >= minConf) {
-                    const matchedClass = step.classes.find(c => signal.classes.includes(c)) ??
-                        step.behaviors?.find(b => signal.behaviors.includes(b)) ??
-                        'behavioral'
-
-                    stepMatches.push({
-                        stepIndex,
-                        description: step.description,
-                        matchedClass,
-                        confidence: signal.confidence,
-                        timestamp: signal.timestamp,
-                        path: signal.path,
-                    })
-                    lastMatchTime = signal.timestamp
-                    break // Move to next step
-                }
-            }
-        }
-
-        // Check if enough steps matched
         const minSteps = chain.minimumSteps ?? chain.steps.length
-        if (stepMatches.length < minSteps) return null
+        if (state.stepsMatched < minSteps) return null
 
-        // Calculate compounded confidence
-        const baseConfidence = stepMatches.reduce((sum, m) => sum + m.confidence, 0) / stepMatches.length
-        const completionRatio = stepMatches.length / chain.steps.length
-        const compoundedConfidence = Math.min(0.99,
-            baseConfidence + (chain.confidenceBoost * completionRatio)
+        const stepMatches: ChainMatch['stepMatches'] = Array.from(state.satisfiedSteps.entries())
+            .map(([stepIndex, { signal, confidence }]) => ({
+                stepIndex,
+                description: chain.steps[stepIndex]?.description ?? '',
+                matchedClass: signal.classes[0] ?? 'behavioral',
+                confidence,
+                timestamp: signal.timestamp,
+                path: signal.path,
+            }))
+            .sort((a, b) => a.stepIndex - b.stepIndex)
+
+        const baseConfidence = stepMatches.reduce((sum, step) => sum + step.confidence, 0) / stepMatches.length
+        const completionRatio = state.stepsMatched / chain.steps.length
+        const compoundedConfidence = Math.min(
+            0.99,
+            baseConfidence + chain.confidenceBoost * completionRatio,
         )
 
-        // Determine recommended action based on completion and severity
-        const recommendedAction = this.determineAction(chain, completionRatio, compoundedConfidence)
+        let recommendedAction = this.determineAction(chain, completionRatio, compoundedConfidence)
+        if (state.status === 'completed' && (recommendedAction === 'monitor' || recommendedAction === 'throttle' || recommendedAction === 'challenge')) {
+            recommendedAction = 'block'
+        }
 
-        // Calculate duration
-        const firstMatch = stepMatches[0].timestamp
-        const lastMatch = stepMatches[stepMatches.length - 1].timestamp
-        const durationSeconds = Math.round((lastMatch - firstMatch) / 1000)
+        const timestamps = stepMatches.map(match => match.timestamp)
+        const firstStepTimestamp = Math.min(...timestamps)
+        const lastStepTimestamp = Math.max(...timestamps)
+        const durationSeconds = Math.round((lastStepTimestamp - firstStepTimestamp) / 1000)
 
         return {
             chainId: chain.id,
             name: chain.name,
-            stepsMatched: stepMatches.length,
+            stepsMatched: state.stepsMatched,
             totalSteps: chain.steps.length,
             completion: completionRatio,
             confidence: compoundedConfidence,
@@ -634,7 +1304,7 @@ export class ChainCorrelator {
             recommendedAction,
             stepMatches,
             durationSeconds,
-            sourceHash,
+            sourceHash: state.sourceHash,
         }
     }
 
@@ -667,8 +1337,9 @@ export class ChainCorrelator {
      * longest chain window. Prevents unbounded memory growth.
      */
     private pruneStaleWindows(): void {
-        const maxWindow = Math.max(...this.chainDefs.map(c => c.windowSeconds)) * 1000
-        const cutoff = Date.now() - maxWindow
+        const maxWindowSeconds = Math.max(...this.chainDefs.map(c => c.windowSeconds))
+        const cutoff = Date.now() - maxWindowSeconds * 1000 * 2
+        this.stateStore.pruneExpired(maxWindowSeconds)
 
         for (const [source, signals] of this.sourceWindows.entries()) {
             const latest = signals[signals.length - 1]?.timestamp ?? 0
@@ -684,9 +1355,7 @@ export class ChainCorrelator {
      * Used by the dashboard to show in-progress attack sequences.
      */
     getActiveChains(sourceHash: string): ChainMatch[] {
-        const window = this.sourceWindows.get(sourceHash)
-        if (!window || window.length === 0) return []
-        return this.evaluateChains(sourceHash, window)
+        return this.evaluateChains(sourceHash, [])
     }
 
     /**
@@ -695,8 +1364,8 @@ export class ChainCorrelator {
      */
     getAllActiveChains(): ChainMatch[] {
         const allMatches: ChainMatch[] = []
-        for (const [sourceHash, signals] of this.sourceWindows.entries()) {
-            const matches = this.evaluateChains(sourceHash, signals)
+        for (const sourceHash of this.stateStore.getAllSources()) {
+            const matches = this.evaluateChains(sourceHash, [])
             allMatches.push(...matches)
         }
         return allMatches
@@ -704,7 +1373,7 @@ export class ChainCorrelator {
 
     /** Number of active source windows */
     get activeSourceCount(): number {
-        return this.sourceWindows.size
+        return this.stateStore.sourceCount
     }
 
     /** Total signals across all sources */
@@ -719,5 +1388,51 @@ export class ChainCorrelator {
     /** Registered chain count */
     get chainCount(): number {
         return this.chainDefs.length
+    }
+
+    getAttackGraphInference(
+        classes: string[],
+        behaviors: string[],
+    ): Array<{ chainId: string, name: string, probability: number, description: string }> {
+        const scored = this.chainDefs
+            .map(chain => {
+                let satisfied = 0
+                for (const step of chain.steps) {
+                    const classOverlap = step.classes.some(c => classes.includes(c))
+                    const behaviorOverlap = step.behaviors?.some(b => behaviors.includes(b)) ?? false
+                    if (classOverlap || behaviorOverlap) {
+                        satisfied++
+                    }
+                }
+                return {
+                    chainId: chain.id,
+                    name: chain.name,
+                    probability: satisfied / chain.steps.length,
+                    description: chain.description,
+                }
+            })
+            .filter(inference => inference.probability > 0.1)
+            .sort((a, b) => b.probability - a.probability)
+
+        return scored.slice(0, 5)
+    }
+
+    getChainVelocity(sourceHash: string): Array<{ chainId: string, stepsPerMinute: number, latestStep: number }> {
+        const now = Date.now()
+        const states = this.stateStore.getAllForSource(sourceHash)
+        const velocities = states
+            .filter(state => state.status === 'in_progress' && state.stepsMatched > 0)
+            .map(state => {
+                const elapsedMinutes = Math.max((now - state.startTime) / 60_000, 1 / 60)
+                return {
+                    chainId: state.chainId,
+                    stepsPerMinute: state.stepsMatched / elapsedMinutes,
+                    latestStep: state.stepsMatched,
+                }
+            })
+            .filter(velocity => velocity.stepsPerMinute > 2.0)
+            .sort((a, b) => b.stepsPerMinute - a.stepsPerMinute)
+
+        return velocities
     }
 }

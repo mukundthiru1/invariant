@@ -10,18 +10,18 @@
  * This module provides the unified API that the main worker uses.
  */
 
-export { multiLayerDecode, detectContexts, decomposeInput } from './input-decomposer'
+export { multiLayerDecode, detectContexts, decomposeInput } from './input-decomposer.js'
 export type {
     InputContext,
     ExtractedProperty,
     DecompositionResult,
     DecodedForms,
-} from './input-decomposer'
+} from './input-decomposer.js'
 
 export {
     ExploitKnowledgeGraph,
     FRAMEWORK_PROFILES,
-} from './exploit-knowledge-graph'
+} from './exploit-knowledge-graph.js'
 export type {
     ExploitKnowledgeEntry,
     TechProduct,
@@ -35,18 +35,18 @@ export type {
     FrameworkProbe,
     AttackVector,
     ExploitSource,
-} from './exploit-knowledge-graph'
+} from './exploit-knowledge-graph.js'
 
-export { ExploitVerifier } from './exploit-verifier'
+export { ExploitVerifier } from './exploit-verifier.js'
 export type {
     ProbeLevel,
     VerificationRequest,
     VerificationResult,
     ProbeEvidence,
     ProbeAuditEntry,
-} from './exploit-verifier'
+} from './exploit-verifier.js'
 
-export { CampaignIntelligence } from './campaign-intelligence'
+export { CampaignIntelligence } from './campaign-intelligence.js'
 export type {
     BehavioralFingerprint,
     EncodingPreference,
@@ -55,4 +55,4 @@ export type {
     CampaignSignal,
     Campaign,
     CampaignType,
-} from './campaign-intelligence'
+} from './campaign-intelligence.js'
