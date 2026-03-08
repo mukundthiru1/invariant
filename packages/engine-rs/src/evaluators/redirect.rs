@@ -31,6 +31,10 @@ impl L2Evaluator for RedirectEvaluator {
             std::sync::LazyLock::new(|| Regex::new(r"(?i)^https?://").unwrap());
         static ABS_URL_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r#"(?i)^(?:https?|ftp)://[^"]+"#).unwrap());
+        static REDIRECT_DATA_URI_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)data\s*:\s*text\s*/\s*html").unwrap());
+        static REDIRECT_TRIPLE_SLASH_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&])(?:redirect|return|next|url|goto|target|dest|continue|callback|redirect_uri|return_to)\s*=\s*[/\\]{3,}[^/\s?#]+").unwrap());
         let has_redirect_context = REDIRECT_CONTEXT_RE.is_match(&decoded);
 
         // Protocol-relative redirect: //evil.com
@@ -389,6 +393,38 @@ impl L2Evaluator for RedirectEvaluator {
             });
         }
 
+        if let Some(m) = REDIRECT_DATA_URI_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "redirect_data_uri".into(),
+                confidence: 0.93,
+                detail: "data:text/html URI in redirect".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "data:text/html redirect targets execute embedded HTML and JavaScript in the victim browser context. This converts an open redirect into stored XSS without requiring a host to serve the payload".into(),
+                    offset: m.start(),
+                    property: "data: URIs must be rejected from all redirect target parameters. Only http:// and https:// should be accepted".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = REDIRECT_TRIPLE_SLASH_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "redirect_triple_slash".into(),
+                confidence: 0.86,
+                detail: "Triple slash path in redirect parameter".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Three or more leading slashes in a redirect URL are normalized to // by browsers, making ///evil.com equivalent to //evil.com (protocol-relative URL). This bypasses validators that check for exactly // double-slash".into(),
+                    offset: m.start(),
+                    property: "Redirect targets must be validated after URL normalization. Reject paths with more than one leading slash".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -406,7 +442,9 @@ impl L2Evaluator for RedirectEvaluator {
             | "url_parser_differential_redirect"
             | "dangerous_scheme_param_redirect"
             | "crlf_redirect_injection"
-            | "unicode_normalization_redirect" => Some(InvariantClass::OpenRedirectBypass),
+            | "unicode_normalization_redirect"
+            | "redirect_data_uri"
+            | "redirect_triple_slash" => Some(InvariantClass::OpenRedirectBypass),
             _ => None,
         }
     }
@@ -561,5 +599,19 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "unicode_normalization_redirect")
         );
+    }
+
+    #[test]
+    fn detects_redirect_data_uri() {
+        let eval = RedirectEvaluator;
+        let dets = eval.detect("?redirect=data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==");
+        assert!(dets.iter().any(|d| d.detection_type == "redirect_data_uri"));
+    }
+
+    #[test]
+    fn detects_redirect_triple_slash() {
+        let eval = RedirectEvaluator;
+        let dets = eval.detect("?next=///evil.com");
+        assert!(dets.iter().any(|d| d.detection_type == "redirect_triple_slash"));
     }
 }

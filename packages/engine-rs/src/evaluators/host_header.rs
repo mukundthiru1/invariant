@@ -11,6 +11,11 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
+use std::sync::LazyLock;
+
+static X_FORWARDED_HOST_SPOOF_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^X-Forwarded-Host\s*:\s*([^\r\n]+)").unwrap());
+static HOST_IPV6_INJECTION_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^Host\s*:\s*\[[0-9a-fA-F:]+(?:%[^\]]+)?\]").unwrap());
 
 fn extract_header<'a>(input: &'a str, name: &str) -> Option<&'a str> {
     for line in input.lines() {
@@ -65,6 +70,38 @@ impl L2Evaluator for HostHeaderEvaluator {
     fn detect(&self, input: &str) -> Vec<L2Detection> {
         let mut dets = Vec::new();
         let lower = input.to_ascii_lowercase();
+
+        if let Some(m) = X_FORWARDED_HOST_SPOOF_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "host_xforwarded_host_spoof".into(),
+                confidence: 0.88,
+                detail: "X-Forwarded-Host header overrides Host routing in many frameworks".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "X-Forwarded-Host header is used by many frameworks (Django, Rails, Laravel) to generate absolute URLs in password resets and emails. Spoofing this header redirects password reset links to attacker domains, enabling account takeover".into(),
+                    offset: m.start(),
+                    property: "X-Forwarded-Host must be validated against an allowlist of trusted hosts. Accept only from trusted reverse proxy IPs".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = HOST_IPV6_INJECTION_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "host_ipv6_injection".into(),
+                confidence: 0.86,
+                detail: "IPv6 Host headers with zone IDs can bypass hostname validation".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "IPv6 Host headers with zone IDs ([fe80::1%25eth0]) bypass hostname validation that only checks for domain format. Some parsers strip zone IDs inconsistently, enabling Host header SSRF to internal IPv6 addresses".into(),
+                    offset: m.start(),
+                    property: "Host headers with IPv6 zone IDs must be rejected. Only validate against expected IPv6 addresses without zone ID suffixes".into(),
+                }],
+            });
+        }
 
         // 1. X-Forwarded-Host with suspicious value
         if let Some(xfh) = extract_header(input, "X-Forwarded-Host") {
@@ -243,7 +280,9 @@ impl L2Evaluator for HostHeaderEvaluator {
             | "host_header_suspicious"
             | "host_header_port_override"
             | "host_header_proxy_override"
-            | "host_header_absolute_url_mismatch" => Some(InvariantClass::HostHeaderInjection),
+            | "host_header_absolute_url_mismatch"
+            | "host_xforwarded_host_spoof"
+            | "host_ipv6_injection" => Some(InvariantClass::HostHeaderInjection),
             _ => None,
         }
     }
@@ -309,5 +348,19 @@ mod tests {
             eval.map_class("host_header_xfh_injection"),
             Some(InvariantClass::HostHeaderInjection)
         );
+    }
+
+    #[test]
+    fn detects_host_xforwarded_host_spoof() {
+        let eval = HostHeaderEvaluator;
+        let dets = eval.detect("GET / HTTP/1.1\r\nX-Forwarded-Host: attacker.com\r\n\r\n");
+        assert!(dets.iter().any(|d| d.detection_type == "host_xforwarded_host_spoof"));
+    }
+
+    #[test]
+    fn detects_host_ipv6_injection() {
+        let eval = HostHeaderEvaluator;
+        let dets = eval.detect("GET / HTTP/1.1\r\nHost: [fe80::1%25eth0]\r\n\r\n");
+        assert!(dets.iter().any(|d| d.detection_type == "host_ipv6_injection"));
     }
 }

@@ -37,6 +37,8 @@ static NULL_BYTE_CRLF_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static HTML_BODY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)<(?:script|html|body|iframe|img)").unwrap());
+static CRLF_UNICODE_NEWLINE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\u{0085}\u{2028}\u{2029}]").unwrap());
+static CRLF_NULL_BETWEEN_HEADERS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\x00[A-Za-z][A-Za-z0-9\-]*\s*:").unwrap());
 
 impl L2Evaluator for CrlfEvaluator {
     fn id(&self) -> &'static str {
@@ -332,6 +334,38 @@ impl L2Evaluator for CrlfEvaluator {
             });
         }
 
+        if let Some(m) = CRLF_UNICODE_NEWLINE_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "crlf_unicode_newline".into(),
+                confidence: 0.87,
+                detail: "Unicode line terminators (NEL, LS, PS) used as CRLF evasion".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Unicode line terminators (NEL, Line Separator, Paragraph Separator) are treated as newlines by some HTTP servers and proxies but may bypass CRLF filters that only check for \\r\\n. Attackers use these to inject headers in contexts where CR/LF are stripped".into(),
+                    offset: m.start(),
+                    property: "All Unicode line terminators must be rejected from header values. Only ASCII CR+LF is a valid HTTP line terminator".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = CRLF_NULL_BETWEEN_HEADERS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "crlf_null_between_headers".into(),
+                confidence: 0.85,
+                detail: "NULL byte followed by header-like pattern".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "NULL bytes followed by header-like patterns can cause some parsers to treat the content as a new header line, enabling header injection without using CR/LF".into(),
+                    offset: m.start(),
+                    property: "NULL bytes must be rejected from all HTTP header values".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -348,6 +382,8 @@ impl L2Evaluator for CrlfEvaluator {
             "header_continuation_injection" => Some(InvariantClass::CrlfHeaderInjection),
             "response_split_header_chain" => Some(InvariantClass::CrlfHeaderInjection),
             "null_byte_crlf" => Some(InvariantClass::CrlfHeaderInjection),
+            "crlf_unicode_newline" => Some(InvariantClass::CrlfHeaderInjection),
+            "crlf_null_between_headers" => Some(InvariantClass::CrlfHeaderInjection),
             _ => None,
         }
     }
@@ -472,5 +508,19 @@ mod tests {
         let eval = CrlfEvaluator;
         let dets = eval.detect("abc%00%0d%0aSet-Cookie:%20pwn=1");
         assert!(dets.iter().any(|d| d.detection_type == "null_byte_crlf"));
+    }
+
+    #[test]
+    fn detects_crlf_unicode_newline() {
+        let eval = CrlfEvaluator;
+        let dets = eval.detect("X-Test: value\u{0085}Set-Cookie: pwn=1");
+        assert!(dets.iter().any(|d| d.detection_type == "crlf_unicode_newline"));
+    }
+
+    #[test]
+    fn detects_crlf_null_between_headers() {
+        let eval = CrlfEvaluator;
+        let dets = eval.detect("X-Test: value\x00Set-Cookie: pwn=1");
+        assert!(dets.iter().any(|d| d.detection_type == "crlf_null_between_headers"));
     }
 }
