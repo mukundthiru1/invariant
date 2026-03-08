@@ -35,8 +35,12 @@ fn decode_base64url_nopad(input: &str) -> Option<Vec<u8>> {
 pub struct ApiAbuseEvaluator;
 
 impl L2Evaluator for ApiAbuseEvaluator {
-    fn id(&self) -> &'static str { "api_abuse" }
-    fn prefix(&self) -> &'static str { "L2 API" }
+    fn id(&self) -> &'static str {
+        "api_abuse"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 API"
+    }
 
     #[inline]
 
@@ -48,7 +52,8 @@ impl L2Evaluator for ApiAbuseEvaluator {
         static GRAPHQL_BATCH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r#"(?is)\[[^\]]*\bquery\b[^\]]*,[^\]]*\bquery\b[^\]]*\]"#).unwrap()
         });
-        let is_graphql = decoded.to_lowercase().contains("/graphql") || decoded.to_lowercase().contains("graphql");
+        let is_graphql = decoded.to_lowercase().contains("/graphql")
+            || decoded.to_lowercase().contains("graphql");
         if is_graphql && GRAPHQL_BATCH_RE.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "api_graphql_batching_abuse".into(),
@@ -145,10 +150,12 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // Mass enumeration: sequential ID sweep in query/path payloads
-        static ENUM_ID_QUERY_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)[?&](?:id|user_id|item_id|resource_id)=([0-9]+)").unwrap());
-        static ENUM_ID_LIST_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)[?&](?:ids|user_ids)=[0-9]+(?:\s*,\s*[0-9]+)+").unwrap());
+        static ENUM_ID_QUERY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&](?:id|user_id|item_id|resource_id)=([0-9]+)").unwrap()
+        });
+        static ENUM_ID_LIST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&](?:ids|user_ids)=[0-9]+(?:\s*,\s*[0-9]+)+").unwrap()
+        });
         static ENUM_ID_PATH_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"(?:/api/[A-Za-z0-9._-]+/)([0-9]+)").unwrap());
         let mut enum_ids: Vec<u64> = Vec::new();
@@ -207,7 +214,8 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // BOLA/IDOR: sequential ID enumeration pattern
-        static seq_ids: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"/api/[^/]+/(\d+)\b").unwrap());
+        static seq_ids: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"/api/[^/]+/(\d+)\b").unwrap());
         let matches: Vec<_> = seq_ids.find_iter(&decoded).collect();
         if matches.len() > 3 {
             dets.push(L2Detection {
@@ -218,7 +226,8 @@ impl L2Evaluator for ApiAbuseEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded[..decoded.len().min(80)].to_owned(),
-                    interpretation: "Sequential ID access pattern indicates BOLA/IDOR exploitation".into(),
+                    interpretation: "Sequential ID access pattern indicates BOLA/IDOR exploitation"
+                        .into(),
                     offset: 0,
                     property: "API endpoints must enforce object-level authorization".into(),
                 }],
@@ -226,7 +235,9 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // Excessive data exposure: large limit parameters
-        static large_limit: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:limit|page_size|per_page|count)\s*=\s*(\d+)").unwrap());
+        static large_limit: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:limit|page_size|per_page|count)\s*=\s*(\d+)").unwrap()
+        });
         if let Some(caps) = large_limit.captures(&decoded) {
             if let Ok(val) = caps.get(1).unwrap().as_str().parse::<u64>() {
                 if val > 10000 {
@@ -238,7 +249,10 @@ impl L2Evaluator for ApiAbuseEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: caps.get(0).unwrap().as_str().to_owned(),
-                            interpretation: format!("Requesting {} records may indicate data exfiltration", val),
+                            interpretation: format!(
+                                "Requesting {} records may indicate data exfiltration",
+                                val
+                            ),
                             offset: caps.get(0).unwrap().start(),
                             property: "API pagination limits must be bounded server-side".into(),
                         }],
@@ -248,7 +262,9 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // Rate limit bypass headers
-        static bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*(?:X-Forwarded-For|X-Real-IP|X-Client-IP|True-Client-IP|CF-Connecting-IP)\s*:\s*(?:\d{1,3}\.){3}\d{1,3}").unwrap());
+        static bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*(?:X-Forwarded-For|X-Real-IP|X-Client-IP|True-Client-IP|CF-Connecting-IP)\s*:\s*(?:\d{1,3}\.){3}\d{1,3}").unwrap()
+        });
         if let Some(m) = bypass.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "rate_limit_bypass".into(),
@@ -260,13 +276,17 @@ impl L2Evaluator for ApiAbuseEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "IP header spoofing bypasses per-IP rate limiting".into(),
                     offset: m.start(),
-                    property: "Rate limiting must use verified client IP, not user-supplied headers".into(),
+                    property:
+                        "Rate limiting must use verified client IP, not user-supplied headers"
+                            .into(),
                 }],
             });
         }
 
         // JWT claim manipulation: forged admin claims in Authorization bearer payload
-        static jwt_auth: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*Authorization\s*:\s*Bearer\s+([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)").unwrap());
+        static jwt_auth: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*Authorization\s*:\s*Bearer\s+([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)").unwrap()
+        });
         for caps in jwt_auth.captures_iter(&decoded) {
             if let Some(payload) = caps.get(2) {
                 if let Some(decoded_payload_bytes) = decode_base64url_nopad(payload.as_str()) {
@@ -295,7 +315,9 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // HTTP method tampering via override headers
-        static method_tamper: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*(?:X-HTTP-Method-Override|X-Method-Override)\s*:\s*(?:PUT|PATCH|DELETE|TRACE|CONNECT)\b").unwrap());
+        static method_tamper: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*(?:X-HTTP-Method-Override|X-Method-Override)\s*:\s*(?:PUT|PATCH|DELETE|TRACE|CONNECT)\b").unwrap()
+        });
         if let Some(m) = method_tamper.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "api_method_tampering".into(),
@@ -305,18 +327,23 @@ impl L2Evaluator for ApiAbuseEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Method override header may bypass gateway ACLs based on original verb".into(),
+                    interpretation:
+                        "Method override header may bypass gateway ACLs based on original verb"
+                            .into(),
                     offset: m.start(),
-                    property: "Method override headers must be disabled or strictly authenticated".into(),
+                    property: "Method override headers must be disabled or strictly authenticated"
+                        .into(),
                 }],
             });
         }
 
         // API version downgrade: v1 used while v2/v3 is also referenced
-        static V1_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:/api/)?v1(?:/|\b)|[?&](?:api_)?version=1\b").unwrap());
-        static NEWER_VERSION_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:/api/)?v(?:2|3)(?:/|\b)|[?&](?:api_)?version=(?:2|3)\b").unwrap());
+        static V1_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:/api/)?v1(?:/|\b)|[?&](?:api_)?version=1\b").unwrap()
+        });
+        static NEWER_VERSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:/api/)?v(?:2|3)(?:/|\b)|[?&](?:api_)?version=(?:2|3)\b").unwrap()
+        });
         let using_v1 = V1_RE.is_match(&decoded);
         let has_newer_versions = NEWER_VERSION_RE.is_match(&decoded);
         if using_v1 && has_newer_versions {
@@ -337,11 +364,14 @@ impl L2Evaluator for ApiAbuseEvaluator {
 
         // Protocol negotiation downgrade: requesting v1 while advertising newer API contracts
         static VERSION_NEGOTIATION_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:accept|x-api-version|api-version)\s*[:=]\s*([^;\s,]+)").unwrap());
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)(?:accept|x-api-version|api-version)\s*[:=]\s*([^;\s,]+)").unwrap()
+            });
         static VERSION_LIST_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)version\s*=\s*(\d+)" ).unwrap());
-        static VERSION_MEDIA_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)application/[A-Za-z0-9.-]+\+json;\s*version=(\d+)").unwrap());
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)version\s*=\s*(\d+)").unwrap());
+        static VERSION_MEDIA_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)application/[A-Za-z0-9.-]+\+json;\s*version=(\d+)").unwrap()
+        });
         let mut versions: Vec<u32> = Vec::new();
         for cap in VERSION_NEGOTIATION_RE.captures_iter(&decoded) {
             if let Some(raw) = cap.get(1) {
@@ -406,7 +436,9 @@ impl L2Evaluator for ApiAbuseEvaluator {
         }
 
         // Excessive OAuth scope requests
-        static excessive_scope: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&\s])scope\s*=\s*[^&]*(?:\*|\badmin\b)").unwrap());
+        static excessive_scope: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:^|[?&\s])scope\s*=\s*[^&]*(?:\*|\badmin\b)").unwrap()
+        });
         if let Some(m) = excessive_scope.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "api_excessive_scope".into(),
@@ -430,7 +462,14 @@ impl L2Evaluator for ApiAbuseEvaluator {
         match detection_type {
             "bola_enumeration" => Some(InvariantClass::BolaIdor),
             "excessive_data" | "rate_limit_bypass" => Some(InvariantClass::ApiMassEnum),
-            "api_graphql_batching_abuse" | "api_http_parameter_pollution" | "api_mass_enumeration" | "api_version_downgrade" | "api_jwt_claim_manipulation" | "api_method_tampering" | "api_ssrf_param_internal" | "api_excessive_scope" => Some(InvariantClass::ApiMassEnum),
+            "api_graphql_batching_abuse"
+            | "api_http_parameter_pollution"
+            | "api_mass_enumeration"
+            | "api_version_downgrade"
+            | "api_jwt_claim_manipulation"
+            | "api_method_tampering"
+            | "api_ssrf_param_internal"
+            | "api_excessive_scope" => Some(InvariantClass::ApiMassEnum),
             "api_idor_pattern" => Some(InvariantClass::BolaIdor),
             _ => None,
         }
@@ -446,7 +485,10 @@ mod tests {
         let eval = ApiAbuseEvaluator;
         let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJhZG1pbiI6dHJ1ZSwidXNlciI6ImJvYiJ9.signature";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_jwt_claim_manipulation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_jwt_claim_manipulation")
+        );
     }
 
     #[test]
@@ -454,7 +496,10 @@ mod tests {
         let eval = ApiAbuseEvaluator;
         let input = "POST /api/users/1 HTTP/1.1\r\nX-HTTP-Method-Override: DELETE\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_method_tampering"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_method_tampering")
+        );
     }
 
     #[test]
@@ -462,7 +507,10 @@ mod tests {
         let eval = ApiAbuseEvaluator;
         let input = "/api/v1/users?supported=/api/v2,/api/v3";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_version_downgrade"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_version_downgrade")
+        );
     }
 
     #[test]
@@ -473,7 +521,10 @@ Content-Type: application/json
 
 [{"query":"{ users { id } }"},{"query":"{ users { name } }"}]"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_graphql_batching_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_graphql_batching_abuse")
+        );
     }
 
     #[test]
@@ -481,7 +532,10 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "GET /api/accounts?user=alice&id=10&id=11&status=active HTTP/1.1";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_http_parameter_pollution"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_http_parameter_pollution")
+        );
     }
 
     #[test]
@@ -497,7 +551,10 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "/api/products?ids=101,102,103,104,105&limit=5";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_mass_enumeration"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_mass_enumeration")
+        );
     }
 
     #[test]
@@ -505,7 +562,10 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "/api/items?id=200&id=201&id=202&id=203&id=204";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_mass_enumeration"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_mass_enumeration")
+        );
     }
 
     #[test]
@@ -513,19 +573,28 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "POST /api/users HTTP/1.1\nAccept: application/vnd.vendor+json;version=1, application/vnd.vendor+json;version=2\n";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_version_downgrade"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_version_downgrade")
+        );
     }
 
     #[test]
     fn maps_graphql_batching_to_api_mass_enum() {
         let eval = ApiAbuseEvaluator;
-        assert_eq!(eval.map_class("api_graphql_batching_abuse"), Some(InvariantClass::ApiMassEnum));
+        assert_eq!(
+            eval.map_class("api_graphql_batching_abuse"),
+            Some(InvariantClass::ApiMassEnum)
+        );
     }
 
     #[test]
     fn maps_idor_pattern_to_bola_idor() {
         let eval = ApiAbuseEvaluator;
-        assert_eq!(eval.map_class("api_idor_pattern"), Some(InvariantClass::BolaIdor));
+        assert_eq!(
+            eval.map_class("api_idor_pattern"),
+            Some(InvariantClass::BolaIdor)
+        );
     }
 
     #[test]
@@ -533,7 +602,10 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "POST /hooks callback=http://169.254.169.254/latest/meta-data";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_ssrf_param_internal"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_ssrf_param_internal")
+        );
     }
 
     #[test]
@@ -541,6 +613,9 @@ Content-Type: application/json
         let eval = ApiAbuseEvaluator;
         let input = "grant_type=client_credentials&scope=read%20admin";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "api_excessive_scope"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "api_excessive_scope")
+        );
     }
 }

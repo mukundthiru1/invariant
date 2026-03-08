@@ -14,25 +14,70 @@ use regex::Regex;
 use std::sync::OnceLock;
 
 const SCRIPT_CAPABLE_TAGS: &[&str] = &[
-    "script", "img", "svg", "iframe", "object", "embed", "video",
-    "audio", "source", "body", "input", "select", "textarea",
-    "button", "details", "marquee", "isindex", "form", "math",
-    "base", "link", "style", "meta", "applet", "bgsound",
-    "layer", "ilayer", "xml", "xss", "image", "animate",
-    "set", "animatemotion", "animatetransform", "foreignobject",
+    "script",
+    "img",
+    "svg",
+    "iframe",
+    "object",
+    "embed",
+    "video",
+    "audio",
+    "source",
+    "body",
+    "input",
+    "select",
+    "textarea",
+    "button",
+    "details",
+    "marquee",
+    "isindex",
+    "form",
+    "math",
+    "base",
+    "link",
+    "style",
+    "meta",
+    "applet",
+    "bgsound",
+    "layer",
+    "ilayer",
+    "xml",
+    "xss",
+    "image",
+    "animate",
+    "set",
+    "animatemotion",
+    "animatetransform",
+    "foreignobject",
 ];
 
 const DANGEROUS_SCHEMES: &[&str] = &[
-    "javascript:", "data:text/html", "data:text/javascript",
-    "data:application/javascript", "data:application/ecmascript",
-    "data:application/xhtml+xml", "data:text/xml",
-    "vbscript:", "livescript:",
+    "javascript:",
+    "data:text/html",
+    "data:text/javascript",
+    "data:application/javascript",
+    "data:application/ecmascript",
+    "data:application/xhtml+xml",
+    "data:text/xml",
+    "vbscript:",
+    "livescript:",
 ];
 
 const URI_ATTRIBUTES: &[&str] = &[
-    "href", "src", "action", "formaction", "data", "background",
-    "poster", "codebase", "cite", "icon", "manifest", "dynsrc",
-    "lowsrc", "srcdoc",
+    "href",
+    "src",
+    "action",
+    "formaction",
+    "data",
+    "background",
+    "poster",
+    "codebase",
+    "cite",
+    "icon",
+    "manifest",
+    "dynsrc",
+    "lowsrc",
+    "srcdoc",
 ];
 
 const DOM_CLOBBER_TAGS: &[&str] = &["form", "a"];
@@ -42,12 +87,23 @@ const DOM_CLOBBER_INPUT_TAGS: &[&str] = &[
 ];
 const DOM_CLOBBER_ATTRS: &[&str] = &["id", "name"];
 const DOM_CLOBBER_NAMES: &[&str] = &[
-    "location", "document", "window", "top", "self", "frames",
-    "opener", "parent", "constructor",
+    "location",
+    "document",
+    "window",
+    "top",
+    "self",
+    "frames",
+    "opener",
+    "parent",
+    "constructor",
 ];
 
 const SVG_ANIMATION_TAGS: &[&str] = &[
-    "animate", "set", "animatemotion", "animatetransform", "discard",
+    "animate",
+    "set",
+    "animatemotion",
+    "animatetransform",
+    "discard",
     "mpath",
 ];
 
@@ -80,12 +136,16 @@ impl XssEvaluator {
                 i += 1;
 
                 // Next token should be TagName
-                if i >= tokens.len() { break; }
+                if i >= tokens.len() {
+                    break;
+                }
                 // Skip whitespace
                 while i < tokens.len() && tokens[i].token_type == HtmlTokenType::Whitespace {
                     i += 1;
                 }
-                if i >= tokens.len() { break; }
+                if i >= tokens.len() {
+                    break;
+                }
 
                 let tag_name = if tokens[i].token_type == HtmlTokenType::TagName {
                     let name = tokens[i].value.to_lowercase();
@@ -102,9 +162,12 @@ impl XssEvaluator {
                         HtmlTokenType::AttrName => {
                             let name = tokens[i].value.to_lowercase();
                             i += 1;
-                            if i < tokens.len() && tokens[i].token_type == HtmlTokenType::AttrEquals {
+                            if i < tokens.len() && tokens[i].token_type == HtmlTokenType::AttrEquals
+                            {
                                 i += 1;
-                                if i < tokens.len() && tokens[i].token_type == HtmlTokenType::AttrValue {
+                                if i < tokens.len()
+                                    && tokens[i].token_type == HtmlTokenType::AttrValue
+                                {
                                     attrs.push((name, tokens[i].value.clone()));
                                     i += 1;
                                 } else {
@@ -118,11 +181,17 @@ impl XssEvaluator {
                             i += 1;
                             break;
                         }
-                        _ => { i += 1; }
+                        _ => {
+                            i += 1;
+                        }
                     }
                 }
 
-                elements.push(ParsedElement { tag_name, attributes: attrs, position });
+                elements.push(ParsedElement {
+                    tag_name,
+                    attributes: attrs,
+                    position,
+                });
             } else {
                 i += 1;
             }
@@ -260,7 +329,9 @@ impl XssEvaluator {
 
     fn has_dangerous_scheme(value: &str) -> bool {
         let compact = Self::compact_protocol_token(value);
-        DANGEROUS_SCHEMES.iter().any(|scheme| compact.starts_with(scheme))
+        DANGEROUS_SCHEMES
+            .iter()
+            .any(|scheme| compact.starts_with(scheme))
             || Self::is_dangerous_data_uri(&compact)
     }
 
@@ -344,7 +415,9 @@ impl XssEvaluator {
             )
             .unwrap()
         });
-        quote_chain_re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+        quote_chain_re
+            .find(input)
+            .map(|m| (m.start(), m.as_str().to_string()))
     }
 
     fn detect_template_expression(input: &str) -> Option<(usize, String)> {
@@ -356,7 +429,8 @@ impl XssEvaluator {
             )
             .unwrap()
         });
-        re.find(&decoded).map(|m| (m.start(), m.as_str().to_string()))
+        re.find(&decoded)
+            .map(|m| (m.start(), m.as_str().to_string()))
     }
 
     fn detect_bare_protocol_handler(input: &str) -> Option<(usize, String)> {
@@ -381,7 +455,8 @@ impl XssEvaluator {
             .unwrap()
         });
         let normalized = Self::normalized_xss_view(input);
-        re.find(&normalized).map(|m| (m.start(), m.as_str().to_string()))
+        re.find(&normalized)
+            .map(|m| (m.start(), m.as_str().to_string()))
     }
 
     fn detect_svg_data_uri_payload(input: &str) -> Option<(usize, String)> {
@@ -411,8 +486,8 @@ impl XssEvaluator {
             }
 
             let tag = &lower[start..=i];
-            if let Some(src) = Self::extract_tag_attr_value(tag, "src")
-                .map(|v| Self::compact_protocol_token(&v))
+            if let Some(src) =
+                Self::extract_tag_attr_value(tag, "src").map(|v| Self::compact_protocol_token(&v))
             {
                 if src.starts_with("data:image/svg+xml")
                     && (src.contains("<svg") || src.contains("onload=") || src.contains("onerror="))
@@ -433,7 +508,9 @@ impl XssEvaluator {
         let mut i = 0usize;
         let bytes = tag.as_bytes();
 
-        if let Some(first) = bytes.first() && *first == b'<' {
+        if let Some(first) = bytes.first()
+            && *first == b'<'
+        {
             i += 1;
         }
 
@@ -502,11 +579,7 @@ impl XssEvaluator {
     }
 
     fn is_attr_name_char(byte: u8) -> bool {
-        byte.is_ascii_alphanumeric()
-            || byte == b'-'
-            || byte == b'_'
-            || byte == b':'
-            || byte == b'.'
+        byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_' || byte == b':' || byte == b'.'
     }
 
     fn detect_mutation_xss(input: &str) -> Option<(usize, String)> {
@@ -518,7 +591,8 @@ impl XssEvaluator {
             .unwrap()
         });
         let normalized = Self::normalized_xss_view(input);
-        re.find(&normalized).map(|m| (m.start(), m.as_str().to_string()))
+        re.find(&normalized)
+            .map(|m| (m.start(), m.as_str().to_string()))
     }
 
     fn detect_dom_clobbering_pair(elements: &[ParsedElement]) -> Option<(usize, String)> {
@@ -527,31 +601,27 @@ impl XssEvaluator {
 
         for elem in elements {
             if DOM_CLOBBER_FORM_TAGS.contains(&elem.tag_name.as_str())
-                && let Some(form_name) = elem
-                    .attributes
-                    .iter()
-                    .find_map(|(name, value)| {
-                        if DOM_CLOBBER_ATTRS.contains(&name.as_str()) && Self::is_safe_dom_identifier(value) {
-                            Some(value.clone())
-                        } else {
-                            None
-                        }
-                    })
+                && let Some(form_name) = elem.attributes.iter().find_map(|(name, value)| {
+                    if DOM_CLOBBER_ATTRS.contains(&name.as_str())
+                        && Self::is_safe_dom_identifier(value)
+                    {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                })
             {
                 forms.push((elem.position, form_name));
             }
 
             if DOM_CLOBBER_INPUT_TAGS.contains(&elem.tag_name.as_str())
-                && let Some(input_name) = elem
-                    .attributes
-                    .iter()
-                    .find_map(|(name, value)| {
-                        if (name == "name" || name == "id") && Self::is_safe_dom_identifier(value) {
-                            Some(value.clone())
-                        } else {
-                            None
-                        }
-                    })
+                && let Some(input_name) = elem.attributes.iter().find_map(|(name, value)| {
+                    if (name == "name" || name == "id") && Self::is_safe_dom_identifier(value) {
+                        Some(value.clone())
+                    } else {
+                        None
+                    }
+                })
             {
                 named_inputs.push((elem.position, input_name));
             }
@@ -562,7 +632,10 @@ impl XssEvaluator {
                 if *input_pos > form_pos {
                     return Some((
                         form_pos.min(*input_pos),
-                        format!("<form id=\"{}\" ...><input name=\"{}\">", form_id, input_name),
+                        format!(
+                            "<form id=\"{}\" ...><input name=\"{}\">",
+                            form_id, input_name
+                        ),
                     ));
                 }
             }
@@ -584,8 +657,12 @@ impl XssEvaluator {
 }
 
 impl L2Evaluator for XssEvaluator {
-    fn id(&self) -> &'static str { "xss" }
-    fn prefix(&self) -> &'static str { "L2 XSS" }
+    fn id(&self) -> &'static str {
+        "xss"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 XSS"
+    }
 
     #[inline]
     fn detect(&self, input: &str) -> Vec<L2Detection> {
@@ -695,14 +772,17 @@ impl L2Evaluator for XssEvaluator {
                     detections.push(L2Detection {
                         detection_type: "tag_injection".into(),
                         confidence: 0.95,
-                        detail: "Direct script tag injection — arbitrary JavaScript execution".into(),
+                        detail: "Direct script tag injection — arbitrary JavaScript execution"
+                            .into(),
                         position: elem.position,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: format!("<{}>", elem.tag_name),
-                            interpretation: "Dangerous HTML tag is injected into trusted markup context".into(),
+                            interpretation:
+                                "Dangerous HTML tag is injected into trusted markup context".into(),
                             offset: elem.position,
-                            property: "User input must not introduce executable HTML elements".into(),
+                            property: "User input must not introduce executable HTML elements"
+                                .into(),
                         }],
                     });
                     continue;
@@ -711,29 +791,34 @@ impl L2Evaluator for XssEvaluator {
                 // Other script-capable tags with dangerous attributes
                 let has_dangerous = elem.attributes.iter().any(|(name, value)| {
                     Self::is_event_handler(name)
-                        || (URI_ATTRIBUTES.contains(&name.as_str()) && Self::has_dangerous_scheme(value))
+                        || (URI_ATTRIBUTES.contains(&name.as_str())
+                            && Self::has_dangerous_scheme(value))
                 });
 
                 if has_dangerous {
                     detections.push(L2Detection {
                         detection_type: "tag_injection".into(),
                         confidence: 0.90,
-                        detail: format!("Script-capable tag <{}> with dangerous attributes", elem.tag_name),
+                        detail: format!(
+                            "Script-capable tag <{}> with dangerous attributes",
+                            elem.tag_name
+                        ),
                         position: elem.position,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: format!("<{}>", elem.tag_name),
-                            interpretation: "Dangerous HTML tag is injected into trusted markup context".into(),
+                            interpretation:
+                                "Dangerous HTML tag is injected into trusted markup context".into(),
                             offset: elem.position,
-                            property: "User input must not introduce executable HTML elements".into(),
+                            property: "User input must not introduce executable HTML elements"
+                                .into(),
                         }],
                     });
                 }
 
                 if SVG_ANIMATION_TAGS.contains(&elem.tag_name.as_str())
                     && elem.attributes.iter().any(|(name, value)| {
-                        name == "attributename"
-                            && Self::is_event_handler(value.trim())
+                        name == "attributename" && Self::is_event_handler(value.trim())
                     })
                 {
                     let value = elem
@@ -847,13 +932,15 @@ impl L2Evaluator for XssEvaluator {
         // Check 5: DOM clobber gadget pattern (`document.<formId>.<inputName>`) with scriptable input.
         let clobber_form = elements.iter().find(|e| {
             e.tag_name == "form"
-                && e.attributes.iter().any(|(n, v)| {
-                    (n == "id" || n == "name") && Self::is_safe_dom_identifier(v)
-                })
+                && e.attributes
+                    .iter()
+                    .any(|(n, v)| (n == "id" || n == "name") && Self::is_safe_dom_identifier(v))
         });
         let clobber_input = elements.iter().find(|e| {
             e.tag_name == "input"
-                && e.attributes.iter().any(|(n, v)| n == "name" && Self::is_safe_dom_identifier(v))
+                && e.attributes
+                    .iter()
+                    .any(|(n, v)| n == "name" && Self::is_safe_dom_identifier(v))
                 && e.attributes.iter().any(|(n, _)| Self::is_event_handler(n))
         });
         if let (Some(form), Some(input_elem)) = (clobber_form, clobber_input) {
@@ -897,7 +984,8 @@ mod tests {
     }
 
     fn has_any(dets: &[L2Detection], classes: &[&str]) -> bool {
-        dets.iter().any(|d| classes.iter().any(|c| d.detection_type == *c))
+        dets.iter()
+            .any(|d| classes.iter().any(|c| d.detection_type == *c))
     }
 
     #[test]
@@ -987,7 +1075,8 @@ mod tests {
     #[test]
     fn data_uri_html_base64() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">x</a>");
+        let dets = eval
+            .detect("<a href=\"data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==\">x</a>");
         assert!(has_type(&dets, "protocol_handler"));
     }
 
@@ -1001,35 +1090,42 @@ mod tests {
     #[test]
     fn svg_animate_onbegin() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<svg><animate onbegin=alert(1) attributeName='visibility' from='hidden'></svg>");
+        let dets = eval.detect(
+            "<svg><animate onbegin=alert(1) attributeName='visibility' from='hidden'></svg>",
+        );
         assert!(has_type(&dets, "event_handler"));
     }
 
     #[test]
     fn svg_set_onload_attr_name() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<svg><set attributeName='onload' to='javascript:alert(1)' /></svg>");
+        let dets =
+            eval.detect("<svg><set attributeName='onload' to='javascript:alert(1)' /></svg>");
         assert!(has_type(&dets, "tag_injection"));
     }
 
     #[test]
     fn svg_foreign_object_iframe() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<svg><foreignObject><iframe src='javascript:alert(1)'></iframe></foreignObject></svg>");
+        let dets = eval.detect(
+            "<svg><foreignObject><iframe src='javascript:alert(1)'></iframe></foreignObject></svg>",
+        );
         assert!(has_any(&dets, &["tag_injection", "protocol_handler"]));
     }
 
     #[test]
     fn svg_foreign_object_body_onload() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<svg><foreignobject><body onload='alert(1)'></body></foreignobject></svg>");
+        let dets = eval
+            .detect("<svg><foreignobject><body onload='alert(1)'></body></foreignobject></svg>");
         assert!(has_type(&dets, "event_handler"));
     }
 
     #[test]
     fn mutation_xss_math_payload() {
         let eval = XssEvaluator;
-        let dets = eval.detect("<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>");
+        let dets = eval
+            .detect("<math><mtext><table><mglyph><style><!--</style><img src=x onerror=alert(1)>");
         assert!(has_type(&dets, "tag_injection"));
     }
 
@@ -1058,7 +1154,10 @@ mod tests {
     fn dom_clobber_input_named_form() {
         let eval = XssEvaluator;
         let dets = eval.detect("<form id=document><input name=document></form>");
-        assert!(has_any(&dets, &["dom_clobber", "tag_injection", "event_handler"]));
+        assert!(has_any(
+            &dets,
+            &["dom_clobber", "tag_injection", "event_handler"]
+        ));
     }
 
     #[test]
@@ -1121,21 +1220,30 @@ mod tests {
     fn svg_nested_mutation_polyglot() {
         let eval = XssEvaluator;
         let dets = eval.detect("<math><mtext><table><mglyph><style><!--</style><img src=javascript:alert(1) onerror=\"\" ></math>\n<svg><set attributeName='onload' to=javascript:alert(1)>");
-        assert!(has_any(&dets, &["tag_injection", "dom_clobber", "template_expression"]));
+        assert!(has_any(
+            &dets,
+            &["tag_injection", "dom_clobber", "template_expression"]
+        ));
     }
 
     #[test]
     fn data_uri_svg_polyglot() {
         let eval = XssEvaluator;
         let dets = eval.detect("<iframe src='data:image/svg+xml,<svg onload=alert(1)>'></iframe>");
-        assert!(has_any(&dets, &["protocol_handler", "tag_injection", "event_handler"]));
+        assert!(has_any(
+            &dets,
+            &["protocol_handler", "tag_injection", "event_handler"]
+        ));
     }
 
     #[test]
     fn benign_html() {
         let eval = XssEvaluator;
         let dets = eval.detect("<p>Hello world</p><a href=\"/status\">status</a>");
-        assert!(dets.is_empty(), "Normal HTML should not trigger XSS detection");
+        assert!(
+            dets.is_empty(),
+            "Normal HTML should not trigger XSS detection"
+        );
     }
 
     #[test]

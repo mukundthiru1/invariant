@@ -261,7 +261,7 @@ function flattenJsonValues(
 
     if (Array.isArray(obj)) {
         for (const item of obj) {
-            flattenJsonValues(item, out, depth + 1)
+            flattenJsonValues(item, out, depth + 1, path)
         }
         return
     }

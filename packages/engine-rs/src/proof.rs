@@ -10,12 +10,12 @@
 
 use regex::Regex;
 
+use crate::tokenizers::Token;
 use crate::tokenizers::html::{HtmlTokenType, HtmlTokenizer};
 use crate::tokenizers::path::{PathTokenType, PathTokenizer};
 use crate::tokenizers::shell::ShellTokenType;
 use crate::tokenizers::sql::{SqlTokenType, SqlTokenizer, detect_tautologies};
 use crate::tokenizers::url::{UrlTokenType, UrlTokenizer};
-use crate::tokenizers::Token;
 use crate::types::{
     DetectionResult, ProofOperation, ProofStep, ProofVerificationLevel, PropertyProof,
 };
@@ -54,7 +54,10 @@ fn dedupe_non_semantic_steps_by_offset(steps: Vec<ProofStep>) -> Vec<ProofStep> 
             semantic.push(step);
         } else {
             let key = (step.operation, step.offset);
-            let existing_conf = by_offset.get(&key).map(|s: &ProofStep| s.confidence).unwrap_or(-1.0);
+            let existing_conf = by_offset
+                .get(&key)
+                .map(|s: &ProofStep| s.confidence)
+                .unwrap_or(-1.0);
             if step.confidence > existing_conf {
                 by_offset.insert(key, step);
             }
@@ -66,17 +69,34 @@ fn dedupe_non_semantic_steps_by_offset(steps: Vec<ProofStep>) -> Vec<ProofStep> 
 }
 
 fn normalize_confidence(conf: f64) -> f64 {
-    if conf.is_finite() { conf.clamp(0.0, 1.0) } else { 0.0 }
+    if conf.is_finite() {
+        conf.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 fn normalize_ratio(v: f64) -> f64 {
-    if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 }
+    if v.is_finite() {
+        v.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
 }
 
 fn ordered_chain(steps: &[ProofStep]) -> bool {
-    let esc = steps.iter().enumerate().find(|(_, s)| s.operation == ProofOperation::ContextEscape);
-    let pay = steps.iter().enumerate().find(|(_, s)| s.operation == ProofOperation::PayloadInject);
-    let rep = steps.iter().enumerate().find(|(_, s)| s.operation == ProofOperation::SyntaxRepair);
+    let esc = steps
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.operation == ProofOperation::ContextEscape);
+    let pay = steps
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.operation == ProofOperation::PayloadInject);
+    let rep = steps
+        .iter()
+        .enumerate()
+        .find(|(_, s)| s.operation == ProofOperation::SyntaxRepair);
     match (esc, pay, rep) {
         (Some((ei, e)), Some((pi, p)), Some((ri, r))) => {
             ei < pi && pi < ri && e.offset < p.offset && p.offset < r.offset
@@ -86,28 +106,52 @@ fn ordered_chain(steps: &[ProofStep]) -> bool {
 }
 
 fn calculate_proof_metrics(steps: &[ProofStep], l2: Option<&DetectionResult>) -> (bool, f64) {
-    let has_escape = steps.iter().any(|s| s.operation == ProofOperation::ContextEscape);
-    let has_payload = steps.iter().any(|s| s.operation == ProofOperation::PayloadInject);
-    let has_repair = steps.iter().any(|s| s.operation == ProofOperation::SyntaxRepair);
+    let has_escape = steps
+        .iter()
+        .any(|s| s.operation == ProofOperation::ContextEscape);
+    let has_payload = steps
+        .iter()
+        .any(|s| s.operation == ProofOperation::PayloadInject);
+    let has_repair = steps
+        .iter()
+        .any(|s| s.operation == ProofOperation::SyntaxRepair);
     let is_complete = has_escape && has_payload && has_repair && ordered_chain(steps);
 
-    let non_semantic: Vec<&ProofStep> = steps.iter()
+    let non_semantic: Vec<&ProofStep> = steps
+        .iter()
         .filter(|s| s.operation != ProofOperation::SemanticEval)
         .collect();
     let avg_step_conf = if non_semantic.is_empty() {
         0.30
     } else {
-        non_semantic.iter().map(|s| normalize_confidence(s.confidence)).sum::<f64>() / non_semantic.len() as f64
+        non_semantic
+            .iter()
+            .map(|s| normalize_confidence(s.confidence))
+            .sum::<f64>()
+            / non_semantic.len() as f64
     };
     let structural = (if has_escape { 0.20 } else { 0.0 })
         + (if has_payload { 0.25 } else { 0.0 })
         + (if has_repair { 0.20 } else { 0.0 })
-        + (if steps.iter().any(|s| s.operation == ProofOperation::EncodingDecode) { 0.05 } else { 0.0 })
+        + (if steps
+            .iter()
+            .any(|s| s.operation == ProofOperation::EncodingDecode)
+        {
+            0.05
+        } else {
+            0.0
+        })
         + (if ordered_chain(steps) { 0.10 } else { 0.0 });
-    let verified = if steps.is_empty() { 0.0 } else {
+    let verified = if steps.is_empty() {
+        0.0
+    } else {
         steps.iter().filter(|s| s.verified).count() as f64 / steps.len() as f64
     };
-    let sem_bonus = if l2.map_or(false, |r| r.detected && r.structured_evidence.is_empty()) { 0.03 } else { 0.0 };
+    let sem_bonus = if l2.map_or(false, |r| r.detected && r.structured_evidence.is_empty()) {
+        0.03
+    } else {
+        0.0
+    };
     let conf = (avg_step_conf * 0.60) + structural + (verified * 0.12) + sem_bonus;
     (is_complete, conf.min(0.99))
 }
@@ -136,7 +180,11 @@ fn witness(input: &str) -> String {
     safe_prefix(input, 200)
 }
 
-fn apply_structured_evidence(mut proof: PropertyProof, l2: Option<&DetectionResult>, input_len: usize) -> PropertyProof {
+fn apply_structured_evidence(
+    mut proof: PropertyProof,
+    l2: Option<&DetectionResult>,
+    input_len: usize,
+) -> PropertyProof {
     let l2 = match l2 {
         Some(r) if r.detected && !r.structured_evidence.is_empty() => r,
         _ => return proof,
@@ -145,9 +193,8 @@ fn apply_structured_evidence(mut proof: PropertyProof, l2: Option<&DetectionResu
     if l2_steps.is_empty() {
         return proof;
     }
-    let merged = dedupe_non_semantic_steps_by_offset(
-        proof.steps.into_iter().chain(l2_steps).collect()
-    );
+    let merged =
+        dedupe_non_semantic_steps_by_offset(proof.steps.into_iter().chain(l2_steps).collect());
     let (ic, pc) = calculate_proof_metrics(&merged, Some(l2));
     proof.steps = merged;
     proof.is_complete = ic;
@@ -160,7 +207,10 @@ fn l2_semantic_step(l2: Option<&DetectionResult>, input: &str) -> Option<ProofSt
     let l2r = l2.filter(|r| r.detected)?;
     Some(ProofStep {
         operation: ProofOperation::SemanticEval,
-        input: l2r.evidence.clone().unwrap_or_else(|| safe_prefix(input, 100)),
+        input: l2r
+            .evidence
+            .clone()
+            .unwrap_or_else(|| safe_prefix(input, 100)),
         output: l2r.explanation.clone(),
         property: l2r.explanation.clone(),
         offset: 0,
@@ -170,19 +220,37 @@ fn l2_semantic_step(l2: Option<&DetectionResult>, input: &str) -> Option<ProofSt
     })
 }
 
-fn make_proof(property: &str, steps: Vec<ProofStep>, domain: &str, impact: &str, input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
-    if steps.is_empty() { return None; }
-    let mut sorted: Vec<ProofStep> = steps.into_iter().map(|mut s| {
-        s.confidence = normalize_confidence(s.confidence);
-        s.offset = s.offset.min(input.len());
-        s
-    }).collect();
+fn make_proof(
+    property: &str,
+    steps: Vec<ProofStep>,
+    domain: &str,
+    impact: &str,
+    input: &str,
+    l2: Option<&DetectionResult>,
+) -> Option<PropertyProof> {
+    if steps.is_empty() {
+        return None;
+    }
+    let mut sorted: Vec<ProofStep> = steps
+        .into_iter()
+        .map(|mut s| {
+            s.confidence = normalize_confidence(s.confidence);
+            s.offset = s.offset.min(input.len());
+            s
+        })
+        .collect();
     sorted.sort_by_key(|s| s.offset);
     let (ic, pc) = calculate_proof_metrics(&sorted, l2);
     let mut proof = PropertyProof {
-        property: property.into(), witness: witness(input), steps: sorted,
-        is_complete: ic, domain: domain.into(), impact: impact.into(),
-        proof_confidence: pc, verified_steps: 0, verification_coverage: 0.0,
+        property: property.into(),
+        witness: witness(input),
+        steps: sorted,
+        is_complete: ic,
+        domain: domain.into(),
+        impact: impact.into(),
+        proof_confidence: pc,
+        verified_steps: 0,
+        verification_coverage: 0.0,
         verification_level: ProofVerificationLevel::None,
     };
     proof.recompute_verification();
@@ -192,18 +260,20 @@ fn make_proof(property: &str, steps: Vec<ProofStep>, domain: &str, impact: &str,
 
 fn sha256(data: &[u8]) -> [u8; 32] {
     const H0: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
     const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
     ];
 
     let bit_len = (data.len() as u64) * 8;
@@ -294,7 +364,9 @@ fn strip_chain_annotation(m: &str) -> String {
 }
 
 fn split_chain_annotation(m: Option<&str>) -> (Option<String>, Option<String>) {
-    let Some(raw) = m else { return (None, None); };
+    let Some(raw) = m else {
+        return (None, None);
+    };
     let mut base_parts = Vec::new();
     let mut chain_parts = Vec::new();
     for part in raw.split('|') {
@@ -304,8 +376,16 @@ fn split_chain_annotation(m: Option<&str>) -> (Option<String>, Option<String>) {
             base_parts.push(part.to_owned());
         }
     }
-    let base = if base_parts.is_empty() { None } else { Some(base_parts.join("|")) };
-    let chain = if chain_parts.len() == 1 { Some(chain_parts.remove(0)) } else { None };
+    let base = if base_parts.is_empty() {
+        None
+    } else {
+        Some(base_parts.join("|"))
+    };
+    let chain = if chain_parts.len() == 1 {
+        Some(chain_parts.remove(0))
+    } else {
+        None
+    };
     (base, chain)
 }
 
@@ -341,9 +421,17 @@ fn proof_chain_root_material_bytes(proof: &PropertyProof) -> Vec<u8> {
     push_len_prefixed(&mut out, proof.witness.as_bytes());
     push_len_prefixed(&mut out, proof.impact.as_bytes());
     out.push(u8::from(proof.is_complete));
-    out.extend_from_slice(&normalize_confidence(proof.proof_confidence).to_bits().to_be_bytes());
+    out.extend_from_slice(
+        &normalize_confidence(proof.proof_confidence)
+            .to_bits()
+            .to_be_bytes(),
+    );
     out.extend_from_slice(&proof.verified_steps.to_be_bytes());
-    out.extend_from_slice(&normalize_ratio(proof.verification_coverage).to_bits().to_be_bytes());
+    out.extend_from_slice(
+        &normalize_ratio(proof.verification_coverage)
+            .to_bits()
+            .to_be_bytes(),
+    );
     out.push(verification_level_code(proof.verification_level));
     out.extend_from_slice(&(proof.steps.len() as u64).to_be_bytes());
     out
@@ -363,7 +451,11 @@ fn proof_chain_step_material_bytes(
     push_len_prefixed(&mut out, step.output.as_bytes());
     push_len_prefixed(&mut out, step.property.as_bytes());
     out.extend_from_slice(&(step.offset as u64).to_be_bytes());
-    out.extend_from_slice(&normalize_confidence(step.confidence).to_bits().to_be_bytes());
+    out.extend_from_slice(
+        &normalize_confidence(step.confidence)
+            .to_bits()
+            .to_be_bytes(),
+    );
     out.push(u8::from(step.verified));
     push_len_prefixed(&mut out, base_method.unwrap_or("").as_bytes());
     out
@@ -372,7 +464,11 @@ fn proof_chain_step_material_bytes(
 fn seal_proof_chain(proof: &mut PropertyProof) {
     let mut rolling = sha256(&proof_chain_root_material_bytes(proof));
     for (idx, step) in proof.steps.iter_mut().enumerate() {
-        let base_method = step.verification_method.as_deref().map(strip_chain_annotation).filter(|m| !m.is_empty());
+        let base_method = step
+            .verification_method
+            .as_deref()
+            .map(strip_chain_annotation)
+            .filter(|m| !m.is_empty());
         let material = proof_chain_step_material_bytes(&rolling, idx, step, base_method.as_deref());
         rolling = sha256(&material);
         let chain = format!("chain:{}", hex_32(&rolling));
@@ -389,8 +485,10 @@ fn verify_proof_chain(proof: &PropertyProof) -> bool {
     }
     let mut rolling = sha256(&proof_chain_root_material_bytes(proof));
     for (idx, step) in proof.steps.iter().enumerate() {
-        let (base_method, chain_method) = split_chain_annotation(step.verification_method.as_deref());
-        let expected_material = proof_chain_step_material_bytes(&rolling, idx, step, base_method.as_deref());
+        let (base_method, chain_method) =
+            split_chain_annotation(step.verification_method.as_deref());
+        let expected_material =
+            proof_chain_step_material_bytes(&rolling, idx, step, base_method.as_deref());
         rolling = sha256(&expected_material);
         let expected_chain = format!("chain:{}", hex_32(&rolling));
         if chain_method.as_deref() != Some(expected_chain.as_str()) {
@@ -402,12 +500,25 @@ fn verify_proof_chain(proof: &PropertyProof) -> bool {
 
 // ── SQL ─────────────────────────────────────────────────────────
 
-struct SqlVariant { tokens: Vec<Token<SqlTokenType>>, base_offset: usize }
+struct SqlVariant {
+    tokens: Vec<Token<SqlTokenType>>,
+    base_offset: usize,
+}
 
 fn sql_variants(input: &str, base: &[Token<SqlTokenType>]) -> Vec<SqlVariant> {
-    let filtered: Vec<_> = base.iter().filter(|t| t.token_type != SqlTokenType::Whitespace).cloned().collect();
-    let mut variants = vec![SqlVariant { tokens: filtered, base_offset: 0 }];
-    let first = match input.find(|c: char| !c.is_whitespace()) { Some(i) => i, None => return variants };
+    let filtered: Vec<_> = base
+        .iter()
+        .filter(|t| t.token_type != SqlTokenType::Whitespace)
+        .cloned()
+        .collect();
+    let mut variants = vec![SqlVariant {
+        tokens: filtered,
+        base_offset: 0,
+    }];
+    let first = match input.find(|c: char| !c.is_whitespace()) {
+        Some(i) => i,
+        None => return variants,
+    };
     let trimmed = &input[first..];
     let prefixes = [
         Regex::new(r#"^['"`]+\)?\s*"#).unwrap(),
@@ -418,11 +529,21 @@ fn sql_variants(input: &str, base: &[Token<SqlTokenType>]) -> Vec<SqlVariant> {
     for p in &prefixes {
         if let Some(m) = p.find(trimmed) {
             let rest = &trimmed[m.end()..];
-            if rest.is_empty() { continue; }
-            let rt: Vec<_> = tok.tokenize(rest).all().iter()
-                .filter(|t| t.token_type != SqlTokenType::Whitespace).cloned().collect();
+            if rest.is_empty() {
+                continue;
+            }
+            let rt: Vec<_> = tok
+                .tokenize(rest)
+                .all()
+                .iter()
+                .filter(|t| t.token_type != SqlTokenType::Whitespace)
+                .cloned()
+                .collect();
             if !rt.is_empty() {
-                variants.push(SqlVariant { tokens: rt, base_offset: first + m.end() });
+                variants.push(SqlVariant {
+                    tokens: rt,
+                    base_offset: first + m.end(),
+                });
             }
         }
     }
@@ -432,16 +553,27 @@ fn sql_variants(input: &str, base: &[Token<SqlTokenType>]) -> Vec<SqlVariant> {
 fn sql_escape(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
     for v in variants {
         for i in 0..v.tokens.len().saturating_sub(1) {
-            let cur = &v.tokens[i]; let nxt = &v.tokens[i + 1];
+            let cur = &v.tokens[i];
+            let nxt = &v.tokens[i + 1];
             if cur.token_type == SqlTokenType::String
-                && matches!(nxt.token_type, SqlTokenType::BooleanOp | SqlTokenType::Keyword | SqlTokenType::Separator) {
+                && matches!(
+                    nxt.token_type,
+                    SqlTokenType::BooleanOp | SqlTokenType::Keyword | SqlTokenType::Separator
+                )
+            {
                 return Some(ProofStep {
                     operation: ProofOperation::ContextEscape,
                     input: cur.value.clone(),
-                    output: format!("String context terminated before SQL {:?}: {}", nxt.token_type, nxt.value),
-                    property: "escape(sqli): SQL string boundary closed before injected operators".into(),
-                    offset: v.base_offset + cur.start, confidence: 0.90,
-                    verified: false, verification_method: None,
+                    output: format!(
+                        "String context terminated before SQL {:?}: {}",
+                        nxt.token_type, nxt.value
+                    ),
+                    property: "escape(sqli): SQL string boundary closed before injected operators"
+                        .into(),
+                    offset: v.base_offset + cur.start,
+                    confidence: 0.90,
+                    verified: false,
+                    verification_method: None,
                 });
             }
         }
@@ -451,15 +583,29 @@ fn sql_escape(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
     if matches!(ch, b'\'' | b'"' | b'`') {
         let rest = &input[f + 1..];
         let stream = SqlTokenizer.tokenize(rest);
-        let rm: Vec<_> = stream.all().iter().filter(|t| t.token_type != SqlTokenType::Whitespace).cloned().collect();
+        let rm: Vec<_> = stream
+            .all()
+            .iter()
+            .filter(|t| t.token_type != SqlTokenType::Whitespace)
+            .cloned()
+            .collect();
         if let Some(first) = rm.first() {
-            if matches!(first.token_type, SqlTokenType::BooleanOp | SqlTokenType::Keyword | SqlTokenType::Separator) {
+            if matches!(
+                first.token_type,
+                SqlTokenType::BooleanOp | SqlTokenType::Keyword | SqlTokenType::Separator
+            ) {
                 return Some(ProofStep {
                     operation: ProofOperation::ContextEscape,
                     input: String::from(ch as char),
-                    output: format!("Leading quote terminates host SQL string; {:?}: {} follows", first.token_type, first.value),
+                    output: format!(
+                        "Leading quote terminates host SQL string; {:?}: {} follows",
+                        first.token_type, first.value
+                    ),
                     property: "escape(sqli): leading delimiter escapes SQL string context".into(),
-                    offset: f, confidence: 0.88, verified: false, verification_method: None,
+                    offset: f,
+                    confidence: 0.88,
+                    verified: false,
+                    verification_method: None,
                 });
             }
         }
@@ -471,23 +617,45 @@ fn sql_payload(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
     let tautologies = detect_tautologies(input);
     let tok = SqlTokenizer;
     for taut in &tautologies {
-        let et: Vec<_> = tok.tokenize(&taut.expression).all().iter()
-            .filter(|t| !matches!(t.token_type, SqlTokenType::Whitespace | SqlTokenType::Separator | SqlTokenType::Unknown))
-            .cloned().collect();
-        if et.is_empty() { continue; }
+        let et: Vec<_> = tok
+            .tokenize(&taut.expression)
+            .all()
+            .iter()
+            .filter(|t| {
+                !matches!(
+                    t.token_type,
+                    SqlTokenType::Whitespace | SqlTokenType::Separator | SqlTokenType::Unknown
+                )
+            })
+            .cloned()
+            .collect();
+        if et.is_empty() {
+            continue;
+        }
         for v in variants {
-            if v.tokens.len() < et.len() { continue; }
+            if v.tokens.len() < et.len() {
+                continue;
+            }
             for i in 0..=v.tokens.len() - et.len() {
-                let ok = (0..et.len()).all(|j| v.tokens[i + j].token_type == et[j].token_type
-                    && v.tokens[i + j].value.eq_ignore_ascii_case(&et[j].value));
+                let ok = (0..et.len()).all(|j| {
+                    v.tokens[i + j].token_type == et[j].token_type
+                        && v.tokens[i + j].value.eq_ignore_ascii_case(&et[j].value)
+                });
                 if ok {
                     return Some(ProofStep {
                         operation: ProofOperation::PayloadInject,
                         input: taut.expression.clone(),
-                        output: format!("Tautology evaluates to {} by expression evaluation", taut.value),
-                        property: "payload(sqli): boolean tautology forces conditional clause to TRUE".into(),
-                        offset: v.base_offset + v.tokens[i].start, confidence: 0.95,
-                        verified: false, verification_method: None,
+                        output: format!(
+                            "Tautology evaluates to {} by expression evaluation",
+                            taut.value
+                        ),
+                        property:
+                            "payload(sqli): boolean tautology forces conditional clause to TRUE"
+                                .into(),
+                        offset: v.base_offset + v.tokens[i].start,
+                        confidence: 0.95,
+                        verified: false,
+                        verification_method: None,
                     });
                 }
             }
@@ -499,7 +667,9 @@ fn sql_payload(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
             let t = &v.tokens[i];
             if t.token_type == SqlTokenType::Keyword && t.value.eq_ignore_ascii_case("UNION") {
                 let mut j = i + 1;
-                if j < v.tokens.len() && v.tokens[j].value.eq_ignore_ascii_case("ALL") { j += 1; }
+                if j < v.tokens.len() && v.tokens[j].value.eq_ignore_ascii_case("ALL") {
+                    j += 1;
+                }
                 if j < v.tokens.len() && v.tokens[j].value.eq_ignore_ascii_case("SELECT") {
                     let e = &v.tokens[j];
                     let s = v.base_offset + t.start;
@@ -508,52 +678,81 @@ fn sql_payload(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
                         operation: ProofOperation::PayloadInject,
                         input: input[s..end].to_owned(),
                         output: "UNION SELECT appends attacker-controlled result set".into(),
-                        property: "payload(sqli): UNION-based extraction modifies query projection".into(),
-                        offset: s, confidence: 0.93, verified: false, verification_method: None,
+                        property: "payload(sqli): UNION-based extraction modifies query projection"
+                            .into(),
+                        offset: s,
+                        confidence: 0.93,
+                        verified: false,
+                        verification_method: None,
                     });
                 }
             }
         }
     }
     // Stacked
-    let destructive = ["DROP","DELETE","INSERT","UPDATE","ALTER","CREATE","EXEC","EXECUTE","TRUNCATE"];
+    let destructive = [
+        "DROP", "DELETE", "INSERT", "UPDATE", "ALTER", "CREATE", "EXEC", "EXECUTE", "TRUNCATE",
+    ];
     for v in variants {
         for i in 0..v.tokens.len().saturating_sub(1) {
-            let t = &v.tokens[i]; let n = &v.tokens[i + 1];
-            if t.token_type == SqlTokenType::Separator && t.value == ";"
-                && n.token_type == SqlTokenType::Keyword && destructive.contains(&n.value.to_uppercase().as_str()) {
+            let t = &v.tokens[i];
+            let n = &v.tokens[i + 1];
+            if t.token_type == SqlTokenType::Separator
+                && t.value == ";"
+                && n.token_type == SqlTokenType::Keyword
+                && destructive.contains(&n.value.to_uppercase().as_str())
+            {
                 let s = v.base_offset + t.start;
                 let end = (v.base_offset + n.start + n.value.len()).min(input.len());
                 return Some(ProofStep {
                     operation: ProofOperation::PayloadInject,
                     input: input[s..end].to_owned(),
-                    output: format!("Stacked query starts new {} statement", n.value.to_uppercase()),
+                    output: format!(
+                        "Stacked query starts new {} statement",
+                        n.value.to_uppercase()
+                    ),
                     property: "payload(sqli): stacked query introduces second SQL statement".into(),
-                    offset: s, confidence: 0.92, verified: false, verification_method: None,
+                    offset: s,
+                    confidence: 0.92,
+                    verified: false,
+                    verification_method: None,
                 });
             }
         }
     }
     // Time functions
-    let time_fns = ["SLEEP","WAITFOR","BENCHMARK","PG_SLEEP","DELAY"];
+    let time_fns = ["SLEEP", "WAITFOR", "BENCHMARK", "PG_SLEEP", "DELAY"];
     for v in variants {
         for i in 0..v.tokens.len() {
-            let t = &v.tokens[i]; let u = t.value.to_uppercase();
-            if matches!(t.token_type, SqlTokenType::Identifier | SqlTokenType::Keyword) && u == "WAITFOR" {
+            let t = &v.tokens[i];
+            let u = t.value.to_uppercase();
+            if matches!(
+                t.token_type,
+                SqlTokenType::Identifier | SqlTokenType::Keyword
+            ) && u == "WAITFOR"
+            {
                 if let Some(n) = v.tokens.get(i + 1) {
                     if n.value.eq_ignore_ascii_case("DELAY") {
                         let s = v.base_offset + t.start;
                         let end = (v.base_offset + n.start + n.value.len()).min(input.len());
                         return Some(ProofStep {
-                            operation: ProofOperation::PayloadInject, input: input[s..end].to_owned(),
+                            operation: ProofOperation::PayloadInject,
+                            input: input[s..end].to_owned(),
                             output: "WAITFOR DELAY introduces timing oracle".into(),
                             property: "payload(sqli): time-delay enables blind extraction".into(),
-                            offset: s, confidence: 0.91, verified: false, verification_method: None,
+                            offset: s,
+                            confidence: 0.91,
+                            verified: false,
+                            verification_method: None,
                         });
                     }
                 }
             }
-            if matches!(t.token_type, SqlTokenType::Identifier | SqlTokenType::Keyword) && time_fns.contains(&u.as_str()) {
+            if matches!(
+                t.token_type,
+                SqlTokenType::Identifier | SqlTokenType::Keyword
+            ) && time_fns.contains(&u.as_str())
+            {
                 if let Some(n) = v.tokens.get(i + 1) {
                     if n.token_type == SqlTokenType::ParenOpen {
                         let s = v.base_offset + t.start;
@@ -561,8 +760,13 @@ fn sql_payload(input: &str, variants: &[SqlVariant]) -> Option<ProofStep> {
                             operation: ProofOperation::PayloadInject,
                             input: input[s..(s + t.value.len() + 1).min(input.len())].to_owned(),
                             output: format!("{}() introduces timing oracle", u),
-                            property: "payload(sqli): time-based function modifies execution timing".into(),
-                            offset: s, confidence: 0.90, verified: false, verification_method: None,
+                            property:
+                                "payload(sqli): time-based function modifies execution timing"
+                                    .into(),
+                            offset: s,
+                            confidence: 0.90,
+                            verified: false,
+                            verification_method: None,
                         });
                     }
                 }
@@ -576,16 +780,25 @@ fn sql_repair(variants: &[SqlVariant]) -> Option<ProofStep> {
     for v in variants {
         for i in 0..v.tokens.len() {
             let t = &v.tokens[i];
-            if t.token_type != SqlTokenType::Separator { continue; }
-            if !(t.value.starts_with("--") || t.value.starts_with('#')) { continue; }
-            if !v.tokens[i + 1..].iter().any(|x| x.token_type != SqlTokenType::Whitespace) {
+            if t.token_type != SqlTokenType::Separator {
+                continue;
+            }
+            if !(t.value.starts_with("--") || t.value.starts_with('#')) {
+                continue;
+            }
+            if !v.tokens[i + 1..]
+                .iter()
+                .any(|x| x.token_type != SqlTokenType::Whitespace)
+            {
                 return Some(ProofStep {
                     operation: ProofOperation::SyntaxRepair,
                     input: t.value.clone(),
                     output: "Comment separator truncates trailing host SQL".into(),
                     property: "repair(sqli): comment suppresses remaining query syntax".into(),
-                    offset: v.base_offset + t.start, confidence: 0.86,
-                    verified: false, verification_method: None,
+                    offset: v.base_offset + t.start,
+                    confidence: 0.86,
+                    verified: false,
+                    verification_method: None,
                 });
             }
         }
@@ -603,16 +816,31 @@ fn sql_repair(variants: &[SqlVariant]) -> Option<ProofStep> {
 pub fn construct_sql_proof(input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
     let stream = SqlTokenizer.tokenize(input);
     let tokens = stream.all();
-    if tokens.is_empty() { return None; }
+    if tokens.is_empty() {
+        return None;
+    }
     let variants = sql_variants(input, tokens);
     let mut steps = Vec::new();
-    if let Some(s) = sql_escape(input, &variants) { steps.push(s); }
-    if let Some(s) = sql_payload(input, &variants) { steps.push(s); }
-    if let Some(s) = sql_repair(&variants) { steps.push(s); }
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
+    if let Some(s) = sql_escape(input, &variants) {
+        steps.push(s);
+    }
+    if let Some(s) = sql_payload(input, &variants) {
+        steps.push(s);
+    }
+    if let Some(s) = sql_repair(&variants) {
+        steps.push(s);
+    }
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
     let mut proof = make_proof(
-        l2.map(|r| r.explanation.as_str()).unwrap_or("SQL property violation"),
-        steps, "sqli", "SQL injection alters query semantics", input, l2,
+        l2.map(|r| r.explanation.as_str())
+            .unwrap_or("SQL property violation"),
+        steps,
+        "sqli",
+        "SQL injection alters query semantics",
+        input,
+        l2,
     )?;
     verify_sql_proof(&mut proof, input);
     seal_proof_chain(&mut proof);
@@ -623,14 +851,25 @@ fn verify_sql_proof(proof: &mut PropertyProof, input: &str) {
     let stream = SqlTokenizer.tokenize(input);
     let tokens = stream.all().to_vec();
     let tautologies = detect_tautologies(input);
-    let taut_set: std::collections::HashSet<String> = tautologies.iter()
-        .map(|t| t.expression.trim().replace(char::is_whitespace, " ").to_uppercase()).collect();
+    let taut_set: std::collections::HashSet<String> = tautologies
+        .iter()
+        .map(|t| {
+            t.expression
+                .trim()
+                .replace(char::is_whitespace, " ")
+                .to_uppercase()
+        })
+        .collect();
     let variants = sql_variants(input, &tokens);
 
     for step in &mut proof.steps {
         match step.operation {
             ProofOperation::PayloadInject => {
-                let norm = step.input.trim().replace(char::is_whitespace, " ").to_uppercase();
+                let norm = step
+                    .input
+                    .trim()
+                    .replace(char::is_whitespace, " ")
+                    .to_uppercase();
                 if !norm.is_empty() && taut_set.contains(&norm) {
                     step.verified = true;
                     step.verification_method = Some("ast_evaluation".into());
@@ -639,7 +878,9 @@ fn verify_sql_proof(proof: &mut PropertyProof, input: &str) {
             ProofOperation::ContextEscape => {
                 for v in &variants {
                     for (i, tok) in v.tokens.iter().enumerate() {
-                        if v.base_offset + tok.start == step.offset && tok.token_type == SqlTokenType::String {
+                        if v.base_offset + tok.start == step.offset
+                            && tok.token_type == SqlTokenType::String
+                        {
                             if let Some(nxt) = v.tokens.get(i + 1) {
                                 if nxt.token_type != SqlTokenType::String {
                                     step.verified = true;
@@ -656,7 +897,9 @@ fn verify_sql_proof(proof: &mut PropertyProof, input: &str) {
                         if v.base_offset + tok.start == step.offset
                             && tok.token_type == SqlTokenType::Separator
                             && (tok.value.starts_with("--") || tok.value.starts_with('#'))
-                            && !v.tokens[i + 1..].iter().any(|t| t.token_type != SqlTokenType::Whitespace)
+                            && !v.tokens[i + 1..]
+                                .iter()
+                                .any(|t| t.token_type != SqlTokenType::Whitespace)
                         {
                             step.verified = true;
                             step.verification_method = Some("tokenizer_parse".into());
@@ -684,16 +927,22 @@ const XSS_PROTO_ATTRS: &[&str] = &["href", "src", "action", "formaction", "xlink
 pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
     let stream = HtmlTokenizer.tokenize(input);
     let tokens = stream.all();
-    if tokens.is_empty() { return None; }
+    if tokens.is_empty() {
+        return None;
+    }
     let mut steps = Vec::new();
     let mut payload_off = 0usize;
 
     // Escape: look for TagOpen preceded by text with quote
     for i in 0..tokens.len() {
-        if tokens[i].token_type != HtmlTokenType::TagOpen { continue; }
+        if tokens[i].token_type != HtmlTokenType::TagOpen {
+            continue;
+        }
         if i > 0 {
             for j in (0..i).rev() {
-                if tokens[j].value.trim().is_empty() { continue; }
+                if tokens[j].value.trim().is_empty() {
+                    continue;
+                }
                 if tokens[j].token_type == HtmlTokenType::Text {
                     if let Some(qi) = tokens[j].value.rfind(|c: char| c == '"' || c == '\'') {
                         steps.push(ProofStep {
@@ -701,8 +950,10 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
                             input: tokens[j].value[qi..qi + 1].to_owned(),
                             output: "Quoted HTML context terminated before injected tag".into(),
                             property: "escape(xss): attacker closes host HTML boundary".into(),
-                            offset: tokens[j].start + qi, confidence: 0.90,
-                            verified: false, verification_method: None,
+                            offset: tokens[j].start + qi,
+                            confidence: 0.90,
+                            verified: false,
+                            verification_method: None,
                         });
                         break;
                     }
@@ -710,23 +961,31 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
                 break;
             }
         }
-        if !steps.is_empty() { break; }
+        if !steps.is_empty() {
+            break;
+        }
     }
 
     // Payload: script-capable tag
     let event_re = Regex::new(r"(?i)^on[a-z0-9_:-]+$").unwrap();
     for i in 0..tokens.len() {
         if tokens[i].token_type == HtmlTokenType::TagName
-            && XSS_EXEC_TAGS.contains(&tokens[i].value.to_lowercase().as_str()) {
+            && XSS_EXEC_TAGS.contains(&tokens[i].value.to_lowercase().as_str())
+        {
             if i > 0 && tokens[i - 1].token_type == HtmlTokenType::TagOpen {
                 payload_off = tokens[i - 1].start;
                 steps.push(ProofStep {
                     operation: ProofOperation::PayloadInject,
                     input: input[tokens[i - 1].start..tokens[i].end].to_owned(),
-                    output: format!("Script-capable <{}> injected", tokens[i].value.to_lowercase()),
+                    output: format!(
+                        "Script-capable <{}> injected",
+                        tokens[i].value.to_lowercase()
+                    ),
                     property: "payload(xss): executable HTML tag introduces JS execution".into(),
-                    offset: payload_off, confidence: 0.94,
-                    verified: false, verification_method: None,
+                    offset: payload_off,
+                    confidence: 0.94,
+                    verified: false,
+                    verification_method: None,
                 });
                 break;
             }
@@ -736,29 +995,49 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
             steps.push(ProofStep {
                 operation: ProofOperation::PayloadInject,
                 input: tokens[i].value.clone(),
-                output: format!("Event handler {} binds JS to browser event", tokens[i].value),
+                output: format!(
+                    "Event handler {} binds JS to browser event",
+                    tokens[i].value
+                ),
                 property: "payload(xss): event-handler enables script execution".into(),
-                offset: payload_off, confidence: 0.93,
-                verified: false, verification_method: None,
+                offset: payload_off,
+                confidence: 0.93,
+                verified: false,
+                verification_method: None,
             });
             break;
         }
         if tokens[i].token_type == HtmlTokenType::AttrValue {
             let attr_name = (0..i).rev().find_map(|j| {
-                if tokens[j].token_type == HtmlTokenType::AttrName { Some(tokens[j].value.to_lowercase()) }
-                else if matches!(tokens[j].token_type, HtmlTokenType::TagOpen | HtmlTokenType::TagEndOpen) { None }
-                else { None }
+                if tokens[j].token_type == HtmlTokenType::AttrName {
+                    Some(tokens[j].value.to_lowercase())
+                } else if matches!(
+                    tokens[j].token_type,
+                    HtmlTokenType::TagOpen | HtmlTokenType::TagEndOpen
+                ) {
+                    None
+                } else {
+                    None
+                }
             });
             if let Some(an) = attr_name {
-                if XSS_PROTO_ATTRS.contains(&an.as_str()) && tokens[i].value.trim().to_lowercase().starts_with("javascript:") {
+                if XSS_PROTO_ATTRS.contains(&an.as_str())
+                    && tokens[i]
+                        .value
+                        .trim()
+                        .to_lowercase()
+                        .starts_with("javascript:")
+                {
                     payload_off = tokens[i].start;
                     steps.push(ProofStep {
                         operation: ProofOperation::PayloadInject,
                         input: tokens[i].value.clone(),
                         output: format!("javascript: protocol in {} executes script", an),
                         property: "payload(xss): protocol handler injects executable URI".into(),
-                        offset: payload_off, confidence: 0.93,
-                        verified: false, verification_method: None,
+                        offset: payload_off,
+                        confidence: 0.93,
+                        verified: false,
+                        verification_method: None,
                     });
                     break;
                 }
@@ -769,14 +1048,19 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
     // Repair: closing tag or self-close after payload
     for i in 0..tokens.len() {
         if tokens[i].token_type == HtmlTokenType::TagEndOpen && tokens[i].start >= payload_off {
-            if let Some(close) = tokens[i + 1..].iter().find(|t| t.token_type == HtmlTokenType::TagClose) {
+            if let Some(close) = tokens[i + 1..]
+                .iter()
+                .find(|t| t.token_type == HtmlTokenType::TagClose)
+            {
                 steps.push(ProofStep {
                     operation: ProofOperation::SyntaxRepair,
                     input: input[tokens[i].start..close.end].to_owned(),
                     output: "Closing tag repairs HTML tree".into(),
                     property: "repair(xss): closing markup finalizes attacker DOM subtree".into(),
-                    offset: tokens[i].start, confidence: 0.88,
-                    verified: false, verification_method: None,
+                    offset: tokens[i].start,
+                    confidence: 0.88,
+                    verified: false,
+                    verification_method: None,
                 });
                 break;
             }
@@ -787,8 +1071,10 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
                 input: tokens[i].value.clone(),
                 output: "Self-closing syntax finalizes injected element".into(),
                 property: "repair(xss): self-closing tag repairs HTML after payload".into(),
-                offset: tokens[i].start, confidence: 0.86,
-                verified: false, verification_method: None,
+                offset: tokens[i].start,
+                confidence: 0.86,
+                verified: false,
+                verification_method: None,
             });
             break;
         }
@@ -798,26 +1084,75 @@ pub fn construct_xss_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
                 input: tokens[i].value.clone(),
                 output: "Tag close completes injected element".into(),
                 property: "repair(xss): injected element closed into valid HTML".into(),
-                offset: tokens[i].start, confidence: 0.84,
-                verified: false, verification_method: None,
+                offset: tokens[i].start,
+                confidence: 0.84,
+                verified: false,
+                verification_method: None,
             });
             break;
         }
     }
 
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof(l2.map(|r| r.explanation.as_str()).unwrap_or("XSS property violation"),
-        steps, "xss", "XSS payload introduces executable browser context", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        l2.map(|r| r.explanation.as_str())
+            .unwrap_or("XSS property violation"),
+        steps,
+        "xss",
+        "XSS payload introduces executable browser context",
+        input,
+        l2,
+    )
 }
 
 // ── CMD ─────────────────────────────────────────────────────────
 
 const CMD_DANGEROUS: &[&str] = &[
-    "cat","ls","id","whoami","pwd","uname","hostname","env","printenv","echo",
-    "curl","wget","nc","ncat","nmap","netcat","socat","bash","sh","zsh",
-    "python","python2","python3","perl","ruby","php","node","awk","sed","grep",
-    "find","xargs","ps","kill","sudo","su","rm","chmod","chown","passwd",
-    "cmd","powershell","certutil",
+    "cat",
+    "ls",
+    "id",
+    "whoami",
+    "pwd",
+    "uname",
+    "hostname",
+    "env",
+    "printenv",
+    "echo",
+    "curl",
+    "wget",
+    "nc",
+    "ncat",
+    "nmap",
+    "netcat",
+    "socat",
+    "bash",
+    "sh",
+    "zsh",
+    "python",
+    "python2",
+    "python3",
+    "perl",
+    "ruby",
+    "php",
+    "node",
+    "awk",
+    "sed",
+    "grep",
+    "find",
+    "xargs",
+    "ps",
+    "kill",
+    "sudo",
+    "su",
+    "rm",
+    "chmod",
+    "chown",
+    "passwd",
+    "cmd",
+    "powershell",
+    "certutil",
 ];
 
 /// Construct a command-injection proof from shell token boundaries.
@@ -830,25 +1165,42 @@ const CMD_DANGEROUS: &[&str] = &[
 pub fn construct_cmd_proof(input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
     let stream = crate::tokenizers::shell::ShellTokenizer.tokenize(input);
     let tokens = stream.all();
-    if tokens.is_empty() { return None; }
+    if tokens.is_empty() {
+        return None;
+    }
     let mut steps = Vec::new();
     let mut escape_off = 0usize;
 
     // Escape
     for tok in tokens {
-        if matches!(tok.token_type, ShellTokenType::Separator | ShellTokenType::Pipe |
-            ShellTokenType::AndChain | ShellTokenType::OrChain | ShellTokenType::Newline |
-            ShellTokenType::CmdSubstOpen | ShellTokenType::BacktickSubst) {
+        if matches!(
+            tok.token_type,
+            ShellTokenType::Separator
+                | ShellTokenType::Pipe
+                | ShellTokenType::AndChain
+                | ShellTokenType::OrChain
+                | ShellTokenType::Newline
+                | ShellTokenType::CmdSubstOpen
+                | ShellTokenType::BacktickSubst
+        ) {
             escape_off = tok.start;
-            let ctx = if matches!(tok.token_type, ShellTokenType::CmdSubstOpen | ShellTokenType::BacktickSubst) {
+            let ctx = if matches!(
+                tok.token_type,
+                ShellTokenType::CmdSubstOpen | ShellTokenType::BacktickSubst
+            ) {
                 "Command substitution opens nested shell context".to_owned()
             } else {
                 format!("Shell token {} starts new command boundary", tok.value)
             };
             steps.push(ProofStep {
-                operation: ProofOperation::ContextEscape, input: tok.value.clone(), output: ctx,
+                operation: ProofOperation::ContextEscape,
+                input: tok.value.clone(),
+                output: ctx,
                 property: "escape(cmdi): shell control escapes host argument context".into(),
-                offset: tok.start, confidence: 0.90, verified: false, verification_method: None,
+                offset: tok.start,
+                confidence: 0.90,
+                verified: false,
+                verification_method: None,
             });
             break;
         }
@@ -857,78 +1209,151 @@ pub fn construct_cmd_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
     // Payload: word after separator
     for (i, tok) in tokens.iter().enumerate() {
         if tok.token_type == ShellTokenType::CmdSubstOpen {
-            if let Some(cw) = tokens[i + 1..].iter().find(|t| t.token_type == ShellTokenType::Word) {
+            if let Some(cw) = tokens[i + 1..]
+                .iter()
+                .find(|t| t.token_type == ShellTokenType::Word)
+            {
                 let danger = CMD_DANGEROUS.contains(&cw.value.to_lowercase().as_str());
                 steps.push(ProofStep {
-                    operation: ProofOperation::PayloadInject, input: cw.value.clone(),
-                    output: format!("$() executes {}{}", cw.value, if danger { " (dangerous)" } else { "" }),
-                    property: "payload(cmdi): command substitution executes attacker command".into(),
-                    offset: cw.start, confidence: if danger { 0.94 } else { 0.90 },
-                    verified: false, verification_method: None,
+                    operation: ProofOperation::PayloadInject,
+                    input: cw.value.clone(),
+                    output: format!(
+                        "$() executes {}{}",
+                        cw.value,
+                        if danger { " (dangerous)" } else { "" }
+                    ),
+                    property: "payload(cmdi): command substitution executes attacker command"
+                        .into(),
+                    offset: cw.start,
+                    confidence: if danger { 0.94 } else { 0.90 },
+                    verified: false,
+                    verification_method: None,
                 });
                 break;
             }
         }
         if tok.token_type == ShellTokenType::BacktickSubst {
-            let inner = tok.value.trim_matches('`').trim().split_whitespace().next().unwrap_or("");
+            let inner = tok
+                .value
+                .trim_matches('`')
+                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("");
             let danger = CMD_DANGEROUS.contains(&inner.to_lowercase().as_str());
             steps.push(ProofStep {
-                operation: ProofOperation::PayloadInject, input: tok.value.clone(),
-                output: format!("Backtick executes {}{}", inner, if danger { " (dangerous)" } else { "" }),
+                operation: ProofOperation::PayloadInject,
+                input: tok.value.clone(),
+                output: format!(
+                    "Backtick executes {}{}",
+                    inner,
+                    if danger { " (dangerous)" } else { "" }
+                ),
                 property: "payload(cmdi): backtick executes attacker shell command".into(),
-                offset: tok.start, confidence: if danger { 0.93 } else { 0.89 },
-                verified: false, verification_method: None,
+                offset: tok.start,
+                confidence: if danger { 0.93 } else { 0.89 },
+                verified: false,
+                verification_method: None,
             });
             break;
         }
-        if matches!(tok.token_type, ShellTokenType::Separator | ShellTokenType::Pipe |
-            ShellTokenType::AndChain | ShellTokenType::OrChain | ShellTokenType::Newline) {
-            if let Some(cw) = tokens[i + 1..].iter().find(|t| t.token_type == ShellTokenType::Word) {
+        if matches!(
+            tok.token_type,
+            ShellTokenType::Separator
+                | ShellTokenType::Pipe
+                | ShellTokenType::AndChain
+                | ShellTokenType::OrChain
+                | ShellTokenType::Newline
+        ) {
+            if let Some(cw) = tokens[i + 1..]
+                .iter()
+                .find(|t| t.token_type == ShellTokenType::Word)
+            {
                 let danger = CMD_DANGEROUS.contains(&cw.value.to_lowercase().as_str());
                 steps.push(ProofStep {
                     operation: ProofOperation::PayloadInject,
                     input: input[cw.start..cw.end].to_owned(),
-                    output: format!("{} executes after boundary break{}", cw.value, if danger { " (dangerous)" } else { "" }),
+                    output: format!(
+                        "{} executes after boundary break{}",
+                        cw.value,
+                        if danger { " (dangerous)" } else { "" }
+                    ),
                     property: "payload(cmdi): command token after separator".into(),
-                    offset: cw.start, confidence: if danger { 0.93 } else { 0.88 },
-                    verified: false, verification_method: None,
+                    offset: cw.start,
+                    confidence: if danger { 0.93 } else { 0.88 },
+                    verified: false,
+                    verification_method: None,
                 });
                 break;
             }
         }
     }
     // Fallback word
-    if !steps.iter().any(|s| s.operation == ProofOperation::PayloadInject) {
-        if let Some(w) = tokens.iter().find(|t| t.token_type == ShellTokenType::Word && t.start >= escape_off) {
+    if !steps
+        .iter()
+        .any(|s| s.operation == ProofOperation::PayloadInject)
+    {
+        if let Some(w) = tokens
+            .iter()
+            .find(|t| t.token_type == ShellTokenType::Word && t.start >= escape_off)
+        {
             steps.push(ProofStep {
-                operation: ProofOperation::PayloadInject, input: w.value.clone(),
+                operation: ProofOperation::PayloadInject,
+                input: w.value.clone(),
                 output: format!("{} in executable position", w.value),
                 property: "payload(cmdi): command token in shell stream".into(),
-                offset: w.start, confidence: 0.84, verified: false, verification_method: None,
+                offset: w.start,
+                confidence: 0.84,
+                verified: false,
+                verification_method: None,
             });
         }
     }
 
     // Repair
-    if let Some(c) = tokens.iter().find(|t| t.token_type == ShellTokenType::Comment) {
+    if let Some(c) = tokens
+        .iter()
+        .find(|t| t.token_type == ShellTokenType::Comment)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::SyntaxRepair, input: c.value.clone(),
+            operation: ProofOperation::SyntaxRepair,
+            input: c.value.clone(),
             output: "Shell comment truncates trailing text".into(),
             property: "repair(cmdi): comment suppresses remaining host syntax".into(),
-            offset: c.start, confidence: 0.86, verified: false, verification_method: None,
+            offset: c.start,
+            confidence: 0.86,
+            verified: false,
+            verification_method: None,
         });
-    } else if let Some(last) = tokens.iter().filter(|t| t.token_type != ShellTokenType::Whitespace).last() {
+    } else if let Some(last) = tokens
+        .iter()
+        .filter(|t| t.token_type != ShellTokenType::Whitespace)
+        .last()
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::SyntaxRepair, input: last.value.clone(),
+            operation: ProofOperation::SyntaxRepair,
+            input: last.value.clone(),
             output: "Command terminates naturally at input boundary".into(),
             property: "repair(cmdi): natural termination leaves payload parseable".into(),
-            offset: last.start, confidence: 0.82, verified: false, verification_method: None,
+            offset: last.start,
+            confidence: 0.82,
+            verified: false,
+            verification_method: None,
         });
     }
 
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof(l2.map(|r| r.explanation.as_str()).unwrap_or("Command-injection property violation"),
-        steps, "cmdi", "Shell metacharacters introduce unintended command execution", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        l2.map(|r| r.explanation.as_str())
+            .unwrap_or("Command-injection property violation"),
+        steps,
+        "cmdi",
+        "Shell metacharacters introduce unintended command execution",
+        input,
+        l2,
+    )
 }
 
 // ── Path ────────────────────────────────────────────────────────
@@ -943,50 +1368,88 @@ pub fn construct_cmd_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
 pub fn construct_path_proof(input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
     let stream = PathTokenizer.tokenize(input);
     let tokens = stream.all();
-    if tokens.is_empty() { return None; }
+    if tokens.is_empty() {
+        return None;
+    }
     let mut steps = Vec::new();
 
-    let trav: Vec<_> = tokens.iter().filter(|t| t.token_type == PathTokenType::Traversal).collect();
+    let trav: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.token_type == PathTokenType::Traversal)
+        .collect();
     if !trav.is_empty() {
-        let chain: String = trav.iter().map(|t| t.value.as_str()).collect::<Vec<_>>().join("/");
+        let chain: String = trav
+            .iter()
+            .map(|t| t.value.as_str())
+            .collect::<Vec<_>>()
+            .join("/");
         steps.push(ProofStep {
-            operation: ProofOperation::ContextEscape, input: chain,
+            operation: ProofOperation::ContextEscape,
+            input: chain,
             output: format!("{} traversal(s) escape directory boundary", trav.len()),
             property: format!("escape(path): {}x traversal escapes webroot", trav.len()),
-            offset: trav[0].start, confidence: (0.80 + trav.len() as f64 * 0.05).min(0.99),
-            verified: true, verification_method: Some("tokenizer_structural".into()),
+            offset: trav[0].start,
+            confidence: (0.80 + trav.len() as f64 * 0.05).min(0.99),
+            verified: true,
+            verification_method: Some("tokenizer_structural".into()),
         });
     }
-    if let Some(enc) = tokens.iter().find(|t| t.token_type == PathTokenType::EncodingLayer) {
+    if let Some(enc) = tokens
+        .iter()
+        .find(|t| t.token_type == PathTokenType::EncodingLayer)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::EncodingDecode, input: enc.value.clone(),
+            operation: ProofOperation::EncodingDecode,
+            input: enc.value.clone(),
             output: "Multi-layer encoding detected".into(),
             property: "escape(path): Encoding layers bypass WAF normalization".into(),
-            offset: enc.start, confidence: 0.92, verified: true,
+            offset: enc.start,
+            confidence: 0.92,
+            verified: true,
             verification_method: Some("tokenizer_decode".into()),
         });
     }
-    if let Some(target) = tokens.iter().find(|t| t.token_type == PathTokenType::SensitiveTarget) {
+    if let Some(target) = tokens
+        .iter()
+        .find(|t| t.token_type == PathTokenType::SensitiveTarget)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: target.value.clone(),
+            operation: ProofOperation::PayloadInject,
+            input: target.value.clone(),
             output: format!("Targets sensitive file: {}", target.value),
             property: "payload(path): Request targets file outside allowed scope".into(),
-            offset: target.start, confidence: 0.95, verified: true,
+            offset: target.start,
+            confidence: 0.95,
+            verified: true,
             verification_method: Some("sensitive_path_match".into()),
         });
     }
-    if let Some(nb) = tokens.iter().find(|t| t.token_type == PathTokenType::NullByte) {
+    if let Some(nb) = tokens
+        .iter()
+        .find(|t| t.token_type == PathTokenType::NullByte)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::SyntaxRepair, input: nb.value.clone(),
+            operation: ProofOperation::SyntaxRepair,
+            input: nb.value.clone(),
             output: "Null byte truncates extension validation".into(),
             property: "repair(path): Null byte bypasses file type check".into(),
-            offset: nb.start, confidence: 0.93, verified: true,
+            offset: nb.start,
+            confidence: 0.93,
+            verified: true,
             verification_method: Some("null_byte_detection".into()),
         });
     }
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof("Path traversal violates directory confinement invariant",
-        steps, "path_traversal", "Directory traversal allows reading arbitrary files", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        "Path traversal violates directory confinement invariant",
+        steps,
+        "path_traversal",
+        "Directory traversal allows reading arbitrary files",
+        input,
+        l2,
+    )
 }
 
 // ── SSRF ────────────────────────────────────────────────────────
@@ -1001,69 +1464,119 @@ pub fn construct_path_proof(input: &str, l2: Option<&DetectionResult>) -> Option
 pub fn construct_ssrf_proof(input: &str, l2: Option<&DetectionResult>) -> Option<PropertyProof> {
     let stream = UrlTokenizer.tokenize(input);
     let tokens = stream.all();
-    if tokens.is_empty() { return None; }
+    if tokens.is_empty() {
+        return None;
+    }
     let mut steps = Vec::new();
 
     if let Some(s) = tokens.iter().find(|t| t.token_type == UrlTokenType::Scheme) {
         let name = s.value.trim_end_matches(':').to_lowercase();
-        let danger = ["gopher","file","dict","ftp","ldap","tftp"];
+        let danger = ["gopher", "file", "dict", "ftp", "ldap", "tftp"];
         steps.push(ProofStep {
-            operation: ProofOperation::ContextEscape, input: s.value.clone(),
+            operation: ProofOperation::ContextEscape,
+            input: s.value.clone(),
             output: format!("URL scheme \"{}\" initiates server-side request", name),
             property: format!("escape(ssrf): {}:// triggers outbound request", name),
-            offset: s.start, confidence: if danger.contains(&name.as_str()) { 0.95 } else { 0.85 },
-            verified: true, verification_method: Some("scheme_parse".into()),
+            offset: s.start,
+            confidence: if danger.contains(&name.as_str()) {
+                0.95
+            } else {
+                0.85
+            },
+            verified: true,
+            verification_method: Some("scheme_parse".into()),
         });
     }
-    if let Some(m) = tokens.iter().find(|t| t.token_type == UrlTokenType::HostMetadata) {
+    if let Some(m) = tokens
+        .iter()
+        .find(|t| t.token_type == UrlTokenType::HostMetadata)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: m.value.clone(),
+            operation: ProofOperation::PayloadInject,
+            input: m.value.clone(),
             output: format!("Cloud metadata: {} — exposes IAM credentials", m.value),
             property: "payload(ssrf): targets cloud metadata (credential theft)".into(),
-            offset: m.start, confidence: 0.98, verified: true,
+            offset: m.start,
+            confidence: 0.98,
+            verified: true,
             verification_method: Some("metadata_host_match".into()),
         });
-    } else if let Some(i) = tokens.iter().find(|t| t.token_type == UrlTokenType::HostInternal) {
+    } else if let Some(i) = tokens
+        .iter()
+        .find(|t| t.token_type == UrlTokenType::HostInternal)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: i.value.clone(),
+            operation: ProofOperation::PayloadInject,
+            input: i.value.clone(),
             output: format!("Internal host: {}", i.value),
             property: "payload(ssrf): targets internal network".into(),
-            offset: i.start, confidence: 0.94, verified: true,
+            offset: i.start,
+            confidence: 0.94,
+            verified: true,
             verification_method: Some("private_ip_match".into()),
         });
-    } else if let Some(o) = tokens.iter().find(|t| t.token_type == UrlTokenType::HostObfuscated) {
+    } else if let Some(o) = tokens
+        .iter()
+        .find(|t| t.token_type == UrlTokenType::HostObfuscated)
+    {
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: o.value.clone(),
+            operation: ProofOperation::PayloadInject,
+            input: o.value.clone(),
             output: format!("Obfuscated IP: {}", o.value),
             property: "payload(ssrf): IP obfuscation bypasses SSRF filter".into(),
-            offset: o.start, confidence: 0.96, verified: true,
+            offset: o.start,
+            confidence: 0.96,
+            verified: true,
             verification_method: Some("ip_obfuscation_decode".into()),
         });
     }
-    let paths: Vec<_> = tokens.iter().filter(|t| t.token_type == UrlTokenType::PathSegment).collect();
+    let paths: Vec<_> = tokens
+        .iter()
+        .filter(|t| t.token_type == UrlTokenType::PathSegment)
+        .collect();
     if !paths.is_empty() {
         let full: String = paths.iter().map(|t| t.value.as_str()).collect();
-        let sens = ["/latest/meta-data","/latest/api/token","/metadata/instance","/computeMetadata"];
+        let sens = [
+            "/latest/meta-data",
+            "/latest/api/token",
+            "/metadata/instance",
+            "/computeMetadata",
+        ];
         if sens.iter().any(|p| full.contains(p)) {
             steps.push(ProofStep {
-                operation: ProofOperation::SyntaxRepair, input: full,
+                operation: ProofOperation::SyntaxRepair,
+                input: full,
                 output: "Path targets sensitive metadata API".into(),
                 property: "repair(ssrf): path completes credential-exfiltration request".into(),
-                offset: paths[0].start, confidence: 0.95, verified: true,
+                offset: paths[0].start,
+                confidence: 0.95,
+                verified: true,
                 verification_method: Some("sensitive_path_match".into()),
             });
         } else {
             steps.push(ProofStep {
-                operation: ProofOperation::SyntaxRepair, input: paths[0].value.clone(),
+                operation: ProofOperation::SyntaxRepair,
+                input: paths[0].value.clone(),
                 output: "Path completes valid HTTP request".into(),
                 property: "repair(ssrf): URL path produces valid request".into(),
-                offset: paths[0].start, confidence: 0.80, verified: false, verification_method: None,
+                offset: paths[0].start,
+                confidence: 0.80,
+                verified: false,
+                verification_method: None,
             });
         }
     }
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof("SSRF violates network boundary confinement invariant",
-        steps, "ssrf", "SSRF allows accessing internal services and cloud metadata", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        "SSRF violates network boundary confinement invariant",
+        steps,
+        "ssrf",
+        "SSRF allows accessing internal services and cloud metadata",
+        input,
+        l2,
+    )
 }
 
 // ── XXE ─────────────────────────────────────────────────────────
@@ -1080,35 +1593,53 @@ pub fn construct_xxe_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
     let doctype = Regex::new(r"(?is)<!DOCTYPE\b[^>]*?(?:\[[\s\S]*?\])?>").unwrap();
     if let Some(m) = doctype.find(input) {
         steps.push(ProofStep {
-            operation: ProofOperation::ContextEscape, input: m.as_str().to_owned(),
+            operation: ProofOperation::ContextEscape,
+            input: m.as_str().to_owned(),
             output: "DOCTYPE declaration enables DTD definitions".into(),
             property: "escape(xxe): DOCTYPE enables attacker DTD".into(),
-            offset: m.start(), confidence: 0.90, verified: true,
+            offset: m.start(),
+            confidence: 0.90,
+            verified: true,
             verification_method: Some("doctype_parse".into()),
         });
     }
-    let entity = Regex::new(r#"(?i)<!ENTITY\s+(?:%\s+)?([a-zA-Z_][\w.-]*)\s+(SYSTEM|PUBLIC)\s+['"]([^'"]+)['"][^>]*>"#).unwrap();
+    let entity = Regex::new(
+        r#"(?i)<!ENTITY\s+(?:%\s+)?([a-zA-Z_][\w.-]*)\s+(SYSTEM|PUBLIC)\s+['"]([^'"]+)['"][^>]*>"#,
+    )
+    .unwrap();
     let decls: Vec<_> = entity.captures_iter(input).collect();
     if !decls.is_empty() {
         let c = &decls[0];
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: c[0].to_owned(),
+            operation: ProofOperation::PayloadInject,
+            input: c[0].to_owned(),
             output: format!("Entity \"{}\" via {}", &c[1], c[2].to_uppercase()),
             property: "payload(xxe): ENTITY introduces external resource".into(),
-            offset: c.get(0).unwrap().start(), confidence: (0.90 + decls.len() as f64 * 0.02).min(0.99),
-            verified: true, verification_method: Some("entity_reference_check".into()),
+            offset: c.get(0).unwrap().start(),
+            confidence: (0.90 + decls.len() as f64 * 0.02).min(0.99),
+            verified: true,
+            verification_method: Some("entity_reference_check".into()),
         });
     }
-    let ext = Regex::new(r#"(?i)\b(?:SYSTEM|PUBLIC)\b\s+['"]((?:file|https?|ftp|gopher|expect|php)://[^'"]+)['"]"#).unwrap();
+    let ext = Regex::new(
+        r#"(?i)\b(?:SYSTEM|PUBLIC)\b\s+['"]((?:file|https?|ftp|gopher|expect|php)://[^'"]+)['"]"#,
+    )
+    .unwrap();
     if let Some(c) = ext.captures(input) {
         let uri = &c[1];
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: uri.to_owned(),
+            operation: ProofOperation::PayloadInject,
+            input: uri.to_owned(),
             output: format!("External reference: {}", uri),
             property: "payload(xxe): external URI crosses trust boundary".into(),
             offset: c.get(1).unwrap().start(),
-            confidence: if uri.to_lowercase().starts_with("file://") { 0.98 } else { 0.94 },
-            verified: true, verification_method: Some("protocol_analysis".into()),
+            confidence: if uri.to_lowercase().starts_with("file://") {
+                0.98
+            } else {
+                0.94
+            },
+            verified: true,
+            verification_method: Some("protocol_analysis".into()),
         });
     }
     let names: Vec<String> = decls.iter().map(|c| c[1].to_owned()).collect();
@@ -1117,19 +1648,33 @@ pub fn construct_xxe_proof(input: &str, l2: Option<&DetectionResult>) -> Option<
         let name = &c[1];
         if names.is_empty() || names.iter().any(|n| n == name) {
             steps.push(ProofStep {
-                operation: ProofOperation::SyntaxRepair, input: c[0].to_owned(),
+                operation: ProofOperation::SyntaxRepair,
+                input: c[0].to_owned(),
                 output: format!("Entity {} triggers expansion", &c[0]),
                 property: "repair(xxe): entity usage completes expansion path".into(),
                 offset: c.get(0).unwrap().start(),
-                confidence: if names.iter().any(|n| n == name) { 0.95 } else { 0.82 },
-                verified: true, verification_method: Some("entity_reference_check".into()),
+                confidence: if names.iter().any(|n| n == name) {
+                    0.95
+                } else {
+                    0.82
+                },
+                verified: true,
+                verification_method: Some("entity_reference_check".into()),
             });
             break;
         }
     }
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof("XXE violates XML entity confinement invariant",
-        steps, "xxe", "External entity enables file read, SSRF, and parser resource access", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        "XXE violates XML entity confinement invariant",
+        steps,
+        "xxe",
+        "External entity enables file read, SSRF, and parser resource access",
+        input,
+        l2,
+    )
 }
 
 // ── SSTI ────────────────────────────────────────────────────────
@@ -1147,47 +1692,73 @@ pub fn construct_ssti_proof(input: &str, l2: Option<&DetectionResult>) -> Option
     let delims: Vec<_> = delim.find_iter(input).collect();
     if !delims.is_empty() {
         steps.push(ProofStep {
-            operation: ProofOperation::ContextEscape, input: delims[0].as_str().to_owned(),
+            operation: ProofOperation::ContextEscape,
+            input: delims[0].as_str().to_owned(),
             output: format!("{} template delimiter(s) open eval context", delims.len()),
             property: "escape(ssti): delimiter escapes literal into expression eval".into(),
-            offset: delims[0].start(), confidence: (0.84 + delims.len() as f64 * 0.03).min(0.97),
-            verified: true, verification_method: Some("delimiter_match".into()),
+            offset: delims[0].start(),
+            confidence: (0.84 + delims.len() as f64 * 0.03).min(0.97),
+            verified: true,
+            verification_method: Some("delimiter_match".into()),
         });
     }
     let expr = Regex::new(r"(?:\{\{|\$\{|#\{|<%=|<%|[{]%)([\s\S]*?)(?:\}\}|%>|\}|%\})").unwrap();
     if let Some(c) = expr.captures(input) {
         let e = c[1].trim();
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: e[..e.len().min(120)].to_owned(),
-            output: format!("Expression \"{}\" parsed for evaluation", &e[..e.len().min(60)]),
+            operation: ProofOperation::PayloadInject,
+            input: e[..e.len().min(120)].to_owned(),
+            output: format!(
+                "Expression \"{}\" parsed for evaluation",
+                &e[..e.len().min(60)]
+            ),
             property: "payload(ssti): expression enters template eval pipeline".into(),
-            offset: c.get(0).unwrap().start(), confidence: 0.90,
-            verified: true, verification_method: Some("expression_parse".into()),
+            offset: c.get(0).unwrap().start(),
+            confidence: 0.90,
+            verified: true,
+            verification_method: Some("expression_parse".into()),
         });
     }
     let trav = Regex::new(r"(?i)(?:__class__|__mro__|__subclasses__|__globals__|__builtins__|constructor\s*\.\s*constructor|getClass|getRuntime|forName|ProcessBuilder)").unwrap();
     if let Some(m) = trav.find(input) {
         steps.push(ProofStep {
-            operation: ProofOperation::PayloadInject, input: m.as_str().to_owned(),
-            output: format!("Object traversal \"{}\" reaches privileged objects", m.as_str()),
+            operation: ProofOperation::PayloadInject,
+            input: m.as_str().to_owned(),
+            output: format!(
+                "Object traversal \"{}\" reaches privileged objects",
+                m.as_str()
+            ),
             property: "payload(ssti): traversal accesses execution-capable internals".into(),
-            offset: m.start(), confidence: 0.96, verified: true,
+            offset: m.start(),
+            confidence: 0.96,
+            verified: true,
             verification_method: Some("traversal_chain_analysis".into()),
         });
     }
     let exec = Regex::new(r"(?i)(?:\bexec\s*\(|\beval\s*\(|\bsystem\s*\(|\bpopen\s*\(|__import__\s*\(|Runtime\s*\.\s*getRuntime\s*\(\)\s*\.\s*exec\s*\()").unwrap();
     if let Some(m) = exec.find(input) {
         steps.push(ProofStep {
-            operation: ProofOperation::SyntaxRepair, input: m.as_str().to_owned(),
+            operation: ProofOperation::SyntaxRepair,
+            input: m.as_str().to_owned(),
             output: format!("Execution primitive \"{}\"", m.as_str()),
             property: "repair(ssti): expression resolves to code execution".into(),
-            offset: m.start(), confidence: 0.97, verified: true,
+            offset: m.start(),
+            confidence: 0.97,
+            verified: true,
             verification_method: Some("execution_detection".into()),
         });
     }
-    if let Some(s) = l2_semantic_step(l2, input) { steps.push(s); }
-    make_proof("SSTI violates template evaluation confinement invariant",
-        steps, "ssti", "Template injection enables object traversal and code execution", input, l2)
+    if let Some(s) = l2_semantic_step(l2, input) {
+        steps.push(s);
+    }
+    make_proof(
+        "SSTI violates template evaluation confinement invariant",
+        steps,
+        "ssti",
+        "Template injection enables object traversal and code execution",
+        input,
+        l2,
+    )
 }
 
 // ── Main Entry Point ────────────────────────────────────────────
@@ -1244,18 +1815,37 @@ impl ProofSubsystem for DefaultProofSubsystem {
 /// proof steps. If the domain is unknown but `l2.detected` is true, returns
 /// a minimal semantic proof; otherwise returns `None`.
 pub fn construct_proof(
-    category: &str, module_id: &str, formal_property: &str, description: &str,
-    input: &str, l2: Option<&DetectionResult>,
+    category: &str,
+    module_id: &str,
+    formal_property: &str,
+    description: &str,
+    input: &str,
+    l2: Option<&DetectionResult>,
 ) -> Option<PropertyProof> {
-    let domain = if module_id.starts_with("xxe_") { "xxe" }
-        else if module_id.starts_with("ssti_") { "ssti" }
-        else { match category { "sqli" => "sqli", "xss" => "xss", "cmdi" => "cmdi",
-            "path_traversal" => "path_traversal", "ssrf" => "ssrf", "injection" => "sqli", c => c } };
+    let domain = if module_id.starts_with("xxe_") {
+        "xxe"
+    } else if module_id.starts_with("ssti_") {
+        "ssti"
+    } else {
+        match category {
+            "sqli" => "sqli",
+            "xss" => "xss",
+            "cmdi" => "cmdi",
+            "path_traversal" => "path_traversal",
+            "ssrf" => "ssrf",
+            "injection" => "sqli",
+            c => c,
+        }
+    };
 
     let mut proof = match domain {
         "sqli" => {
             let s = SqlTokenizer.tokenize(input);
-            if !s.all().is_empty() { construct_sql_proof(input, l2) } else { None }
+            if !s.all().is_empty() {
+                construct_sql_proof(input, l2)
+            } else {
+                None
+            }
         }
         "xss" => construct_xss_proof(input, l2),
         "cmdi" => construct_cmd_proof(input, l2),
@@ -1277,16 +1867,28 @@ pub fn construct_proof(
     // Minimal proof from L2 for unknown domains
     let l2r = l2.filter(|r| r.detected)?;
     let minimal = PropertyProof {
-        property: formal_property.into(), witness: witness(input),
+        property: formal_property.into(),
+        witness: witness(input),
         steps: vec![ProofStep {
             operation: ProofOperation::SemanticEval,
-            input: l2r.evidence.clone().unwrap_or_else(|| safe_prefix(input, 100)),
-            output: l2r.explanation.clone(), property: formal_property.into(),
-            offset: 0, confidence: normalize_confidence(l2r.confidence), verified: false, verification_method: None,
+            input: l2r
+                .evidence
+                .clone()
+                .unwrap_or_else(|| safe_prefix(input, 100)),
+            output: l2r.explanation.clone(),
+            property: formal_property.into(),
+            offset: 0,
+            confidence: normalize_confidence(l2r.confidence),
+            verified: false,
+            verification_method: None,
         }],
-        is_complete: false, domain: category.into(), impact: description.into(),
-        proof_confidence: normalize_confidence(l2r.confidence) * 0.85, verified_steps: 0,
-        verification_coverage: 0.0, verification_level: ProofVerificationLevel::None,
+        is_complete: false,
+        domain: category.into(),
+        impact: description.into(),
+        proof_confidence: normalize_confidence(l2r.confidence) * 0.85,
+        verified_steps: 0,
+        verification_coverage: 0.0,
+        verification_level: ProofVerificationLevel::None,
     };
     let mut minimal = apply_structured_evidence(minimal, l2, input.len());
     seal_proof_chain(&mut minimal);
@@ -1301,9 +1903,24 @@ mod tests {
     #[test]
     fn sql_proof_three_phases() {
         let proof = construct_sql_proof("' OR 1=1 --", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::ContextEscape));
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::PayloadInject));
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::SyntaxRepair));
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::ContextEscape)
+        );
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::PayloadInject)
+        );
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::SyntaxRepair)
+        );
         assert!(proof.is_complete);
         assert!(proof.proof_confidence >= 0.90);
     }
@@ -1311,54 +1928,96 @@ mod tests {
     #[test]
     fn xss_proof_script_tag() {
         let proof = construct_xss_proof("<script>alert(1)</script>", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::PayloadInject));
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::PayloadInject)
+        );
     }
 
     #[test]
     fn cmd_proof_semicolon() {
         let proof = construct_cmd_proof("; cat /etc/passwd", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::ContextEscape));
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::PayloadInject));
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::ContextEscape)
+        );
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::PayloadInject)
+        );
     }
 
     #[test]
     fn path_proof_traversal() {
         let proof = construct_path_proof("../../etc/passwd", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::ContextEscape));
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::ContextEscape)
+        );
     }
 
     #[test]
     fn ssrf_proof_metadata() {
         let proof = construct_ssrf_proof("http://169.254.169.254/latest/meta-data/", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::PayloadInject));
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::PayloadInject)
+        );
     }
 
     #[test]
     fn xxe_proof_entity() {
-        let input = r#"<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>"#;
+        let input =
+            r#"<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><root>&xxe;</root>"#;
         let proof = construct_xxe_proof(input, None).unwrap();
         assert!(proof.is_complete);
     }
 
     #[test]
     fn ssti_proof_jinja() {
-        let proof = construct_ssti_proof("{{config.__class__.__init__.__globals__}}", None).unwrap();
-        assert!(proof.steps.iter().any(|s| s.operation == ProofOperation::PayloadInject));
+        let proof =
+            construct_ssti_proof("{{config.__class__.__init__.__globals__}}", None).unwrap();
+        assert!(
+            proof
+                .steps
+                .iter()
+                .any(|s| s.operation == ProofOperation::PayloadInject)
+        );
     }
 
     #[test]
     fn confidence_increases_with_steps() {
         let one = vec![ProofStep {
-            operation: ProofOperation::PayloadInject, input: "x".into(),
-            output: "x".into(), property: "x".into(), offset: 0,
-            confidence: 0.90, verified: false, verification_method: None,
+            operation: ProofOperation::PayloadInject,
+            input: "x".into(),
+            output: "x".into(),
+            property: "x".into(),
+            offset: 0,
+            confidence: 0.90,
+            verified: false,
+            verification_method: None,
         }];
         let (_, c1) = calculate_proof_metrics(&one, None);
         let mut two = one.clone();
         two.push(ProofStep {
-            operation: ProofOperation::ContextEscape, input: "y".into(),
-            output: "y".into(), property: "y".into(), offset: 0,
-            confidence: 0.90, verified: false, verification_method: None,
+            operation: ProofOperation::ContextEscape,
+            input: "y".into(),
+            output: "y".into(),
+            property: "y".into(),
+            offset: 0,
+            confidence: 0.90,
+            verified: false,
+            verification_method: None,
         });
         let (_, c2) = calculate_proof_metrics(&two, None);
         assert!(c2 > c1);
@@ -1489,7 +2148,12 @@ mod tests {
     fn proof_steps_are_chain_sealed() {
         let p = construct_sql_proof("' OR 1=1 --", None).unwrap();
         assert!(!p.steps.is_empty());
-        assert!(p.steps.iter().all(|s| s.verification_method.as_deref().unwrap_or("").contains("chain:")));
+        assert!(p.steps.iter().all(|s| {
+            s.verification_method
+                .as_deref()
+                .unwrap_or("")
+                .contains("chain:")
+        }));
         assert!(verify_proof_chain(&p));
     }
 
@@ -1501,7 +2165,11 @@ mod tests {
             let chain = chain.unwrap();
             assert!(chain.starts_with("chain:"));
             assert_eq!(chain.len(), "chain:".len() + 64);
-            assert!(chain["chain:".len()..].chars().all(|c| c.is_ascii_hexdigit()));
+            assert!(
+                chain["chain:".len()..]
+                    .chars()
+                    .all(|c| c.is_ascii_hexdigit())
+            );
         }
     }
 
@@ -1550,7 +2218,8 @@ mod tests {
                 property: "prop".into(),
             }],
         };
-        let proof = construct_proof("unknown", "mod", "formal", "impact", special, Some(&l2)).unwrap();
+        let proof =
+            construct_proof("unknown", "mod", "formal", "impact", special, Some(&l2)).unwrap();
         assert!(verify_proof_chain(&proof));
         let json = serde_json::to_string(&proof).unwrap();
         let de: PropertyProof = serde_json::from_str(&json).unwrap();
@@ -1820,7 +2489,9 @@ mod tests {
         };
         let p = construct_proof("unknown", "mod", "f", "i", "real", Some(&l2)).unwrap();
         assert!(p.steps.iter().any(|s| s.input == "real"));
-        assert!(!p.steps.iter().any(|s| s.input.trim().is_empty() && s.output.trim().is_empty() && s.property.trim().is_empty()));
+        assert!(!p.steps.iter().any(|s| s.input.trim().is_empty()
+            && s.output.trim().is_empty()
+            && s.property.trim().is_empty()));
     }
 
     #[test]

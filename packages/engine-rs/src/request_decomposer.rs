@@ -172,9 +172,16 @@ pub fn decompose_request(request: &RawHttpRequest) -> RequestSurfaces {
     let mut surfaces = Vec::new();
 
     let path_without_query = request.path.split('?').next().unwrap_or(&request.path);
-    let path_parts: Vec<&str> = path_without_query.split('/').filter(|p| !p.is_empty()).collect();
+    let path_parts: Vec<&str> = path_without_query
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .collect();
     for (idx, raw) in path_parts.iter().enumerate() {
-        surfaces.push(make_surface(SurfaceLocation::PathSegment, &format!("path[{idx}]"), raw));
+        surfaces.push(make_surface(
+            SurfaceLocation::PathSegment,
+            &format!("path[{idx}]"),
+            raw,
+        ));
     }
 
     let query_str = request
@@ -243,10 +250,7 @@ pub fn decompose_request(request: &RawHttpRequest) -> RequestSurfaces {
     let payload_carrier = identify_payload_carrier(&surfaces);
 
     let surface_count = surfaces.len();
-    let highest_entropy = surfaces
-        .iter()
-        .map(|s| s.entropy)
-        .fold(0.0_f64, f64::max);
+    let highest_entropy = surfaces.iter().map(|s| s.entropy).fold(0.0_f64, f64::max);
     let total_metachar_density = if surfaces.is_empty() {
         0.0
     } else {
@@ -350,8 +354,10 @@ fn safe_url_decode(input: &str) -> String {
 }
 
 fn decode_html_entities(input: &str) -> String {
-    static HEX_ENTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#x([0-9a-fA-F]+);").expect("valid regex"));
-    static DEC_ENTITY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&#(\d+);").expect("valid regex"));
+    static HEX_ENTITY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"&#x([0-9a-fA-F]+);").expect("valid regex"));
+    static DEC_ENTITY: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"&#(\d+);").expect("valid regex"));
 
     let mut out = input
         .replace("&lt;", "<")
@@ -456,8 +462,14 @@ fn char_class_analysis(input: &str) -> CharClassAnalysis {
 
 fn detect_encoding(input: &str) -> EncodingKind {
     let has_pct = input.contains('%');
-    let pct_triplets = input.match_indices('%').filter(|(idx, _)| *idx + 2 < input.len()).count();
-    let has_html = input.contains("&lt;") || input.contains("&gt;") || input.contains("&#") || input.contains("&amp;");
+    let pct_triplets = input
+        .match_indices('%')
+        .filter(|(idx, _)| *idx + 2 < input.len())
+        .count();
+    let has_html = input.contains("&lt;")
+        || input.contains("&gt;")
+        || input.contains("&#")
+        || input.contains("&amp;");
     let has_unicode_escape = input.contains("\\u") || input.contains("\\x");
 
     let lower = input.to_ascii_lowercase();
@@ -621,14 +633,22 @@ fn extract_multipart_surfaces(body: &str, surfaces: &mut Vec<Surface>) {
 }
 
 fn extract_xml_surfaces(body: &str, surfaces: &mut Vec<Surface>) {
-    static ATTR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(\w+)=[\"']([^\"']*?)[\"']"#).expect("valid regex"));
-    static TEXT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r">([^<]+)<").expect("valid regex"));
-    static CDATA_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)<!\[CDATA\[(.*?)\]\]>").expect("valid regex"));
-    static DOCTYPE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<!DOCTYPE|<!ENTITY").expect("valid regex"));
+    static ATTR_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(\w+)=[\"']([^\"']*?)[\"']"#).expect("valid regex"));
+    static TEXT_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r">([^<]+)<").expect("valid regex"));
+    static CDATA_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?s)<!\[CDATA\[(.*?)\]\]>").expect("valid regex"));
+    static DOCTYPE_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)<!DOCTYPE|<!ENTITY").expect("valid regex"));
 
     for (idx, cap) in ATTR_RE.captures_iter(body).take(MAX_XML_ATTRS).enumerate() {
         let _ = idx;
-        surfaces.push(make_surface(SurfaceLocation::XmlAttribute, &cap[1], &cap[2]));
+        surfaces.push(make_surface(
+            SurfaceLocation::XmlAttribute,
+            &cap[1],
+            &cap[2],
+        ));
     }
 
     for (idx, cap) in TEXT_RE.captures_iter(body).take(MAX_XML_TEXTS).enumerate() {
@@ -687,7 +707,12 @@ fn detect_cross_surface_payloads(surfaces: &[Surface]) -> Vec<AssembledPayload> 
     let query_values: Vec<&Surface> = suspicious
         .iter()
         .copied()
-        .filter(|s| matches!(s.location, SurfaceLocation::QueryValue | SurfaceLocation::FormField))
+        .filter(|s| {
+            matches!(
+                s.location,
+                SurfaceLocation::QueryValue | SurfaceLocation::FormField
+            )
+        })
         .collect();
     if suspicious.len() >= 2 && query_values.len() >= 2 {
         let combined = query_values
@@ -715,7 +740,9 @@ fn detect_cross_surface_payloads(surfaces: &[Surface]) -> Vec<AssembledPayload> 
 
     for i in 0..suspicious.len() {
         for j in (i + 1)..suspicious.len() {
-            if suspicious[i].location == suspicious[j].location && suspicious[i].name == suspicious[j].name {
+            if suspicious[i].location == suspicious[j].location
+                && suspicious[i].name == suspicious[j].name
+            {
                 continue;
             }
             let pair = format!("{}{}", suspicious[i].normalized, suspicious[j].normalized);
@@ -736,7 +763,8 @@ fn detect_cross_surface_payloads(surfaces: &[Surface]) -> Vec<AssembledPayload> 
                     ],
                     matched_class: None,
                     assembly_method: AssemblyMethod::Concatenation,
-                    confidence: (0.6 + (suspicious[i].metachar_density + suspicious[j].metachar_density) * 0.2)
+                    confidence: (0.6
+                        + (suspicious[i].metachar_density + suspicious[j].metachar_density) * 0.2)
                         .clamp(0.0, 0.95),
                 });
             }
@@ -768,10 +796,14 @@ fn detect_cross_surface_payloads(surfaces: &[Surface]) -> Vec<AssembledPayload> 
 fn looks_like_split_sql(combined: &str, surfaces: &[&Surface]) -> bool {
     let lower = combined.to_ascii_lowercase();
     let sql_keywords = [
-        "select", "union", "insert", "update", "delete", "drop", "having", "group by", "order by", "where", "from",
+        "select", "union", "insert", "update", "delete", "drop", "having", "group by", "order by",
+        "where", "from",
     ];
 
-    let found_keywords = sql_keywords.iter().filter(|kw| lower.contains(**kw)).count();
+    let found_keywords = sql_keywords
+        .iter()
+        .filter(|kw| lower.contains(**kw))
+        .count();
     if found_keywords < 2 {
         return false;
     }
@@ -789,13 +821,20 @@ fn looks_like_split_sql(combined: &str, surfaces: &[&Surface]) -> bool {
 
 fn looks_like_split_payload(combined: &str) -> bool {
     static SQL_ESCAPE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?i)['\"].*\b(or|and|union|select|drop|insert|delete|update)\b"#).expect("valid regex")
+        Regex::new(r#"(?i)['\"].*\b(or|and|union|select|drop|insert|delete|update)\b"#)
+            .expect("valid regex")
     });
-    static XSS_TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<\w+.*>.*</\w+>").expect("valid regex"));
-    static XSS_EVENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)on\w+\s*=|javascript:").expect("valid regex"));
-    static XSS_PRIM_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)<script|<img|<svg|<iframe").expect("valid regex"));
-    static CMD_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[|;&`$].*\b(cat|ls|id|whoami|curl|wget|nc|ncat)\b").expect("valid regex"));
-    static PATH_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\.\..*[/\\]").expect("valid regex"));
+    static XSS_TAG_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)<\w+.*>.*</\w+>").expect("valid regex"));
+    static XSS_EVENT_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)on\w+\s*=|javascript:").expect("valid regex"));
+    static XSS_PRIM_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)<script|<img|<svg|<iframe").expect("valid regex"));
+    static CMD_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"[|;&`$].*\b(cat|ls|id|whoami|curl|wget|nc|ncat)\b").expect("valid regex")
+    });
+    static PATH_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\.\..*[/\\]").expect("valid regex"));
 
     let lower = combined.to_ascii_lowercase();
 
@@ -848,12 +887,10 @@ fn guess_class_from_key(key: &str) -> Option<InvariantClass> {
 
 fn compute_assembly_confidence(surfaces: &[&Surface]) -> f64 {
     let meta_surfaces = surfaces.iter().filter(|s| s.has_metachars).count();
-    let avg_density = surfaces
-        .iter()
-        .map(|s| s.metachar_density)
-        .sum::<f64>()
-        / surfaces.len() as f64;
-    (0.5 + (meta_surfaces as f64 / surfaces.len() as f64) * 0.2 + avg_density * 0.3).clamp(0.0, 0.95)
+    let avg_density =
+        surfaces.iter().map(|s| s.metachar_density).sum::<f64>() / surfaces.len() as f64;
+    (0.5 + (meta_surfaces as f64 / surfaces.len() as f64) * 0.2 + avg_density * 0.3)
+        .clamp(0.0, 0.95)
 }
 
 fn identify_payload_carrier(surfaces: &[Surface]) -> Option<PayloadCarrier> {
@@ -862,7 +899,9 @@ fn identify_payload_carrier(surfaces: &[Surface]) -> Option<PayloadCarrier> {
     for (idx, s) in surfaces.iter().enumerate() {
         let encoding_boost = match s.encoding {
             EncodingKind::DoubleUrlEncoded | EncodingKind::Mixed => 0.25,
-            EncodingKind::UrlEncoded | EncodingKind::HtmlEntity | EncodingKind::UnicodeEscape => 0.15,
+            EncodingKind::UrlEncoded | EncodingKind::HtmlEntity | EncodingKind::UnicodeEscape => {
+                0.15
+            }
             EncodingKind::Base64Like | EncodingKind::HexLike => 0.2,
             EncodingKind::Plain => 0.0,
         };
@@ -882,7 +921,11 @@ fn identify_payload_carrier(surfaces: &[Surface]) -> Option<PayloadCarrier> {
             score,
         };
 
-        if best.as_ref().map(|b| candidate.score > b.score).unwrap_or(true) {
+        if best
+            .as_ref()
+            .map(|b| candidate.score > b.score)
+            .unwrap_or(true)
+        {
             best = Some(candidate);
         }
     }
@@ -910,24 +953,31 @@ mod tests {
     fn path_segments_are_extracted() {
         let r = req("/api/v1/users");
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::PathSegment && s.name == "path[0]" && s.raw == "api"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::PathSegment
+                    && s.name == "path[0]"
+                    && s.raw == "api")
+        );
     }
 
     #[test]
     fn query_keys_and_values_are_extracted() {
         let r = req("/search?q=test&sort=asc");
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::QueryKey && s.raw == "q"));
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::QueryValue && s.name == "q" && s.raw == "test"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::QueryKey && s.raw == "q")
+        );
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::QueryValue
+                    && s.name == "q"
+                    && s.raw == "test")
+        );
     }
 
     #[test]
@@ -936,25 +986,31 @@ mod tests {
         r.headers.insert("Authorization".into(), "Bearer x".into());
         r.headers.insert("X-Other".into(), "skip".into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::HeaderValue && s.name == "authorization"));
-        assert!(!out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::HeaderValue && s.name == "x-other"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::HeaderValue && s.name == "authorization")
+        );
+        assert!(
+            !out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::HeaderValue && s.name == "x-other")
+        );
     }
 
     #[test]
     fn cookies_parse_from_header_when_missing_cookie_map() {
         let mut r = req("/");
-        r.headers.insert("Cookie".into(), "sid=abc; role=user".into());
+        r.headers
+            .insert("Cookie".into(), "sid=abc; role=user".into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::CookieValue && s.name == "sid" && s.raw == "abc"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::CookieValue
+                    && s.name == "sid"
+                    && s.raw == "abc")
+        );
     }
 
     #[test]
@@ -963,14 +1019,18 @@ mod tests {
         r.content_type = Some("application/json".into());
         r.body = Some(r#"{"profile":{"name":"alice","age":42}}"#.into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::JsonKey && s.raw == "profile"));
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::JsonValue && s.name.ends_with("name") && s.raw == "alice"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::JsonKey && s.raw == "profile")
+        );
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::JsonValue
+                    && s.name.ends_with("name")
+                    && s.raw == "alice")
+        );
     }
 
     #[test]
@@ -979,10 +1039,11 @@ mod tests {
         r.content_type = Some("application/json".into());
         r.body = Some("{bad".into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::JsonValue && s.name == "_body"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::JsonValue && s.name == "_body")
+        );
     }
 
     #[test]
@@ -991,22 +1052,31 @@ mod tests {
         r.content_type = Some("application/x-www-form-urlencoded".into());
         r.body = Some("email=a%40b.com&message=hello".into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::FormField && s.name == "email" && s.raw == "a@b.com"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::FormField
+                    && s.name == "email"
+                    && s.raw == "a@b.com")
+        );
     }
 
     #[test]
     fn multipart_fields_extracted() {
         let mut r = req("/");
         r.content_type = Some("multipart/form-data; boundary=abc".into());
-        r.body = Some("--abc\r\nContent-Disposition: form-data; name=\"cmd\"\r\n\r\nwhoami\r\n--abc--\r\n".into());
+        r.body = Some(
+            "--abc\r\nContent-Disposition: form-data; name=\"cmd\"\r\n\r\nwhoami\r\n--abc--\r\n"
+                .into(),
+        );
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::MultipartField && s.name == "cmd" && s.raw == "whoami"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::MultipartField
+                    && s.name == "cmd"
+                    && s.raw == "whoami")
+        );
     }
 
     #[test]
@@ -1015,14 +1085,18 @@ mod tests {
         r.content_type = Some("application/xml".into());
         r.body = Some("<!DOCTYPE foo [<!ENTITY xxe \"x\">]><a k=\"v\">text</a>".into());
         let out = decompose_request(&r);
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::XmlAttribute && s.name == "k" && s.raw == "v"));
-        assert!(out
-            .surfaces
-            .iter()
-            .any(|s| s.location == SurfaceLocation::XmlElement && s.name == "_doctype"));
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::XmlAttribute
+                    && s.name == "k"
+                    && s.raw == "v")
+        );
+        assert!(
+            out.surfaces
+                .iter()
+                .any(|s| s.location == SurfaceLocation::XmlElement && s.name == "_doctype")
+        );
     }
 
     #[test]
@@ -1061,11 +1135,12 @@ mod tests {
         r.content_type = Some("application/json".into());
         r.body = Some(r#"{"__proto__":"x"}"#.into());
         let out = decompose_request(&r);
-        assert!(out
-            .cross_surface_payloads
-            .iter()
-            .any(|p| p.assembly_method == AssemblyMethod::NestedInjection
-                && p.matched_class == Some(InvariantClass::ProtoPollution)));
+        assert!(
+            out.cross_surface_payloads
+                .iter()
+                .any(|p| p.assembly_method == AssemblyMethod::NestedInjection
+                    && p.matched_class == Some(InvariantClass::ProtoPollution))
+        );
     }
 
     #[test]

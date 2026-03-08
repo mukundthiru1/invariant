@@ -16,7 +16,12 @@ fn preview(input: &str) -> String {
 
 #[inline]
 fn has_regex_metacharacters(input: &str) -> bool {
-    input.chars().any(|c| matches!(c, '.' | '*' | '+' | '?' | '^' | '$' | '{' | '}' | '(' | ')' | '[' | ']' | '|' | '\\'))
+    input.chars().any(|c| {
+        matches!(
+            c,
+            '.' | '*' | '+' | '?' | '^' | '$' | '{' | '}' | '(' | ')' | '[' | ']' | '|' | '\\'
+        )
+    })
 }
 
 #[inline]
@@ -59,15 +64,28 @@ fn detect_regex_injection(decoded: &str) -> Option<(usize, &'static str, f64)> {
         LazyLock::new(|| Regex::new(r"(?i)\bregex\s*::\s*new\s*\(\s*([^\),]+)").unwrap());
 
     let constructor_checks = [
-        (&*JS_NEW_REGEXP_RE, "dynamic new RegExp(user_input) constructor"),
-        (&*PY_RE_COMPILE_RE, "dynamic re.compile(user_input) constructor"),
-        (&*RUST_REGEX_NEW_RE, "dynamic Regex::new(user_input) constructor"),
+        (
+            &*JS_NEW_REGEXP_RE,
+            "dynamic new RegExp(user_input) constructor",
+        ),
+        (
+            &*PY_RE_COMPILE_RE,
+            "dynamic re.compile(user_input) constructor",
+        ),
+        (
+            &*RUST_REGEX_NEW_RE,
+            "dynamic Regex::new(user_input) constructor",
+        ),
     ];
 
     for (re, label) in constructor_checks {
         for caps in re.captures_iter(decoded) {
-            let Some(full) = caps.get(0) else { continue; };
-            let Some(arg_match) = caps.get(1) else { continue; };
+            let Some(full) = caps.get(0) else {
+                continue;
+            };
+            let Some(arg_match) = caps.get(1) else {
+                continue;
+            };
             let arg = arg_match.as_str().trim();
 
             if is_likely_string_literal(arg) {
@@ -86,13 +104,19 @@ fn detect_regex_injection(decoded: &str) -> Option<(usize, &'static str, f64)> {
 #[inline]
 fn detect_nested_quantifier(decoded: &str) -> Option<(usize, &'static str, f64)> {
     static NESTED_QUANT_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"\((?:[^()\\]|\\.)*(?:\+|\*|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:\+|\*|\{\d+,?\d*\})").unwrap()
+        Regex::new(
+            r"\((?:[^()\\]|\\.)*(?:\+|\*|\{\d+,?\d*\})(?:[^()\\]|\\.)*\)\s*(?:\+|\*|\{\d+,?\d*\})",
+        )
+        .unwrap()
     });
 
     let m = NESTED_QUANT_RE.find(decoded)?;
     let segment = m.as_str();
 
-    let complex = segment.contains("{") || segment.contains('|') || segment.contains(".*") || segment.contains(".+");
+    let complex = segment.contains("{")
+        || segment.contains('|')
+        || segment.contains(".*")
+        || segment.contains(".+");
     let confidence = if complex { 0.85 } else { 0.70 };
     let label = if complex {
         "complex nested quantifier pattern"
@@ -110,8 +134,12 @@ fn detect_overlapping_alternation(decoded: &str) -> Option<(usize, &'static str,
     });
 
     for caps in ALT_GROUP_REPEAT_RE.captures_iter(decoded) {
-        let Some(group) = caps.get(1) else { continue; };
-        let Some(full) = caps.get(0) else { continue; };
+        let Some(group) = caps.get(1) else {
+            continue;
+        };
+        let Some(full) = caps.get(0) else {
+            continue;
+        };
 
         let branches = group
             .as_str()
@@ -127,7 +155,11 @@ fn detect_overlapping_alternation(decoded: &str) -> Option<(usize, &'static str,
         for (i, a) in branches.iter().enumerate() {
             for b in branches.iter().skip(i + 1) {
                 if a == b || a.starts_with(b) || b.starts_with(a) {
-                    return Some((full.start(), "overlapping alternation under repetition", 0.85));
+                    return Some((
+                        full.start(),
+                        "overlapping alternation under repetition",
+                        0.85,
+                    ));
                 }
             }
         }
@@ -150,8 +182,9 @@ fn detect_catastrophic_charclass_overlap(decoded: &str) -> Option<(usize, &'stat
 fn detect_exponential_trigger(decoded: &str) -> Option<(usize, &'static str, f64)> {
     static EXP_TRIGGER_INPUT_RE: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(r"[a-zA-Z0-9]{8,}!").unwrap());
-    static VULN_REGEX_SIGNATURE_RE: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"\([a-zA-Z0-9]\+\)\+\$|\(\.\+\)\+\$|\(\[\^?[^\]]+\]\+\)\+\$").unwrap());
+    static VULN_REGEX_SIGNATURE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\([a-zA-Z0-9]\+\)\+\$|\(\.\+\)\+\$|\(\[\^?[^\]]+\]\+\)\+\$").unwrap()
+    });
 
     let Some(input_match) = EXP_TRIGGER_INPUT_RE.find(decoded) else {
         return None;
@@ -160,7 +193,11 @@ fn detect_exponential_trigger(decoded: &str) -> Option<(usize, &'static str, f64
         return None;
     }
 
-    Some((input_match.start(), "exponential backtracking trigger pattern", 0.85))
+    Some((
+        input_match.start(),
+        "exponential backtracking trigger pattern",
+        0.85,
+    ))
 }
 
 #[inline]
@@ -170,7 +207,11 @@ fn detect_evil_group_unbounded(decoded: &str) -> Option<(usize, &'static str, f6
     });
 
     let m = EVIL_GROUP_RE.find(decoded)?;
-    Some((m.start(), "unbounded repetition inside repeated group", 0.85))
+    Some((
+        m.start(),
+        "unbounded repetition inside repeated group",
+        0.85,
+    ))
 }
 
 pub fn evaluate_redos(input: &str) -> Option<L2EvalResult> {
@@ -223,9 +264,9 @@ pub fn evaluate_redos(input: &str) -> Option<L2EvalResult> {
     let position = signals.first().map(|(_, pos, _, _)| *pos).unwrap_or(0);
     let operation = signals
         .iter()
-            .find(|(_, _, _, op)| *op == EvidenceOperation::PayloadInject)
-            .map(|(_, _, _, op)| *op)
-            .unwrap_or(EvidenceOperation::SemanticEval);
+        .find(|(_, _, _, op)| *op == EvidenceOperation::PayloadInject)
+        .map(|(_, _, _, op)| *op)
+        .unwrap_or(EvidenceOperation::SemanticEval);
 
     let detail = format!(
         "ReDoS/regex abuse indicators: {}",
@@ -329,14 +370,20 @@ mod tests {
         let payload = r#"/(a+)+$/.test(\"aaaaaaaaaaaa!\")"#;
         let det = evaluate_redos(payload).expect("expected exponential trigger detection");
         assert_eq!(det.confidence, 0.85);
-        assert!(det.detail.contains("exponential backtracking trigger pattern"));
+        assert!(
+            det.detail
+                .contains("exponential backtracking trigger pattern")
+        );
     }
 
     #[test]
     fn detects_evil_unbounded_group_pattern() {
         let det = evaluate_redos("(.+)+$").expect("expected evil group detection");
         assert_eq!(det.confidence, 0.85);
-        assert!(det.detail.contains("unbounded repetition inside repeated group"));
+        assert!(
+            det.detail
+                .contains("unbounded repetition inside repeated group")
+        );
     }
 
     #[test]

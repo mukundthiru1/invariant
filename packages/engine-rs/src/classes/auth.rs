@@ -4,14 +4,24 @@ use std::sync::LazyLock;
 use crate::classes::{ClassDefinition, decode};
 use crate::types::InvariantClass;
 
-static AUTH_NONE_JSON: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""alg"\s*:\s*"none""#).unwrap());
-static AUTH_NONE_B64: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)eyJhbGciOiJub25l").unwrap());
-static HEADER_SPOOF_CUSTOM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)x-[a-z-]*(?:ip|authorization)[a-z-]*:\s*(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|0\.0\.0\.0|localhost)").unwrap());
+static AUTH_NONE_JSON: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""alg"\s*:\s*"none""#).unwrap());
+static AUTH_NONE_B64: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)eyJhbGciOiJub25l").unwrap());
+static HEADER_SPOOF_CUSTOM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)x-[a-z-]*(?:ip|authorization)[a-z-]*:\s*(?:127\.|10\.|172\.(?:1[6-9]|2\d|3[01])\.|192\.168\.|0\.0\.0\.0|localhost)").unwrap()
+});
 
-static JWT_CTX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\beyJ[A-Za-z0-9_-]{10,}\.|\b(?:jwt|bearer|authorization|token)\b|\{"(?:alg|typ|kid|jwk|jku|x5[cu])""#).unwrap());
-static JWT_KID_MATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""kid"\s*:\s*"((?:[^"\\]|\\.)*)""#).unwrap());
-static JWT_KID_SQL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:union\s+select|'\s*(?:or|and)\s+|;\s*(?:drop|select|insert)|--\s*$)").unwrap());
-static JWT_KID_CMD_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(?:cat|curl|wget|bash|sh|id|whoami)\b").unwrap());
+static JWT_CTX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\beyJ[A-Za-z0-9_-]{10,}\.|\b(?:jwt|bearer|authorization|token)\b|\{"(?:alg|typ|kid|jwk|jku|x5[cu])""#).unwrap()
+});
+static JWT_KID_MATCH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""kid"\s*:\s*"((?:[^"\\]|\\.)*)""#).unwrap());
+static JWT_KID_SQL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:union\s+select|'\s*(?:or|and)\s+|;\s*(?:drop|select|insert)|--\s*$)").unwrap()
+});
+static JWT_KID_CMD_WORD: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:cat|curl|wget|bash|sh|id|whoami)\b").unwrap());
 
 fn auth_none_algorithm(input: &str) -> bool {
     let d = decode(input);
@@ -20,10 +30,14 @@ fn auth_none_algorithm(input: &str) -> bool {
 
 fn auth_header_spoof(input: &str) -> bool {
     let i = input.to_ascii_lowercase();
-    if i.contains("x-forwarded-for:") || i.contains("x-original-url:") || i.contains("x-rewrite-url:") {
+    if i.contains("x-forwarded-for:")
+        || i.contains("x-original-url:")
+        || i.contains("x-rewrite-url:")
+    {
         return true;
     }
-    if i.contains("x-real-ip:") || i.contains("x-client-ip:") || i.contains("x-cluster-client-ip:") {
+    if i.contains("x-real-ip:") || i.contains("x-client-ip:") || i.contains("x-cluster-client-ip:")
+    {
         return true;
     }
     HEADER_SPOOF_CUSTOM.is_match(input)
@@ -31,10 +45,16 @@ fn auth_header_spoof(input: &str) -> bool {
 
 fn cors_origin_abuse(input: &str) -> bool {
     let d = decode(input);
-    Regex::new(r"Origin\s*:\s*https?://evil\.com").unwrap().is_match(&d)
+    Regex::new(r"Origin\s*:\s*https?://evil\.com")
+        .unwrap()
+        .is_match(&d)
         || Regex::new(r"Origin\s*:\s*null").unwrap().is_match(&d)
-        || Regex::new(r"Origin\s*:\s*https?://[^.\s]+\.[^.\s]+\.[^.\s]+\.[^.\s]+").unwrap().is_match(&d)
-        || Regex::new(r"Origin\s*:.*(?:%60|%00|%0[dD]|%0[aA])").unwrap().is_match(&d)
+        || Regex::new(r"Origin\s*:\s*https?://[^.\s]+\.[^.\s]+\.[^.\s]+\.[^.\s]+")
+            .unwrap()
+            .is_match(&d)
+        || Regex::new(r"Origin\s*:.*(?:%60|%00|%0[dD]|%0[aA])")
+            .unwrap()
+            .is_match(&d)
 }
 
 fn jwt_kid_injection(input: &str) -> bool {
@@ -66,9 +86,13 @@ fn jwt_jwk_embedding(input: &str) -> bool {
     (Regex::new(r#""jwk"\s*:\s*\{"#).unwrap().is_match(&d)
         && Regex::new(r#""kty"\s*:\s*""#).unwrap().is_match(&d)
         && Regex::new(r#""alg"\s*:\s*""#).unwrap().is_match(&d))
-        || (Regex::new(r#""jku"\s*:\s*"https?://"#).unwrap().is_match(&d)
+        || (Regex::new(r#""jku"\s*:\s*"https?://"#)
+            .unwrap()
+            .is_match(&d)
             && Regex::new(r#""alg"\s*:\s*""#).unwrap().is_match(&d))
-        || (Regex::new(r#""x5u"\s*:\s*"https?://"#).unwrap().is_match(&d)
+        || (Regex::new(r#""x5u"\s*:\s*"https?://"#)
+            .unwrap()
+            .is_match(&d)
             && Regex::new(r#""alg"\s*:\s*""#).unwrap().is_match(&d))
 }
 
@@ -77,13 +101,23 @@ fn jwt_confusion(input: &str) -> bool {
     if !JWT_CTX.is_match(&d) {
         return false;
     }
-    let hmac_alg = Regex::new(r#""alg"\s*:\s*"HS(?:256|384|512)""#).unwrap().is_match(&d);
+    let hmac_alg = Regex::new(r#""alg"\s*:\s*"HS(?:256|384|512)""#)
+        .unwrap()
+        .is_match(&d);
     if !hmac_alg {
         return false;
     }
-    Regex::new(r#"(?i)"kid"\s*:\s*"[^"]*(?:rsa|public|pub[_-]?key|asymmetric)""#).unwrap().is_match(&d)
-        || Regex::new(r"(?i)(?:rsa\s+)?public\s+key\s+(?:as|for|used\s+as)\s+(?:hmac|secret|symmetric)").unwrap().is_match(&d)
-        || Regex::new(r"(?i)-----BEGIN\s+(?:RSA\s+)?PUBLIC\s+KEY-----").unwrap().is_match(&d)
+    Regex::new(r#"(?i)"kid"\s*:\s*"[^"]*(?:rsa|public|pub[_-]?key|asymmetric)""#)
+        .unwrap()
+        .is_match(&d)
+        || Regex::new(
+            r"(?i)(?:rsa\s+)?public\s+key\s+(?:as|for|used\s+as)\s+(?:hmac|secret|symmetric)",
+        )
+        .unwrap()
+        .is_match(&d)
+        || Regex::new(r"(?i)-----BEGIN\s+(?:RSA\s+)?PUBLIC\s+KEY-----")
+            .unwrap()
+            .is_match(&d)
 }
 
 pub const AUTH_CLASSES: &[ClassDefinition] = &[
@@ -91,7 +125,9 @@ pub const AUTH_CLASSES: &[ClassDefinition] = &[
         id: InvariantClass::AuthNoneAlgorithm,
         description: "JWT alg:none attack to bypass signature verification entirely",
         detect: auth_none_algorithm,
-        known_payloads: &["eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ."],
+        known_payloads: &[
+            "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ.",
+        ],
         known_benign: &[
             "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
             "not.a.jwt.token",
@@ -124,8 +160,18 @@ pub const AUTH_CLASSES: &[ClassDefinition] = &[
         id: InvariantClass::CorsOriginAbuse,
         description: "CORS origin abuse — crafted Origin headers to steal data cross-origin from misconfigured APIs",
         detect: cors_origin_abuse,
-        known_payloads: &["Origin: https://evil.com", "Origin: null", "Origin: https://target.com.evil.com", "Origin: https://target.com%60.evil.com"],
-        known_benign: &["Origin: https://example.com", "origin story", "the origin of species", "https://api.internal.com"],
+        known_payloads: &[
+            "Origin: https://evil.com",
+            "Origin: null",
+            "Origin: https://target.com.evil.com",
+            "Origin: https://target.com%60.evil.com",
+        ],
+        known_benign: &[
+            "Origin: https://example.com",
+            "origin story",
+            "the origin of species",
+            "https://api.internal.com",
+        ],
         mitre: &["T1557"],
         cwe: Some("CWE-346"),
         formal_property: None,
@@ -178,7 +224,11 @@ pub const AUTH_CLASSES: &[ClassDefinition] = &[
             "{\"alg\":\"HS384\",\"typ\":\"JWT\",\"kid\":\"rsa-pub-key\"}",
             "{\"alg\":\"HS512\"} -----BEGIN PUBLIC KEY-----",
         ],
-        known_benign: &["{\"alg\":\"HS256\",\"typ\":\"JWT\"}", "{\"alg\":\"RS256\",\"typ\":\"JWT\"}", "{\"alg\":\"ES256\",\"typ\":\"JWT\"}"],
+        known_benign: &[
+            "{\"alg\":\"HS256\",\"typ\":\"JWT\"}",
+            "{\"alg\":\"RS256\",\"typ\":\"JWT\"}",
+            "{\"alg\":\"ES256\",\"typ\":\"JWT\"}",
+        ],
         mitre: &["T1550.001"],
         cwe: Some("CWE-327"),
         formal_property: None,

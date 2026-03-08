@@ -8,8 +8,12 @@ use std::collections::HashMap;
 pub struct WebSocketEvaluator;
 
 impl L2Evaluator for WebSocketEvaluator {
-    fn id(&self) -> &'static str { "websocket" }
-    fn prefix(&self) -> &'static str { "L2 WebSocket" }
+    fn id(&self) -> &'static str {
+        "websocket"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 WebSocket"
+    }
 
     #[inline]
 
@@ -20,8 +24,9 @@ impl L2Evaluator for WebSocketEvaluator {
         // WS message with embedded SQL/XSS/command injection
         static JSONISH_FRAME_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"\{[\s\S]*\}").unwrap());
-        static WS_KEYWORD_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:websocket|ws[_-]?(?:message|frame))").unwrap());
+        static WS_KEYWORD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:websocket|ws[_-]?(?:message|frame))").unwrap()
+        });
         let looks_like_ws = JSONISH_FRAME_RE.is_match(&decoded) || WS_KEYWORD_RE.is_match(&decoded);
 
         if looks_like_ws {
@@ -40,14 +45,17 @@ impl L2Evaluator for WebSocketEvaluator {
                         matched_input: decoded[..decoded.len().min(80)].to_owned(),
                         interpretation: "WebSocket message carries SQL injection payload".into(),
                         offset: 0,
-                        property: "WebSocket message payloads must be validated against injection".into(),
+                        property: "WebSocket message payloads must be validated against injection"
+                            .into(),
                     }],
                 });
             }
 
             // XSS in WS
-            static WS_XSS_RE: std::sync::LazyLock<Regex> =
-                std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:<script[\s>]|javascript\s*:|\bon(?:error|load|click)\s*=)").unwrap());
+            static WS_XSS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)(?:<script[\s>]|javascript\s*:|\bon(?:error|load|click)\s*=)")
+                    .unwrap()
+            });
             if WS_XSS_RE.is_match(&decoded) {
                 dets.push(L2Detection {
                     detection_type: "ws_xss".into(),
@@ -70,9 +78,11 @@ impl L2Evaluator for WebSocketEvaluator {
             std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*upgrade\s*:\s*websocket\b").unwrap());
         let has_upgrade = UPGRADE_RE.is_match(&decoded);
         if has_upgrade {
-            static SUSPICIOUS_ORIGIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                Regex::new(r"(?im)^\s*origin\s*:\s*(?:null|https?://(?:evil|attacker|malicious|phish|exploit))").unwrap()
-            });
+            static SUSPICIOUS_ORIGIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+                || {
+                    Regex::new(r"(?im)^\s*origin\s*:\s*(?:null|https?://(?:evil|attacker|malicious|phish|exploit))").unwrap()
+                },
+            );
             static SEC_WS_KEY_RE: std::sync::LazyLock<Regex> =
                 std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*sec-websocket-key\s*:").unwrap());
             let suspicious_origin = SUSPICIOUS_ORIGIN_RE.is_match(&decoded);
@@ -82,16 +92,29 @@ impl L2Evaluator for WebSocketEvaluator {
                 dets.push(L2Detection {
                     detection_type: "ws_hijack".into(),
                     confidence: 0.85,
-                    detail: format!("WebSocket hijack attempt{}{}",
-                        if suspicious_origin { " (suspicious origin)" } else { "" },
-                        if missing_key { " (missing Sec-WebSocket-Key)" } else { "" }),
+                    detail: format!(
+                        "WebSocket hijack attempt{}{}",
+                        if suspicious_origin {
+                            " (suspicious origin)"
+                        } else {
+                            ""
+                        },
+                        if missing_key {
+                            " (missing Sec-WebSocket-Key)"
+                        } else {
+                            ""
+                        }
+                    ),
                     position: 0,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::ContextEscape,
                         matched_input: "Upgrade: websocket".into(),
-                        interpretation: "WebSocket upgrade with missing or suspicious security headers".into(),
+                        interpretation:
+                            "WebSocket upgrade with missing or suspicious security headers".into(),
                         offset: 0,
-                        property: "WebSocket upgrades must validate origin and include security headers".into(),
+                        property:
+                            "WebSocket upgrades must validate origin and include security headers"
+                                .into(),
                     }],
                 });
             }
@@ -123,8 +146,9 @@ impl L2Evaluator for WebSocketEvaluator {
         }
 
         // WS command injection: shell metacharacters in JSON string values
-        static WS_CMD_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:\||;|`)[^"\r\n]*""#).unwrap());
+        static WS_CMD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:\||;|`)[^"\r\n]*""#).unwrap()
+        });
         if WS_CMD_RE.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ws_command_injection".into(),
@@ -142,8 +166,9 @@ impl L2Evaluator for WebSocketEvaluator {
         }
 
         // WS path traversal via message fields
-        static WS_PATH_TRAVERSAL_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:\.\./){2,}[^"\r\n]*""#).unwrap());
+        static WS_PATH_TRAVERSAL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"[^"]+"\s*:\s*"[^"\r\n]*(?:\.\./){2,}[^"\r\n]*""#).unwrap()
+        });
         if WS_PATH_TRAVERSAL_RE.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ws_path_traversal".into(),
@@ -161,12 +186,13 @@ impl L2Evaluator for WebSocketEvaluator {
         }
 
         // WS auth bypass: null/empty/admin marker in auth or token fields
-        static WS_AUTH_EMPTY_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)"(?:auth|token|accessToken|session)"\s*:\s*(?:null|""|'')"#).unwrap());
-        static WS_AUTH_ADMIN_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)"(?:auth|token|role)"\s*:\s*"admin""#).unwrap());
-        if WS_AUTH_EMPTY_RE.is_match(&decoded) || WS_AUTH_ADMIN_RE.is_match(&decoded)
-        {
+        static WS_AUTH_EMPTY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"(?:auth|token|accessToken|session)"\s*:\s*(?:null|""|'')"#).unwrap()
+        });
+        static WS_AUTH_ADMIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"(?:auth|token|role)"\s*:\s*"admin""#).unwrap()
+        });
+        if WS_AUTH_EMPTY_RE.is_match(&decoded) || WS_AUTH_ADMIN_RE.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ws_auth_bypass".into(),
                 confidence: 0.87,
@@ -184,7 +210,8 @@ impl L2Evaluator for WebSocketEvaluator {
 
         // WS message flooding / replay: repeated identical frame payloads
         if looks_like_ws {
-            static frame_re: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?s)\{[^{}\r\n]{2,300}\}"#).unwrap());
+            static frame_re: std::sync::LazyLock<Regex> =
+                std::sync::LazyLock::new(|| Regex::new(r#"(?s)\{[^{}\r\n]{2,300}\}"#).unwrap());
             let mut seen: HashMap<String, usize> = HashMap::new();
             for m in frame_re.find_iter(&decoded) {
                 let frame = m.as_str().trim().to_owned();
@@ -242,8 +269,12 @@ impl L2Evaluator for WebSocketEvaluator {
             "ws_sql_injection" | "ws_xss" => Some(InvariantClass::WsInjection),
             "ws_hijack" => Some(InvariantClass::WsHijack),
             "ws_command_injection" | "ws_path_traversal" => Some(InvariantClass::WsInjection),
-            "ws_csws_hijack" | "ws_auth_bypass" | "ws_message_flood" => Some(InvariantClass::WsHijack),
-            "ws_control_frame_injection" | "ws_fragmentation_abuse" | "ws_tunneling" => Some(InvariantClass::WsInjection),
+            "ws_csws_hijack" | "ws_auth_bypass" | "ws_message_flood" => {
+                Some(InvariantClass::WsHijack)
+            }
+            "ws_control_frame_injection" | "ws_fragmentation_abuse" | "ws_tunneling" => {
+                Some(InvariantClass::WsInjection)
+            }
             "ws_csws_origin_mismatch"
             | "ws_subprotocol_abuse"
             | "ws_extension_abuse"
@@ -257,8 +288,9 @@ impl L2Evaluator for WebSocketEvaluator {
 fn detect_csws_origin_mismatch(decoded: &str) -> Option<L2Detection> {
     static UPGRADE_RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*upgrade\s*:\s*websocket\b").unwrap());
-    static ORIGIN_HOST_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*origin\s*:\s*https?://([^/\s:]+)").unwrap());
+    static ORIGIN_HOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?im)^\s*origin\s*:\s*https?://([^/\s:]+)").unwrap()
+    });
     static HOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r"(?im)^\s*host\s*:\s*([a-z0-9][a-z0-9\.-]*[a-z0-9])(?::\d+)?\s*$").unwrap()
     });
@@ -360,7 +392,8 @@ fn detect_websocket_tunneling(decoded: &str) -> Option<L2Detection> {
         Regex::new(r"(?is)\bconnect\s+[a-z0-9\.-]+:\d{2,5}\s+http/1\.[01]\b").unwrap()
     });
     static SOCKS_TUNNEL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r"(?i)(?:\bsocks(?:4|5)?\b|\bsocks\s*proxy\b|\\x05\\x01\\x00|0x05 0x01 0x00)").unwrap()
+        Regex::new(r"(?i)(?:\bsocks(?:4|5)?\b|\bsocks\s*proxy\b|\\x05\\x01\\x00|0x05 0x01 0x00)")
+            .unwrap()
     });
 
     let has_connect_tunnel = CONNECT_TUNNEL_RE.is_match(decoded);
@@ -389,10 +422,12 @@ fn detect_websocket_tunneling(decoded: &str) -> Option<L2Detection> {
 }
 
 fn detect_websocket_subprotocol_abuse(decoded: &str) -> Option<L2Detection> {
-    static SUBPROTOCOL_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*sec-websocket-protocol\s*:\s*([^\r\n]+)\s*$").unwrap());
-    static DOWNGRADE_TOKEN_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?i)\b(?:draft76|draft75|hybi-00|v0|version=0)\b").unwrap());
+    static SUBPROTOCOL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?im)^\s*sec-websocket-protocol\s*:\s*([^\r\n]+)\s*$").unwrap()
+    });
+    static DOWNGRADE_TOKEN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)\b(?:draft76|draft75|hybi-00|v0|version=0)\b").unwrap()
+    });
     static CONFUSION_TOKEN_RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"(?i)\b(?:http/1\.1|h2c|spdy|raw)\b").unwrap());
 
@@ -414,7 +449,8 @@ fn detect_websocket_subprotocol_abuse(decoded: &str) -> Option<L2Detection> {
     let has_duplicates = seen.values().any(|count| *count > 1);
     let has_downgrade = DOWNGRADE_TOKEN_RE.is_match(&value);
     let has_confusion_token = CONFUSION_TOKEN_RE.is_match(&value);
-    let mixed_graphql_protocols = value.contains("graphql-ws") && value.contains("graphql-transport-ws");
+    let mixed_graphql_protocols =
+        value.contains("graphql-ws") && value.contains("graphql-transport-ws");
 
     if !has_duplicates && !has_downgrade && !has_confusion_token && !mixed_graphql_protocols {
         return None;
@@ -436,8 +472,9 @@ fn detect_websocket_subprotocol_abuse(decoded: &str) -> Option<L2Detection> {
 }
 
 fn detect_websocket_extension_abuse(decoded: &str) -> Option<L2Detection> {
-    static EXT_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*sec-websocket-extensions\s*:\s*([^\r\n]+)\s*$").unwrap());
+    static EXT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?im)^\s*sec-websocket-extensions\s*:\s*([^\r\n]+)\s*$").unwrap()
+    });
     static WINDOW_BITS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r"(?i)\b(?:client|max|server)_window_bits\s*=\s*(\d{1,3})\b").unwrap()
     });
@@ -495,7 +532,10 @@ fn detect_websocket_masking_key_prediction(decoded: &str) -> Option<L2Detection>
     }
 
     let has_zero_mask = counts.contains_key("00000000");
-    let repeated_key = counts.iter().find(|(_, count)| **count >= 2).map(|(key, _)| key.clone());
+    let repeated_key = counts
+        .iter()
+        .find(|(_, count)| **count >= 2)
+        .map(|(key, _)| key.clone());
     if !has_zero_mask && repeated_key.is_none() {
         return None;
     }
@@ -596,7 +636,10 @@ mod tests {
         let eval = WebSocketEvaluator;
         let input = r#"{"action":"run","cmd":"cat /etc/passwd; id"}"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_command_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_command_injection")
+        );
     }
 
     #[test]
@@ -631,7 +674,10 @@ mod tests {
         let eval = WebSocketEvaluator;
         let input = "GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: abc123==\r\nOrigin: https://evil.example.net\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_csws_origin_mismatch"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_csws_origin_mismatch")
+        );
     }
 
     #[test]
@@ -639,7 +685,10 @@ mod tests {
         let eval = WebSocketEvaluator;
         let input = r#"ws_frame opcode=0xB fin=1 payload_len=1"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_control_frame_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_control_frame_injection")
+        );
     }
 
     #[test]
@@ -650,7 +699,10 @@ frame2 fin=0 opcode=0x0 continuation
 frame3 fin=0 opcode=0x0 continuation
 frame4 fin=1 opcode=0x0"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_fragmentation_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_fragmentation_abuse")
+        );
     }
 
     #[test]
@@ -674,7 +726,10 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = "GET /socket HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Protocol: graphql-ws, draft76\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_subprotocol_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_subprotocol_abuse")
+        );
     }
 
     #[test]
@@ -682,7 +737,10 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = "GET /socket HTTP/1.1\r\nUpgrade: websocket\r\nSec-WebSocket-Extensions: permessage-deflate; server_window_bits=32\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_extension_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_extension_abuse")
+        );
     }
 
     #[test]
@@ -690,7 +748,10 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = "masking-key=deadbeef\nmasking-key=deadbeef\nmasking-key=cafebabe";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_masking_key_prediction"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_masking_key_prediction")
+        );
     }
 
     #[test]
@@ -698,7 +759,10 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = "mask_key: 00000000";
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_masking_key_prediction"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_masking_key_prediction")
+        );
     }
 
     #[test]
@@ -706,7 +770,10 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = r#"{"opcode":8,"close_code":999,"reason":"bye"}"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_close_frame_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_close_frame_abuse")
+        );
     }
 
     #[test]
@@ -714,6 +781,9 @@ frame4 fin=1 opcode=0x0"#;
         let eval = WebSocketEvaluator;
         let input = format!(r#"close_code=1000 reason="{}""#, "a".repeat(130));
         let dets = eval.detect(&input);
-        assert!(dets.iter().any(|d| d.detection_type == "ws_close_frame_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ws_close_frame_abuse")
+        );
     }
 }

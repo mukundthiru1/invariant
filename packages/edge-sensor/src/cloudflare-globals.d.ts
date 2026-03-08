@@ -1,4 +1,10 @@
 declare global {
+    var crypto: Crypto
+
+    interface GlobalThis {
+        crypto: Crypto
+    }
+
     interface ExecutionContext {
         waitUntil(promise: Promise<unknown>): void
         passThroughOnException?(): void

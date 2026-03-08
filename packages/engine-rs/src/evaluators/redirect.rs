@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct RedirectEvaluator;
 
 impl L2Evaluator for RedirectEvaluator {
-    fn id(&self) -> &'static str { "redirect" }
-    fn prefix(&self) -> &'static str { "L2 Redirect" }
+    fn id(&self) -> &'static str {
+        "redirect"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 Redirect"
+    }
 
     #[inline]
 
@@ -34,7 +38,10 @@ impl L2Evaluator for RedirectEvaluator {
             dets.push(L2Detection {
                 detection_type: "open_redirect".into(),
                 confidence: 0.85,
-                detail: format!("Protocol-relative URL redirect: {}", &decoded[..decoded.len().min(60)]),
+                detail: format!(
+                    "Protocol-relative URL redirect: {}",
+                    &decoded[..decoded.len().min(60)]
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
@@ -52,7 +59,10 @@ impl L2Evaluator for RedirectEvaluator {
                 dets.push(L2Detection {
                     detection_type: "open_redirect".into(),
                     confidence: 0.80,
-                    detail: format!("Absolute URL in redirect context: {}", &decoded[..decoded.len().min(60)]),
+                    detail: format!(
+                        "Absolute URL in redirect context: {}",
+                        &decoded[..decoded.len().min(60)]
+                    ),
                     position: 0,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
@@ -66,12 +76,17 @@ impl L2Evaluator for RedirectEvaluator {
         }
 
         // Open redirect with data URI payload: data:text/html,<script>alert(1)</script>
-        static data_uri: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)data:text/html,").unwrap());
+        static data_uri: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)data:text/html,").unwrap()
+        });
         if data_uri.is_match(&decoded) || decoded.starts_with("data:text/html,") {
             dets.push(L2Detection {
                 detection_type: "data_uri_redirect".into(),
                 confidence: 0.96,
-                detail: format!("Data URI redirect payload: {}", &decoded[..decoded.len().min(60)]),
+                detail: format!(
+                    "Data URI redirect payload: {}",
+                    &decoded[..decoded.len().min(60)]
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -84,12 +99,17 @@ impl L2Evaluator for RedirectEvaluator {
         }
 
         // Open redirect with javascript: scheme
-        static js_uri: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)javascript:").unwrap());
+        static js_uri: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)javascript:").unwrap()
+        });
         if js_uri.is_match(&decoded) || decoded.starts_with("javascript:") {
             dets.push(L2Detection {
                 detection_type: "javascript_uri_redirect".into(),
                 confidence: 0.97,
-                detail: format!("javascript URI redirect payload: {}", &decoded[..decoded.len().min(60)]),
+                detail: format!(
+                    "javascript URI redirect payload: {}",
+                    &decoded[..decoded.len().min(60)]
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -102,7 +122,9 @@ impl L2Evaluator for RedirectEvaluator {
         }
 
         // User-info bypass: https://allowed.com@evil.com
-        static userinfo_bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)^(?:https?|ftp)://[^/@\s?#]+@[^\s/?#]+(?:/.*)?$").unwrap());
+        static userinfo_bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)^(?:https?|ftp)://[^/@\s?#]+@[^\s/?#]+(?:/.*)?$").unwrap()
+        });
         if userinfo_bypass.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "userinfo_bypass_redirect".into(),
@@ -112,15 +134,23 @@ impl L2Evaluator for RedirectEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded[..decoded.len().min(70)].to_owned(),
-                    interpretation: "User-info component can confuse host handling in redirect parsers".into(),
+                    interpretation:
+                        "User-info component can confuse host handling in redirect parsers".into(),
                     offset: 0,
-                    property: "Redirect host validation must reject user-info based authority confusion".into(),
+                    property:
+                        "Redirect host validation must reject user-info based authority confusion"
+                            .into(),
                 }],
             });
         }
 
         // OAuth redirect URI externalization
-        static oauth_param: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&])(?:redirect_uri|redirect_url|callback|return_to)\s*=\s*([^&]+)").unwrap());
+        static oauth_param: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r"(?i)(?:^|[?&])(?:redirect_uri|redirect_url|callback|return_to)\s*=\s*([^&]+)",
+            )
+            .unwrap()
+        });
         if let Some(caps) = oauth_param.captures(&decoded) {
             let target = caps.get(1).map(|m| m.as_str()).unwrap_or("");
             if ABS_URL_RE.is_match(target) {
@@ -132,17 +162,23 @@ impl L2Evaluator for RedirectEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: target.to_owned(),
-                        interpretation: "Untrusted redirect callback target in OAuth parameter".into(),
+                        interpretation: "Untrusted redirect callback target in OAuth parameter"
+                            .into(),
                         offset: 0,
-                        property: "OAuth redirect parameters should be validated against allowlist".into(),
+                        property: "OAuth redirect parameters should be validated against allowlist"
+                            .into(),
                     }],
                 });
             }
         }
 
         // URL fragment abuse: #@evil.com
-        static fragment_abuse: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)^(?:https?|ftp)://[^#\s]+#@[^#\s]+").unwrap());
-        static fragment_param: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=[^&]*#@[^&]*").unwrap());
+        static fragment_abuse: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)^(?:https?|ftp)://[^#\s]+#@[^#\s]+").unwrap()
+        });
+        static fragment_param: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=[^&]*#@[^&]*").unwrap()
+        });
         if fragment_abuse.is_match(&decoded) || fragment_param.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "fragment_authority_redirect".into(),
@@ -152,16 +188,23 @@ impl L2Evaluator for RedirectEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: decoded[..decoded.len().min(70)].to_owned(),
-                    interpretation: "Fragments with '@' can alter effective URL authority parsing".into(),
+                    interpretation: "Fragments with '@' can alter effective URL authority parsing"
+                        .into(),
                     offset: 0,
-                    property: "Redirect URL parser should normalize fragment handling before routing".into(),
+                    property:
+                        "Redirect URL parser should normalize fragment handling before routing"
+                            .into(),
                 }],
             });
         }
 
         // Double-encoded redirect payload: %252f%252f
-        static double_encoded_redirect: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)%25(?:2[fF])%25(?:2[fF])").unwrap());
-        if all_forms.iter().any(|f| double_encoded_redirect.is_match(f)) {
+        static double_encoded_redirect: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)%25(?:2[fF])%25(?:2[fF])").unwrap());
+        if all_forms
+            .iter()
+            .any(|f| double_encoded_redirect.is_match(f))
+        {
             let matched_input = all_forms
                 .iter()
                 .find(|f| double_encoded_redirect.is_match(f))
@@ -170,7 +213,10 @@ impl L2Evaluator for RedirectEvaluator {
             dets.push(L2Detection {
                 detection_type: "double_encoded_redirect".into(),
                 confidence: 0.89,
-                detail: format!("Double-encoded redirect syntax: {}", &decoded[..decoded.len().min(50)]),
+                detail: format!(
+                    "Double-encoded redirect syntax: {}",
+                    &decoded[..decoded.len().min(50)]
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
@@ -192,7 +238,9 @@ impl L2Evaluator for RedirectEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: decoded[..decoded.len().min(30)].to_owned(),
-                    interpretation: "Backslash trick causes browser to interpret as protocol-relative URL".into(),
+                    interpretation:
+                        "Backslash trick causes browser to interpret as protocol-relative URL"
+                            .into(),
                     offset: 0,
                     property: "Redirect targets must be validated against an allowlist".into(),
                 }],
@@ -207,22 +255,31 @@ impl L2Evaluator for RedirectEvaluator {
             dets.push(L2Detection {
                 detection_type: "protocol_relative_param_redirect".into(),
                 confidence: 0.91,
-                detail: format!("Protocol-relative redirect target in parameter: {}", m.as_str()),
+                detail: format!(
+                    "Protocol-relative redirect target in parameter: {}",
+                    m.as_str()
+                ),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Redirect parameter value resolves to protocol-relative external authority".into(),
+                    interpretation:
+                        "Redirect parameter value resolves to protocol-relative external authority"
+                            .into(),
                     offset: m.start(),
-                    property: "Redirect parameters must reject protocol-relative forms before decoding".into(),
+                    property:
+                        "Redirect parameters must reject protocol-relative forms before decoding"
+                            .into(),
                 }],
             });
         }
 
         // Backslash confusion via encoded or mixed slash/backslash path.
-        static BACKSLASH_CONFUSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)(?:\\\\|/\\|%5c%5c|/%5c|%2f%5c)").unwrap()
-        });
+        static BACKSLASH_CONFUSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r"(?i)(?:^|[?&](?:redirect|return|next|url|goto|target|dest|continue|rurl|redir|callback|redirect_uri|redirect_url|return_to)=)(?:\\\\|/\\|%5c%5c|/%5c|%2f%5c)").unwrap()
+            },
+        );
         if let Some(m) = BACKSLASH_CONFUSION_RE.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "backslash_confusion_redirect".into(),
@@ -272,9 +329,13 @@ impl L2Evaluator for RedirectEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Encoded/decoded executable scheme survives redirect parameter handling".into(),
+                    interpretation:
+                        "Encoded/decoded executable scheme survives redirect parameter handling"
+                            .into(),
                     offset: m.start(),
-                    property: "Redirect parameter schemes must be constrained to safe same-origin targets".into(),
+                    property:
+                        "Redirect parameter schemes must be constrained to safe same-origin targets"
+                            .into(),
                 }],
             });
         }
@@ -333,12 +394,19 @@ impl L2Evaluator for RedirectEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "open_redirect" | "data_uri_redirect" | "javascript_uri_redirect" | "userinfo_bypass_redirect"
-            | "oauth_redirect_bypass" | "fragment_authority_redirect" | "double_encoded_redirect"
-            | "protocol_relative_param_redirect" | "backslash_confusion_redirect"
-            | "url_parser_differential_redirect" | "dangerous_scheme_param_redirect"
-            | "crlf_redirect_injection" | "unicode_normalization_redirect"
-                => Some(InvariantClass::OpenRedirectBypass),
+            "open_redirect"
+            | "data_uri_redirect"
+            | "javascript_uri_redirect"
+            | "userinfo_bypass_redirect"
+            | "oauth_redirect_bypass"
+            | "fragment_authority_redirect"
+            | "double_encoded_redirect"
+            | "protocol_relative_param_redirect"
+            | "backslash_confusion_redirect"
+            | "url_parser_differential_redirect"
+            | "dangerous_scheme_param_redirect"
+            | "crlf_redirect_injection"
+            | "unicode_normalization_redirect" => Some(InvariantClass::OpenRedirectBypass),
             _ => None,
         }
     }
@@ -359,97 +427,139 @@ mod tests {
     fn detects_javascript_uri_redirect() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("javascript:alert(1)");
-        assert!(dets.iter().any(|d| d.detection_type == "javascript_uri_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "javascript_uri_redirect")
+        );
     }
 
     #[test]
     fn detects_userinfo_host_confusion() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("https://allowed.com@evil.com");
-        assert!(dets.iter().any(|d| d.detection_type == "userinfo_bypass_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "userinfo_bypass_redirect")
+        );
     }
 
     #[test]
     fn detects_oauth_redirect_bypass() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("https://app.example.com/oauth?redirect_uri=https://evil.com/login");
-        assert!(dets.iter().any(|d| d.detection_type == "oauth_redirect_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "oauth_redirect_bypass")
+        );
     }
 
     #[test]
     fn detects_fragment_authority_confusion() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("https://allowed.com#@evil.com/profile");
-        assert!(dets.iter().any(|d| d.detection_type == "fragment_authority_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "fragment_authority_redirect")
+        );
     }
 
     #[test]
     fn detects_double_encoded_redirect() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("%252f%252Fevil.com/path");
-        assert!(dets.iter().any(|d| d.detection_type == "double_encoded_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "double_encoded_redirect")
+        );
     }
 
     #[test]
     fn detects_protocol_relative_redirect_parameter() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/login?next=//evil.com");
-        assert!(dets.iter().any(|d| d.detection_type == "protocol_relative_param_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "protocol_relative_param_redirect")
+        );
     }
 
     #[test]
     fn detects_encoded_protocol_relative_redirect_parameter() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/login?redirect=%2F%2Fevil.com");
-        assert!(dets.iter().any(|d| d.detection_type == "protocol_relative_param_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "protocol_relative_param_redirect")
+        );
     }
 
     #[test]
     fn detects_backslash_confusion_redirect_parameter() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/login?target=/\\evil.com");
-        assert!(dets.iter().any(|d| d.detection_type == "backslash_confusion_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "backslash_confusion_redirect")
+        );
     }
 
     #[test]
     fn detects_url_parser_differential_with_encoded_at() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/oauth?redirect_uri=http://trusted.example%40evil.com/cb");
-        assert!(dets.iter().any(|d| d.detection_type == "url_parser_differential_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "url_parser_differential_redirect")
+        );
     }
 
     #[test]
     fn detects_dangerous_data_scheme_in_param() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/redir?return=data%3Atext%2Fhtml%2C<script>alert(1)</script>");
-        assert!(dets.iter().any(|d| d.detection_type == "dangerous_scheme_param_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dangerous_scheme_param_redirect")
+        );
     }
 
     #[test]
     fn detects_dangerous_javascript_scheme_in_param() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/redir?url=javascript:alert(1)");
-        assert!(dets.iter().any(|d| d.detection_type == "dangerous_scheme_param_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dangerous_scheme_param_redirect")
+        );
     }
 
     #[test]
     fn detects_crlf_injected_redirect_target() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/redirect?next=%0d%0aLocation:%20https://evil.com");
-        assert!(dets.iter().any(|d| d.detection_type == "crlf_redirect_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "crlf_redirect_injection")
+        );
     }
 
     #[test]
     fn detects_unicode_homoglyph_domain_redirect() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/redir?target=https://аррӏе.com/login");
-        assert!(dets.iter().any(|d| d.detection_type == "unicode_normalization_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "unicode_normalization_redirect")
+        );
     }
 
     #[test]
     fn detects_punycode_redirect_host() {
         let eval = RedirectEvaluator;
         let dets = eval.detect("/redir?target=https://xn--pple-43d.com/login");
-        assert!(dets.iter().any(|d| d.detection_type == "unicode_normalization_redirect"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "unicode_normalization_redirect")
+        );
     }
 }

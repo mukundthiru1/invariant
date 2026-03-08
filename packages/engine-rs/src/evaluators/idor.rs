@@ -127,13 +127,24 @@ fn normalize_key(key: &str) -> String {
 #[inline]
 fn sanitize_token(value: &str) -> &str {
     value.trim_matches(|c: char| {
-        c == '"' || c == '\'' || c == ')' || c == '}' || c == ']' || c == '>' || c == ';' || c == ','
+        c == '"'
+            || c == '\''
+            || c == ')'
+            || c == '}'
+            || c == ']'
+            || c == '>'
+            || c == ';'
+            || c == ','
     })
 }
 
 #[inline]
 fn trim_graphql_escape(value: &str) -> &str {
-    value.trim().trim_matches('\\').trim_matches('"').trim_matches('\'')
+    value
+        .trim()
+        .trim_matches('\\')
+        .trim_matches('"')
+        .trim_matches('\'')
 }
 
 #[inline]
@@ -144,10 +155,8 @@ fn is_numeric(value: &str) -> bool {
 #[inline]
 fn is_uuid_like(value: &str) -> bool {
     static UUID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(
-            r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
-        )
-        .unwrap()
+        Regex::new(r"(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+            .unwrap()
     });
     UUID_RE.is_match(value)
 }
@@ -163,7 +172,10 @@ fn is_resource_segment(segment: &str) -> bool {
     if segment.len() < 2 {
         return false;
     }
-    if !segment.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+    if !segment
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
         return false;
     }
     if segment == "api" || segment == "v1" || segment == "v2" || segment == "v3" {
@@ -231,9 +243,8 @@ fn is_batch_key(key: &str) -> bool {
 }
 
 fn decode_base64_token(input: &str) -> Option<String> {
-    static BASE64_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"^[A-Za-z0-9+/=_-]+$").unwrap()
-    });
+    static BASE64_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"^[A-Za-z0-9+/=_-]+$").unwrap());
     let compact: String = input
         .chars()
         .filter(|c| !c.is_ascii_whitespace())
@@ -309,12 +320,23 @@ fn split_multi_value(raw: &str) -> Vec<String> {
         .to_string();
     inner
         .split(',')
-        .map(|part| part.trim().trim_matches('\"').trim_matches('\'').to_string())
+        .map(|part| {
+            part.trim()
+                .trim_matches('\"')
+                .trim_matches('\'')
+                .to_string()
+        })
         .filter(|p| !p.is_empty())
         .collect()
 }
 
-fn add_id_candidate(key: &str, raw_value: &str, position: usize, ids: &mut Vec<IdCandidate>, encoded: &mut Vec<EncodedCandidate>) {
+fn add_id_candidate(
+    key: &str,
+    raw_value: &str,
+    position: usize,
+    ids: &mut Vec<IdCandidate>,
+    encoded: &mut Vec<EncodedCandidate>,
+) {
     for value in split_multi_value(raw_value) {
         let value = sanitize_token(value.as_str()).to_string();
         if value.is_empty() {
@@ -458,7 +480,13 @@ fn collect_param_references(decoded: &str) -> (Vec<IdCandidate>, Vec<EncodedCand
             continue;
         }
 
-        add_id_candidate(key, raw_value.as_str(), capture.get(2).unwrap().start(), &mut ids, &mut encoded);
+        add_id_candidate(
+            key,
+            raw_value.as_str(),
+            capture.get(2).unwrap().start(),
+            &mut ids,
+            &mut encoded,
+        );
     }
 
     for capture in JSON_STRING_RE.captures_iter(decoded) {
@@ -473,7 +501,13 @@ fn collect_param_references(decoded: &str) -> (Vec<IdCandidate>, Vec<EncodedCand
             continue;
         }
 
-        add_id_candidate(key, raw_value.as_str(), raw_value.start(), &mut ids, &mut encoded);
+        add_id_candidate(
+            key,
+            raw_value.as_str(),
+            raw_value.start(),
+            &mut ids,
+            &mut encoded,
+        );
     }
 
     for capture in JSON_NUM_RE.captures_iter(decoded) {
@@ -488,7 +522,13 @@ fn collect_param_references(decoded: &str) -> (Vec<IdCandidate>, Vec<EncodedCand
             continue;
         }
 
-        add_id_candidate(key, raw_value.as_str(), raw_value.start(), &mut ids, &mut encoded);
+        add_id_candidate(
+            key,
+            raw_value.as_str(),
+            raw_value.start(),
+            &mut ids,
+            &mut encoded,
+        );
     }
 
     for capture in JSON_ARRAY_RE.captures_iter(decoded) {
@@ -502,7 +542,13 @@ fn collect_param_references(decoded: &str) -> (Vec<IdCandidate>, Vec<EncodedCand
         if !is_batch_key(key) {
             continue;
         }
-        add_id_candidate(key, raw_values.as_str(), raw_values.start(), &mut ids, &mut encoded);
+        add_id_candidate(
+            key,
+            raw_values.as_str(),
+            raw_values.start(),
+            &mut ids,
+            &mut encoded,
+        );
     }
 
     (ids, encoded)
@@ -515,7 +561,10 @@ fn detect_sequential_path_ids(decoded: &str, path_ids: &[IdCandidate]) -> Option
             continue;
         }
         if let Ok(id) = c.value.parse::<u64>() {
-            grouped.entry(c.key.clone()).or_default().push((id, c.position));
+            grouped
+                .entry(c.key.clone())
+                .or_default()
+                .push((id, c.position));
         }
     }
 
@@ -563,7 +612,10 @@ fn detect_sequential_path_ids(decoded: &str, path_ids: &[IdCandidate]) -> Option
     Some(L2Detection {
         detection_type: "idor_path_id_sequential".into(),
         confidence: CONF_SEQUENTIAL_IDS,
-        detail: format!("Sequential ID access on resource '{}' ({} IDs)", resource, seq_len),
+        detail: format!(
+            "Sequential ID access on resource '{}' ({} IDs)",
+            resource, seq_len
+        ),
         position,
         evidence: vec![ProofEvidence {
             operation: EvidenceOperation::SemanticEval,
@@ -591,7 +643,8 @@ fn detect_path_single_reference(decoded: &str, path_ids: &[IdCandidate]) -> Opti
                 matched_input: preview(decoded, first.position),
                 interpretation: "Direct object ID appears in a context-aware API path".into(),
                 offset: first.position,
-                property: "Object references should be authorized per principal and resource".into(),
+                property: "Object references should be authorized per principal and resource"
+                    .into(),
             }],
         });
     }
@@ -609,9 +662,11 @@ fn detect_path_single_reference(decoded: &str, path_ids: &[IdCandidate]) -> Opti
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::SemanticEval,
                 matched_input: preview(decoded, first.position),
-                interpretation: "UUID identifiers in object paths should still be authorization-checked".into(),
+                interpretation:
+                    "UUID identifiers in object paths should still be authorization-checked".into(),
                 offset: first.position,
-                property: "Do not trust UUID opacity as sufficient object-level authorization".into(),
+                property: "Do not trust UUID opacity as sufficient object-level authorization"
+                    .into(),
             }],
         });
     }
@@ -633,14 +688,19 @@ fn detect_param_id_reference(decoded: &str, param_ids: &[IdCandidate]) -> Option
         Some(L2Detection {
             detection_type: "idor_param_id_batch".into(),
             confidence: CONF_MULTIPLE_IDS,
-            detail: "Multiple object identifiers in parameters indicates bulk/iterator-style access".into(),
+            detail:
+                "Multiple object identifiers in parameters indicates bulk/iterator-style access"
+                    .into(),
             position: first.position,
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::SemanticEval,
                 matched_input: preview(decoded, first.position),
-                interpretation: "Requests with multiple object IDs can be abused for bulk enumeration".into(),
+                interpretation:
+                    "Requests with multiple object IDs can be abused for bulk enumeration".into(),
                 offset: first.position,
-                property: "Bulk ID access must enforce per-id authorization and anti-enumeration controls".into(),
+                property:
+                    "Bulk ID access must enforce per-id authorization and anti-enumeration controls"
+                        .into(),
             }],
         })
     } else {
@@ -648,14 +708,19 @@ fn detect_param_id_reference(decoded: &str, param_ids: &[IdCandidate]) -> Option
         Some(L2Detection {
             detection_type: "idor_param_id_tamper".into(),
             confidence: CONF_SINGLE_ID,
-            detail: format!("Single parameter '{}' contains object identifier '{}'", first.key, first.value),
+            detail: format!(
+                "Single parameter '{}' contains object identifier '{}'",
+                first.key, first.value
+            ),
             position: first.position,
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::SemanticEval,
                 matched_input: preview(decoded, first.position),
-                interpretation: "Changing parameterized object identifiers may expose other resources".into(),
+                interpretation:
+                    "Changing parameterized object identifiers may expose other resources".into(),
                 offset: first.position,
-                property: "Validate caller authorization against explicit object identifiers".into(),
+                property: "Validate caller authorization against explicit object identifiers"
+                    .into(),
             }],
         })
     }
@@ -674,12 +739,10 @@ fn detect_graphql_node_ids(decoded: &str) -> Option<L2EvalResult> {
     static GRAPHQL_NODE_ID_FIELD_RE: LazyLock<Regex> = LazyLock::new(|| {
         Regex::new(r#"(?i)"(?:node_id|nodeid|nodeId)"\s*:\s*\"([A-Za-z0-9_+/\-=]{1,})\""#).unwrap()
     });
-    static GRAPHQL_NODE_ARRAY_FIELD_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?i)"(?:nodes|node_ids)"\s*:\s*\[([^\]]+)\]"#).unwrap()
-    });
-    static GRAPHQL_NODE_ARRAY_ARG_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r#"(?is)\bnodes\s*:\s*\[([^\]]+)\]"#).unwrap()
-    });
+    static GRAPHQL_NODE_ARRAY_FIELD_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)"(?:nodes|node_ids)"\s*:\s*\[([^\]]+)\]"#).unwrap());
+    static GRAPHQL_NODE_ARRAY_ARG_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?is)\bnodes\s*:\s*\[([^\]]+)\]"#).unwrap());
 
     let mut ids = Vec::new();
     let mut min_pos = None::<usize>;
@@ -748,7 +811,10 @@ fn detect_graphql_node_ids(decoded: &str) -> Option<L2EvalResult> {
         return None;
     }
 
-    let ids = ids.into_iter().filter(|id| !id.is_empty()).collect::<Vec<_>>();
+    let ids = ids
+        .into_iter()
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>();
     if ids.len() >= 2 {
         Some(L2Detection {
             detection_type: "idor_graphql_node_id_batch".into(),
@@ -758,7 +824,8 @@ fn detect_graphql_node_ids(decoded: &str) -> Option<L2EvalResult> {
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::SemanticEval,
                 matched_input: preview(decoded, min_pos.unwrap_or(0)),
-                interpretation: "GraphQL node queries using multiple IDs can enumerate objects".into(),
+                interpretation: "GraphQL node queries using multiple IDs can enumerate objects"
+                    .into(),
                 offset: min_pos.unwrap_or(0),
                 property: "GraphQL node IDs should be authorization-scoped".into(),
             }],
@@ -774,7 +841,9 @@ fn detect_graphql_node_ids(decoded: &str) -> Option<L2EvalResult> {
                 matched_input: preview(decoded, min_pos.unwrap_or(0)),
                 interpretation: "Direct node ID manipulation can traverse object boundaries".into(),
                 offset: min_pos.unwrap_or(0),
-                property: "Validate caller ownership for every GraphQL node before returning object".into(),
+                property:
+                    "Validate caller ownership for every GraphQL node before returning object"
+                        .into(),
             }],
         })
     }
@@ -812,14 +881,18 @@ fn detect_predictable_resource_path(decoded: &str) -> Option<L2EvalResult> {
     })
 }
 
-fn detect_horizontal_privilege(path_ids: &[IdCandidate], param_ids: &[IdCandidate]) -> Option<L2EvalResult> {
+fn detect_horizontal_privilege(
+    path_ids: &[IdCandidate],
+    param_ids: &[IdCandidate],
+) -> Option<L2EvalResult> {
     let mut actor_ids: HashSet<String> = HashSet::new();
     let mut target_ids: HashSet<String> = HashSet::new();
 
     for c in param_ids {
         if is_actor_key(&c.key) {
             actor_ids.insert(c.value.clone());
-        } else if is_target_key(&c.key) || c.key == "target" || c.key == "user" || c.key == "users" {
+        } else if is_target_key(&c.key) || c.key == "target" || c.key == "user" || c.key == "users"
+        {
             target_ids.insert(c.value.clone());
         }
     }
@@ -857,7 +930,10 @@ fn detect_horizontal_privilege(path_ids: &[IdCandidate], param_ids: &[IdCandidat
     None
 }
 
-fn detect_encoded_reference(path_encoded: &[EncodedCandidate], param_encoded: &[EncodedCandidate]) -> Option<L2EvalResult> {
+fn detect_encoded_reference(
+    path_encoded: &[EncodedCandidate],
+    param_encoded: &[EncodedCandidate],
+) -> Option<L2EvalResult> {
     let mut all = Vec::new();
     all.extend(path_encoded.iter().cloned());
     all.extend(param_encoded.iter().cloned());
@@ -879,7 +955,9 @@ fn detect_encoded_reference(path_encoded: &[EncodedCandidate], param_encoded: &[
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::TypeCoerce,
                 matched_input: format!("{} -> {}", c.raw, c.decoded),
-                interpretation: "Base64-style identifier can often be swapped to access adjacent resources".into(),
+                interpretation:
+                    "Base64-style identifier can often be swapped to access adjacent resources"
+                        .into(),
                 offset: c.position,
                 property: "Treat indirect encodings as security-sensitive object references".into(),
             }],
@@ -949,9 +1027,9 @@ impl L2Evaluator for IdorEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "idor_param_id_batch"
-            | "idor_graphql_node_id_batch"
-            | "idor_encoded_reference" => Some(InvariantClass::ApiMassEnum),
+            "idor_param_id_batch" | "idor_graphql_node_id_batch" | "idor_encoded_reference" => {
+                Some(InvariantClass::ApiMassEnum)
+            }
             "idor_path_id_sequential"
             | "idor_path_id_reference"
             | "idor_uuid_reference"

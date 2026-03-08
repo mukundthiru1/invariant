@@ -729,7 +729,7 @@ export class InvariantEngine {
                 highestEpss,
             },
             polyglot: deep.polyglot,
-            anomalyScore: deep.anomalyProfile?.score,
+            anomalyScore: (deep.anomalyProfile as any)?.score,
             encodingEvasion: deep.encodingEvasion,
             intent,
         }

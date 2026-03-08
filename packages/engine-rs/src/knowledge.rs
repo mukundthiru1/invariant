@@ -607,12 +607,18 @@ impl ExploitKnowledgeGraph {
         // Index by technology
         for tech in &entry.affected {
             let key = format!("{}:{}", tech.vendor, tech.product);
-            self.tech_to_entries.entry(key).or_default().insert(entry.cve_id.clone());
+            self.tech_to_entries
+                .entry(key)
+                .or_default()
+                .insert(entry.cve_id.clone());
         }
 
         // Index by invariant class
         for prop in &entry.invariant_properties {
-            self.class_to_entries.entry(prop.invariant_class).or_default().insert(entry.cve_id.clone());
+            self.class_to_entries
+                .entry(prop.invariant_class)
+                .or_default()
+                .insert(entry.cve_id.clone());
         }
 
         self.entries.insert(entry.cve_id.clone(), entry);
@@ -641,22 +647,34 @@ impl ExploitKnowledgeGraph {
     }
 
     /// Get all actively exploited CVEs for a specific tech stack.
-    pub fn get_actively_exploited_for_tech(&self, vendor: &str, product: &str) -> Vec<&ExploitKnowledgeEntry> {
-        self.get_cves_for_tech(vendor, product).into_iter()
+    pub fn get_actively_exploited_for_tech(
+        &self,
+        vendor: &str,
+        product: &str,
+    ) -> Vec<&ExploitKnowledgeEntry> {
+        self.get_cves_for_tech(vendor, product)
+            .into_iter()
             .filter(|e| e.actively_exploited)
             .collect()
     }
 
     /// Get all high-EPSS CVEs for a specific tech stack.
-    pub fn get_high_epss_for_tech(&self, vendor: &str, product: &str, threshold: f64) -> Vec<&ExploitKnowledgeEntry> {
-        self.get_cves_for_tech(vendor, product).into_iter()
+    pub fn get_high_epss_for_tech(
+        &self,
+        vendor: &str,
+        product: &str,
+        threshold: f64,
+    ) -> Vec<&ExploitKnowledgeEntry> {
+        self.get_cves_for_tech(vendor, product)
+            .into_iter()
             .filter(|e| e.epss_score >= threshold)
             .collect()
     }
 
     /// Get defense rules for a specific tech stack.
     pub fn get_defense_rules_for_tech(&self, vendor: &str, product: &str) -> Vec<&DefenseRule> {
-        self.get_cves_for_tech(vendor, product).into_iter()
+        self.get_cves_for_tech(vendor, product)
+            .into_iter()
             .flat_map(|e| e.defense_rules.iter())
             .collect()
     }
@@ -670,8 +688,13 @@ impl ExploitKnowledgeGraph {
         let mut entries = self.get_cves_for_class(invariant_class);
 
         if let Some((vendor, product)) = detected_tech {
-            let tech_filtered: Vec<&ExploitKnowledgeEntry> = entries.iter()
-                .filter(|e| e.affected.iter().any(|a| a.vendor == vendor && a.product == product))
+            let tech_filtered: Vec<&ExploitKnowledgeEntry> = entries
+                .iter()
+                .filter(|e| {
+                    e.affected
+                        .iter()
+                        .any(|a| a.vendor == vendor && a.product == product)
+                })
                 .copied()
                 .collect();
             if !tech_filtered.is_empty() {
@@ -681,7 +704,8 @@ impl ExploitKnowledgeGraph {
 
         DetectionEnrichment {
             linked_cves: entries.iter().map(|e| e.cve_id.clone()).collect(),
-            linked_techniques: entries.iter()
+            linked_techniques: entries
+                .iter()
                 .flat_map(|e| e.cwes.iter().cloned())
                 .collect::<HashSet<_>>()
                 .into_iter()
@@ -693,7 +717,9 @@ impl ExploitKnowledgeGraph {
     }
 
     pub fn assess_exploit_maturity(&self, cve_id: &str) -> Option<ExploitMaturity> {
-        self.entries.get(cve_id).map(|entry| entry.exploit_maturity())
+        self.entries
+            .get(cve_id)
+            .map(|entry| entry.exploit_maturity())
     }
 
     pub fn detect_zero_day_candidates(&self, classes: &[InvariantClass]) -> Vec<ZeroDayHypothesis> {
@@ -708,7 +734,10 @@ impl ExploitKnowledgeGraph {
                     rationale: "No known CVE currently linked to this invariant class".into(),
                 });
             } else {
-                let mature_count = entries.iter().filter(|e| e.exploit_maturity() >= ExploitMaturity::Weaponized).count();
+                let mature_count = entries
+                    .iter()
+                    .filter(|e| e.exploit_maturity() >= ExploitMaturity::Weaponized)
+                    .count();
                 let active_count = entries.iter().filter(|e| e.actively_exploited).count();
                 let signal = if known >= 3.0 {
                     0.2 + (active_count as f64 / known) * 0.25
@@ -727,15 +756,27 @@ impl ExploitKnowledgeGraph {
         hypotheses
     }
 
-    pub fn infer_vulnerability_chain(&self, vendor: &str, product: &str) -> Vec<VulnerabilityChainHypothesis> {
+    pub fn infer_vulnerability_chain(
+        &self,
+        vendor: &str,
+        product: &str,
+    ) -> Vec<VulnerabilityChainHypothesis> {
         let entries = self.get_cves_for_tech(vendor, product);
         let mut result = Vec::new();
         for i in 0..entries.len() {
             let first = &entries[i];
-            let first_classes: HashSet<InvariantClass> = first.invariant_properties.iter().map(|p| p.invariant_class).collect();
+            let first_classes: HashSet<InvariantClass> = first
+                .invariant_properties
+                .iter()
+                .map(|p| p.invariant_class)
+                .collect();
             for j in i + 1..entries.len() {
                 let second = &entries[j];
-                let second_classes: HashSet<InvariantClass> = second.invariant_properties.iter().map(|p| p.invariant_class).collect();
+                let second_classes: HashSet<InvariantClass> = second
+                    .invariant_properties
+                    .iter()
+                    .map(|p| p.invariant_class)
+                    .collect();
                 let overlap = first_classes.intersection(&second_classes).count();
                 if overlap == 0 {
                     result.push(VulnerabilityChainHypothesis {
@@ -762,20 +803,31 @@ impl ExploitKnowledgeGraph {
             total_cves: entries.len(),
             actively_exploited: entries.iter().filter(|e| e.actively_exploited).count(),
             poc_available: entries.iter().filter(|e| e.poc_available).count(),
-            with_verification_plan: entries.iter().filter(|e| !e.verification_plan.is_empty()).count(),
+            with_verification_plan: entries
+                .iter()
+                .filter(|e| !e.verification_plan.is_empty())
+                .count(),
             covered_invariant_classes: self.class_to_entries.len(),
             framework_profiles: self.profile_index.len(),
             total_defense_rules: entries.iter().map(|e| e.defense_rules.len()).sum(),
         }
     }
 
-    pub fn total_entries(&self) -> usize { self.entries.len() }
-    pub fn total_technologies(&self) -> usize { self.tech_to_entries.len() }
-    pub fn total_framework_profiles(&self) -> usize { self.profile_index.len() }
+    pub fn total_entries(&self) -> usize {
+        self.entries.len()
+    }
+    pub fn total_technologies(&self) -> usize {
+        self.tech_to_entries.len()
+    }
+    pub fn total_framework_profiles(&self) -> usize {
+        self.profile_index.len()
+    }
 }
 
 impl Default for ExploitKnowledgeGraph {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Result Types ──────────────────────────────────────────────────
@@ -884,7 +936,10 @@ mod tests {
     fn query_no_results() {
         let kg = ExploitKnowledgeGraph::new();
         assert!(kg.get_cves_for_tech("unknown", "product").is_empty());
-        assert!(kg.get_cves_for_class(InvariantClass::SqlTautology).is_empty());
+        assert!(
+            kg.get_cves_for_class(InvariantClass::SqlTautology)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -893,20 +948,42 @@ mod tests {
         assert_eq!(kg.total_framework_profiles(), 9);
 
         let wp = kg.get_framework_profile("wordpress").unwrap();
-        assert!(wp.relevant_classes.contains(&InvariantClass::SqlStringTermination));
-        assert!(wp.relevant_classes.contains(&InvariantClass::DeserPhpObject));
+        assert!(
+            wp.relevant_classes
+                .contains(&InvariantClass::SqlStringTermination)
+        );
+        assert!(
+            wp.relevant_classes
+                .contains(&InvariantClass::DeserPhpObject)
+        );
 
         let spring = kg.get_framework_profile("spring").unwrap();
-        assert!(spring.relevant_classes.contains(&InvariantClass::LogJndiLookup));
-        assert!(spring.relevant_classes.contains(&InvariantClass::DeserJavaGadget));
+        assert!(
+            spring
+                .relevant_classes
+                .contains(&InvariantClass::LogJndiLookup)
+        );
+        assert!(
+            spring
+                .relevant_classes
+                .contains(&InvariantClass::DeserJavaGadget)
+        );
     }
 
     #[test]
     fn flask_profile_loaded() {
         let kg = ExploitKnowledgeGraph::new();
         let flask = kg.get_framework_profile("Flask").unwrap();
-        assert!(flask.relevant_classes.contains(&InvariantClass::DeserPythonPickle));
-        assert!(flask.relevant_classes.contains(&InvariantClass::AuthHeaderSpoof));
+        assert!(
+            flask
+                .relevant_classes
+                .contains(&InvariantClass::DeserPythonPickle)
+        );
+        assert!(
+            flask
+                .relevant_classes
+                .contains(&InvariantClass::AuthHeaderSpoof)
+        );
     }
 
     #[test]
@@ -1003,10 +1080,12 @@ mod tests {
         let mut kg = ExploitKnowledgeGraph::new();
         kg.add_entry(sample_entry());
 
-        let enrichment = kg.enrich_detection(InvariantClass::LogJndiLookup, Some(("apache", "log4j")));
+        let enrichment =
+            kg.enrich_detection(InvariantClass::LogJndiLookup, Some(("apache", "log4j")));
         assert_eq!(enrichment.linked_cves.len(), 1);
 
-        let enrichment2 = kg.enrich_detection(InvariantClass::LogJndiLookup, Some(("unknown", "unknown")));
+        let enrichment2 =
+            kg.enrich_detection(InvariantClass::LogJndiLookup, Some(("unknown", "unknown")));
         // Falls back to all entries when tech filter yields nothing
         assert_eq!(enrichment2.linked_cves.len(), 1);
     }
@@ -1028,10 +1107,16 @@ mod tests {
     #[test]
     fn all_profiles_have_relevant_classes() {
         for profile in builtin_framework_profiles() {
-            assert!(!profile.relevant_classes.is_empty(),
-                "profile {} has no relevant classes", profile.framework);
-            assert!(!profile.probe_payloads.is_empty(),
-                "profile {} has no probe payloads", profile.framework);
+            assert!(
+                !profile.relevant_classes.is_empty(),
+                "profile {} has no relevant classes",
+                profile.framework
+            );
+            assert!(
+                !profile.probe_payloads.is_empty(),
+                "profile {} has no probe payloads",
+                profile.framework
+            );
         }
     }
 }

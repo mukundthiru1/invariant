@@ -13,7 +13,7 @@ export async function importStorageKey(keyB64: string): Promise<CryptoKey> {
     const cached = storageKeyCache.get(keyB64)
     if (cached) return cached
 
-    const key = await globalThis.crypto.subtle.importKey(
+    const key = await (globalThis.crypto.subtle as any).importKey(
         'raw',
         fromBase64Url(keyB64),
         { name: 'AES-GCM' },
@@ -35,9 +35,9 @@ export async function encryptStorageValue(
     const aad = encode(kvKey)
 
     const ciphertext = await globalThis.crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
+        { name: 'AES-GCM', iv: iv as any, additionalData: aad as any },
         key,
-        encode(plaintext),
+        encode(plaintext) as any,
     )
 
     return toBase64Url(concat(iv, new Uint8Array(ciphertext)))
@@ -57,7 +57,7 @@ export async function decryptStorageValue(
 
     try {
         const plaintext = await globalThis.crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv, additionalData: aad },
+            { name: 'AES-GCM', iv: iv as any, additionalData: aad as any },
             key,
             ciphertext,
         )

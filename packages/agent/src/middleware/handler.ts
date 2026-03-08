@@ -190,45 +190,52 @@ export function createInvariantHandler(options: HandlerOptions = {}) {
     const configPromise = loadConfig(options.configPath, options.verbose)
 
     return async (request: Request, next: NextLikeHandler): Promise<Response> => {
-        const config = await configPromise
-        const mode: 'monitor' | 'enforce' = resolveMode(config, options.mode)
-        const detections: DetectionEvent[] = []
-        const collected = await collectRequestInputs(request)
+        try {
+            const config = await configPromise
+            const mode: 'monitor' | 'enforce' = resolveMode(config, options.mode)
+            const detections: DetectionEvent[] = []
+            const collected = await collectRequestInputs(request)
 
-        for (const input of collected) {
-            const matches = engine.detect(input.value, [], input.surface)
-            if (matches.length > 0) {
+            for (const input of collected) {
+                const matches = engine.detect(input.value, [], input.surface)
+                if (matches.length > 0) {
+                    const detection: DetectionEvent = {
+                        surface: input.surface,
+                        key: input.key,
+                        value: input.value,
+                        matches,
+                    }
+                    detections.push(detection)
+                    options.onDetect?.(request, detection)
+                }
+            }
+
+            const headerMatches = engine.detectHeaderInvariants(request.headers)
+            if (headerMatches.length > 0) {
                 const detection: DetectionEvent = {
-                    surface: input.surface,
-                    key: input.key,
-                    value: input.value,
-                    matches,
+                    surface: 'header',
+                    key: 'headers',
+                    value: '[header-invariants]',
+                    matches: headerMatches,
                 }
                 detections.push(detection)
                 options.onDetect?.(request, detection)
             }
-        }
 
-        const headerMatches = engine.detectHeaderInvariants(request.headers)
-        if (headerMatches.length > 0) {
-            const detection: DetectionEvent = {
-                surface: 'header',
-                key: 'headers',
-                value: '[header-invariants]',
-                matches: headerMatches,
+            const allMatches = detections.flatMap(d => d.matches)
+            const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
+
+            if (shouldBlock && mode === 'enforce') {
+                options.onBlock?.(request, detections[0]!)
+                return Response.json({ error: 'blocked' }, { status: 403 })
             }
-            detections.push(detection)
-            options.onDetect?.(request, detection)
+
+            return next(request)
+        } catch (error) {
+            if (options.verbose) {
+                console.warn('[invariant] generic handler fail-open due to internal error', error)
+            }
+            return next(request)
         }
-
-        const allMatches = detections.flatMap(d => d.matches)
-        const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
-
-        if (shouldBlock && mode === 'enforce') {
-            options.onBlock?.(request, detections[0]!)
-            return Response.json({ error: 'blocked' }, { status: 403 })
-        }
-
-        return next(request)
     }
 }

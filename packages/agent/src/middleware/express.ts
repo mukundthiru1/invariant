@@ -92,50 +92,57 @@ export function invariantMiddleware(options: MiddlewareOptions = {}) {
     const engine = new InvariantEngine()
 
     return (req: any, res: any, next: any) => {
-        const detections: DetectionEvent[] = []
+        try {
+            const detections: DetectionEvent[] = []
 
-        const collected: Array<{ surface: Surface; key: string; value: string }> = []
-        collectInputs(req?.query ?? {}, '', 'query_param', collected)
-        collectInputs(req?.body ?? {}, '', 'body_param', collected)
-        collectInputs(req?.params ?? {}, '', 'path', collected)
-        collectInputs(req?.headers ?? {}, '', 'header', collected)
-        collectInputs(req?.cookies ?? {}, '', 'cookie', collected)
-        collectInputs(req?.path ?? '', 'path', 'path', collected)
+            const collected: Array<{ surface: Surface; key: string; value: string }> = []
+            collectInputs(req?.query ?? {}, '', 'query_param', collected)
+            collectInputs(req?.body ?? {}, '', 'body_param', collected)
+            collectInputs(req?.params ?? {}, '', 'path', collected)
+            collectInputs(req?.headers ?? {}, '', 'header', collected)
+            collectInputs(req?.cookies ?? {}, '', 'cookie', collected)
+            collectInputs(req?.path ?? '', 'path', 'path', collected)
 
-        for (const input of collected) {
-            const matches = engine.detect(input.value, [], input.surface)
-            if (matches.length > 0) {
+            for (const input of collected) {
+                const matches = engine.detect(input.value, [], input.surface)
+                if (matches.length > 0) {
+                    const detection: DetectionEvent = {
+                        surface: input.surface,
+                        key: input.key,
+                        value: input.value,
+                        matches,
+                    }
+                    detections.push(detection)
+                    options.onDetect?.(req, detection)
+                }
+            }
+
+            const headerMatches = engine.detectHeaderInvariants(toHeaders(req?.headers ?? {}))
+            if (headerMatches.length > 0) {
                 const detection: DetectionEvent = {
-                    surface: input.surface,
-                    key: input.key,
-                    value: input.value,
-                    matches,
+                    surface: 'header',
+                    key: 'headers',
+                    value: '[header-invariants]',
+                    matches: headerMatches,
                 }
                 detections.push(detection)
                 options.onDetect?.(req, detection)
             }
-        }
 
-        const headerMatches = engine.detectHeaderInvariants(toHeaders(req?.headers ?? {}))
-        if (headerMatches.length > 0) {
-            const detection: DetectionEvent = {
-                surface: 'header',
-                key: 'headers',
-                value: '[header-invariants]',
-                matches: headerMatches,
+            const allMatches = detections.flatMap(d => d.matches)
+            const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
+
+            if (shouldBlock && mode === 'enforce') {
+                options.onBlock?.(req, detections[0])
+                return res.status(403).json({ error: 'blocked' })
             }
-            detections.push(detection)
-            options.onDetect?.(req, detection)
+
+            return next()
+        } catch (error) {
+            if (options.verbose) {
+                console.warn('[invariant] express middleware fail-open due to internal error', error)
+            }
+            return next()
         }
-
-        const allMatches = detections.flatMap(d => d.matches)
-        const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
-
-        if (shouldBlock && mode === 'enforce') {
-            options.onBlock?.(req, detections[0])
-            return res.status(403).json({ error: 'blocked' })
-        }
-
-        return next()
     }
 }

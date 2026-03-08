@@ -102,7 +102,10 @@ impl SqlTokenizer {
                 || (ch == b'.' && i + 1 < bytes.len() && is_ascii_digit(bytes[i + 1]))
             {
                 let start = i;
-                if ch == b'0' && i + 1 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                if ch == b'0'
+                    && i + 1 < bytes.len()
+                    && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+                {
                     i += 2;
                     while i < bytes.len() && is_hex_digit(bytes[i]) {
                         i += 1;
@@ -306,11 +309,7 @@ pub fn detect_tautologies(input: &str) -> Vec<TautologyDetection> {
         }
     }
 
-    let prefixes = [
-        (b'\'', true),
-        (b'"', true),
-        (b')', false),
-    ];
+    let prefixes = [(b'\'', true), (b'"', true), (b')', false)];
 
     for (prefix, allow_paren) in prefixes {
         if let Some(stripped) = strip_injection_prefix(input, prefix, allow_paren) {
@@ -380,7 +379,9 @@ fn strip_injection_prefix(input: &str, quote: u8, allow_paren: bool) -> Option<&
 fn extract_conditional_expressions(tokens: &[Token<SqlTokenType>]) -> Vec<ExpressionNode> {
     let meaningful: Vec<&Token<SqlTokenType>> = tokens
         .iter()
-        .filter(|t| t.token_type != SqlTokenType::Whitespace && t.token_type != SqlTokenType::Separator)
+        .filter(|t| {
+            t.token_type != SqlTokenType::Whitespace && t.token_type != SqlTokenType::Separator
+        })
         .collect();
 
     let mut expressions = Vec::new();
@@ -584,7 +585,9 @@ fn parse_primary(tokens: &[&Token<SqlTokenType>], start: usize) -> ParseResult {
     if token.token_type == SqlTokenType::String {
         let mut inner = token.value.clone();
         if inner.len() >= 2 {
-            inner = inner[1..inner.len() - 1].replace("''", "'").replace("\"\"", "\"");
+            inner = inner[1..inner.len() - 1]
+                .replace("''", "'")
+                .replace("\"\"", "\"");
         }
         return ParseResult {
             node: ExpressionNode::LiteralString(inner),
@@ -614,7 +617,8 @@ fn parse_primary(tokens: &[&Token<SqlTokenType>], start: usize) -> ParseResult {
     }
 
     if token.token_type == SqlTokenType::Identifier
-        || (token.token_type == SqlTokenType::Keyword && !is_boolean_op(&token.value.to_ascii_uppercase()))
+        || (token.token_type == SqlTokenType::Keyword
+            && !is_boolean_op(&token.value.to_ascii_uppercase()))
     {
         if start + 1 < tokens.len() && tokens[start + 1].token_type == SqlTokenType::ParenOpen {
             let mut idx = start + 2;
@@ -761,9 +765,10 @@ fn evaluate_expression(node: &ExpressionNode) -> EvalResult {
             let val = evaluate_expression(operand);
             let pat = evaluate_expression(pattern);
             match (val, pat) {
-                (EvalResult::Value(EvalValue::String(v)), EvalResult::Value(EvalValue::String(p))) => {
-                    EvalResult::Value(EvalValue::Bool(like_matches(&v, &p)))
-                }
+                (
+                    EvalResult::Value(EvalValue::String(v)),
+                    EvalResult::Value(EvalValue::String(p)),
+                ) => EvalResult::Value(EvalValue::Bool(like_matches(&v, &p))),
                 _ => EvalResult::Unevaluable,
             }
         }
@@ -1043,8 +1048,8 @@ fn is_sql_keyword(upper: &str) -> bool {
     static KEYWORDS: &[&str] = &[
         "SELECT", "FROM", "WHERE", "IS", "NOT", "NULL", "TRUE", "FALSE", "LIKE", "IN", "BETWEEN",
         "EXISTS", "HAVING", "GROUP", "ORDER", "UNION", "ALL", "INSERT", "UPDATE", "DELETE", "DROP",
-        "CREATE", "ALTER", "EXEC", "EXECUTE", "CAST", "CONVERT", "AS", "CASE", "WHEN", "THEN", "ELSE",
-        "END", "LIMIT", "OFFSET", "ASC", "DESC",
+        "CREATE", "ALTER", "EXEC", "EXECUTE", "CAST", "CONVERT", "AS", "CASE", "WHEN", "THEN",
+        "ELSE", "END", "LIMIT", "OFFSET", "ASC", "DESC",
     ];
     KEYWORDS.contains(&upper)
 }
@@ -1082,7 +1087,13 @@ fn find_subsequence(haystack: &[u8], start: usize, needle: &[u8]) -> Option<usiz
     (start..=end).find(|&i| &haystack[i..i + needle.len()] == needle)
 }
 
-fn push(tokens: &mut Vec<Token<SqlTokenType>>, ty: SqlTokenType, bytes: &[u8], start: usize, end: usize) {
+fn push(
+    tokens: &mut Vec<Token<SqlTokenType>>,
+    ty: SqlTokenType,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) {
     tokens.push(Token {
         token_type: ty,
         value: to_value(bytes, start, end),
@@ -1136,6 +1147,10 @@ mod tests {
     fn sql_detects_tautology() {
         let detections = detect_tautologies("' OR 1=1--");
         assert!(!detections.is_empty());
-        assert!(detections.iter().any(|d| d.expression.contains("1 = 1") || d.expression.contains("1=1")));
+        assert!(
+            detections
+                .iter()
+                .any(|d| d.expression.contains("1 = 1") || d.expression.contains("1=1"))
+        );
     }
 }

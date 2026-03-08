@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct XxeEvaluator;
 
 impl L2Evaluator for XxeEvaluator {
-    fn id(&self) -> &'static str { "xxe" }
-    fn prefix(&self) -> &'static str { "L2 XXE" }
+    fn id(&self) -> &'static str {
+        "xxe"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 XXE"
+    }
 
     #[inline]
 
@@ -17,7 +21,9 @@ impl L2Evaluator for XxeEvaluator {
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
 
         // DOCTYPE with ENTITY declaration
-        static doctype_entity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)<!DOCTYPE\s+\w+\s*\[\s*<!ENTITY").unwrap());
+        static doctype_entity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<!DOCTYPE\s+\w+\s*\[\s*<!ENTITY").unwrap()
+        });
         if let Some(m) = doctype_entity.find(&decoded) {
             let mut confidence: f64 = 0.88;
 
@@ -35,7 +41,9 @@ impl L2Evaluator for XxeEvaluator {
 
             // Sensitive file targets boost
             static SENSITIVE_TARGET_RE: std::sync::LazyLock<Regex> =
-                std::sync::LazyLock::new(|| Regex::new(r"(?i)/etc/passwd|file://|expect://|php://").unwrap());
+                std::sync::LazyLock::new(|| {
+                    Regex::new(r"(?i)/etc/passwd|file://|expect://|php://").unwrap()
+                });
             if SENSITIVE_TARGET_RE.is_match(&decoded) {
                 confidence = confidence.max(0.95);
             }
@@ -47,8 +55,11 @@ impl L2Evaluator for XxeEvaluator {
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
-                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 100)].to_owned(),
-                    interpretation: "DOCTYPE defines external entity that can read local files or make requests".into(),
+                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 100)]
+                        .to_owned(),
+                    interpretation:
+                        "DOCTYPE defines external entity that can read local files or make requests"
+                            .into(),
                     offset: m.start(),
                     property: "XML input must not define external entities".into(),
                 }],
@@ -56,7 +67,9 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // Parameter entity injection: %xxe;
-        static param_entity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)<!ENTITY\s+%\s+\w+\s+(?:SYSTEM|PUBLIC)").unwrap());
+        static param_entity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)<!ENTITY\s+%\s+\w+\s+(?:SYSTEM|PUBLIC)").unwrap()
+        });
         if let Some(m) = param_entity.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "xxe_parameter_entity".into(),
@@ -68,14 +81,17 @@ impl L2Evaluator for XxeEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Parameter entity enables out-of-band data exfiltration".into(),
                     offset: m.start(),
-                    property: "XML input must not define parameter entities with external references".into(),
+                    property:
+                        "XML input must not define parameter entities with external references"
+                            .into(),
                 }],
             });
         }
 
         // Parameter entity abuse: declaration + expansion
-        static PARAM_ENTITY_DECL_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?i)<!ENTITY\s+%\s*[A-Za-z0-9._-]+\s+(?:SYSTEM|PUBLIC)").unwrap());
+        static PARAM_ENTITY_DECL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)<!ENTITY\s+%\s*[A-Za-z0-9._-]+\s+(?:SYSTEM|PUBLIC)").unwrap()
+        });
         static PARAM_ENTITY_USE_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"%[A-Za-z0-9._-]+;").unwrap());
         if PARAM_ENTITY_DECL_RE.is_match(&decoded) && PARAM_ENTITY_USE_RE.is_match(&decoded) {
@@ -95,7 +111,8 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // XInclude
-        static xinclude: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)<xi:include\s").unwrap());
+        static xinclude: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)<xi:include\s").unwrap());
         if let Some(m) = xinclude.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "xxe_xinclude".into(),
@@ -105,14 +122,16 @@ impl L2Evaluator for XxeEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "XInclude includes external content during XML processing".into(),
+                    interpretation: "XInclude includes external content during XML processing"
+                        .into(),
                     offset: m.start(),
                     property: "XML input must not use XInclude directives".into(),
                 }],
             });
         }
         static xinclude_href: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?i)<xi:include\b[^>]*\bhref\s*=\s*["'](?:[^"'\\]|\\.)*["'][^>]*\/?>"#).unwrap()
+            Regex::new(r#"(?i)<xi:include\b[^>]*\bhref\s*=\s*["'](?:[^"'\\]|\\.)*["'][^>]*\/?>"#)
+                .unwrap()
         });
         if let Some(m) = xinclude_href.find(&decoded) {
             dets.push(L2Detection {
@@ -131,9 +150,11 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // Default entity resolution without explicit DOCTYPE wrapper (DTD-less style parser behavior)
-        static DTDLESS_ENTITY_DECL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?is)<!ENTITY\s+[A-Za-z0-9._-]+\s+SYSTEM\s+['"](?:file:///|https?://|ftp://)[^'"]+['"]"#).unwrap()
-        });
+        static DTDLESS_ENTITY_DECL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r#"(?is)<!ENTITY\s+[A-Za-z0-9._-]+\s+SYSTEM\s+['"](?:file:///|https?://|ftp://)[^'"]+['"]"#).unwrap()
+            },
+        );
         static DTDLESS_ENTITY_USE_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"(?i)&[A-Za-z0-9._-]+;").unwrap());
         if DTDLESS_ENTITY_DECL_RE.is_match(&decoded) && DTDLESS_ENTITY_USE_RE.is_match(&decoded) {
@@ -154,9 +175,13 @@ impl L2Evaluator for XxeEvaluator {
 
         // Billion Laughs: recursive/stacked entity expansion patterns
         static BILLION_LAUGHS_SEED_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)<!ENTITY\s+lol\s+['"][^'"]+['"]"#).unwrap());
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?is)<!ENTITY\s+lol\s+['"][^'"]+['"]"#).unwrap()
+            });
         static BILLION_LAUGHS_RECURSIVE_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?is)<!ENTITY\s+lol\d+\s+['"](?:&lol\d*;){2,}['"]"#).unwrap());
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?is)<!ENTITY\s+lol\d+\s+['"](?:&lol\d*;){2,}['"]"#).unwrap()
+            });
         let billion_laughs_seed = BILLION_LAUGHS_SEED_RE.is_match(&decoded);
         let billion_laughs_recursive = BILLION_LAUGHS_RECURSIVE_RE.is_match(&decoded);
         if billion_laughs_seed && billion_laughs_recursive {
@@ -197,7 +222,9 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // SVG XXE: XML prolog + ENTITY declaration in SVG content
-        static svg_xxe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)<\?xml[^>]*>[\s\S]*<!ENTITY[\s\S]*<svg\b").unwrap());
+        static svg_xxe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<\?xml[^>]*>[\s\S]*<!ENTITY[\s\S]*<svg\b").unwrap()
+        });
         if let Some(m) = svg_xxe.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "xxe_svg_entity".into(),
@@ -206,10 +233,14 @@ impl L2Evaluator for XxeEvaluator {
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
-                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 120)].to_owned(),
-                    interpretation: "SVG XML payload embeds entity declarations for XXE execution".into(),
+                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 120)]
+                        .to_owned(),
+                    interpretation: "SVG XML payload embeds entity declarations for XXE execution"
+                        .into(),
                     offset: m.start(),
-                    property: "SVG/XML uploads must strip DOCTYPE/ENTITY declarations before parsing".into(),
+                    property:
+                        "SVG/XML uploads must strip DOCTYPE/ENTITY declarations before parsing"
+                            .into(),
                 }],
             });
         }
@@ -238,7 +269,9 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // SOAP XXE: DTD declaration embedded in SOAP envelope/body
-        static soap_xxe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)<(?:\w+:)?Envelope\b[\s\S]*<!DOCTYPE[\s\S]*<(?:\w+:)?Body\b").unwrap());
+        static soap_xxe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)<(?:\w+:)?Envelope\b[\s\S]*<!DOCTYPE[\s\S]*<(?:\w+:)?Body\b").unwrap()
+        });
         if let Some(m) = soap_xxe.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "xxe_soap_dtd".into(),
@@ -247,8 +280,11 @@ impl L2Evaluator for XxeEvaluator {
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
-                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 120)].to_owned(),
-                    interpretation: "SOAP XML embeds DTD in processing context where XXE is often exploitable".into(),
+                    matched_input: decoded[m.start()..decoded.len().min(m.start() + 120)]
+                        .to_owned(),
+                    interpretation:
+                        "SOAP XML embeds DTD in processing context where XXE is often exploitable"
+                            .into(),
                     offset: m.start(),
                     property: "SOAP parsers must reject DTDs and external entities".into(),
                 }],
@@ -256,8 +292,9 @@ impl L2Evaluator for XxeEvaluator {
         }
 
         // XML schema relay channels (SOAP + generic XML schemaLocation) can trigger DTD-less XXE resolution
-        static soap_schema_relay: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?i)xsi:(?:noNamespaceSchemaLocation|schemaLocation)\s*=\s*["'][^"']*(?:file:///|https?://|ftp://)[^"']*["']"#).unwrap());
+        static soap_schema_relay: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)xsi:(?:noNamespaceSchemaLocation|schemaLocation)\s*=\s*["'][^"']*(?:file:///|https?://|ftp://)[^"']*["']"#).unwrap()
+        });
         if soap_schema_relay.is_match(&decoded) {
             dets.push(L2Detection {
                 detection_type: "xxe_soap_schema_relay".into(),
@@ -300,8 +337,18 @@ impl L2Evaluator for XxeEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "xxe_entity" | "xxe_parameter_entity" | "xxe_xinclude" => Some(InvariantClass::XxeEntityExpansion),
-            "xxe_billion_laughs" | "xxe_blind_oob" | "xxe_svg_entity" | "xxe_soap_dtd" | "xxe_error_based" | "xxe_dtdless_default_entity" | "xxe_soap_schema_relay" | "xxe_xinclude_href" | "xxe_parameter_entity_abuse" => Some(InvariantClass::XxeEntityExpansion),
+            "xxe_entity" | "xxe_parameter_entity" | "xxe_xinclude" => {
+                Some(InvariantClass::XxeEntityExpansion)
+            }
+            "xxe_billion_laughs"
+            | "xxe_blind_oob"
+            | "xxe_svg_entity"
+            | "xxe_soap_dtd"
+            | "xxe_error_based"
+            | "xxe_dtdless_default_entity"
+            | "xxe_soap_schema_relay"
+            | "xxe_xinclude_href"
+            | "xxe_parameter_entity_abuse" => Some(InvariantClass::XxeEntityExpansion),
             "xxe_xslt_injection" => Some(InvariantClass::XmlInjection),
             _ => None,
         }
@@ -322,7 +369,10 @@ mod tests {
 ]>
 <root>&lol2;</root>"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_billion_laughs"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_billion_laughs")
+        );
     }
 
     #[test]
@@ -350,7 +400,10 @@ mod tests {
 <xsl:template match="/"><xsl:value-of select="system-property('x')"/></xsl:template>
 </xsl:stylesheet>"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_xslt_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_xslt_injection")
+        );
     }
 
     #[test]
@@ -362,7 +415,10 @@ mod tests {
 ]>
 <root>&xxe;</root>"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_parameter_entity_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_parameter_entity_abuse")
+        );
     }
 
     #[test]
@@ -380,7 +436,10 @@ mod tests {
         let eval = XxeEvaluator;
         let input = r#"<!ENTITY ext SYSTEM "file:///etc/passwd">&ext;"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_dtdless_default_entity"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_dtdless_default_entity")
+        );
     }
 
     #[test]
@@ -393,7 +452,10 @@ mod tests {
   <soapenv:Body><m:Action>status</m:Action></soapenv:Body>
 </soapenv:Envelope>"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_soap_schema_relay"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_soap_schema_relay")
+        );
     }
 
     #[test]
@@ -411,7 +473,10 @@ mod tests {
 xsi:schemaLocation="http://schemas.example.org/note http://attacker.tld/note.xsd"
 xsi:noNamespaceSchemaLocation="http://attacker.tld/note.xsd">hello</note>"#;
         let dets = eval.detect(input);
-        assert!(dets.iter().any(|d| d.detection_type == "xxe_soap_schema_relay"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "xxe_soap_schema_relay")
+        );
     }
 
     #[test]
@@ -427,7 +492,8 @@ xsi:noNamespaceSchemaLocation="http://attacker.tld/note.xsd">hello</note>"#;
     #[test]
     fn detects_error_based_xxe_nonexistent_file_probe() {
         let eval = XxeEvaluator;
-        let input = r#"<!DOCTYPE x [<!ENTITY err SYSTEM "file:///nonexistent-path-xxe">]><x>&err;</x>"#;
+        let input =
+            r#"<!DOCTYPE x [<!ENTITY err SYSTEM "file:///nonexistent-path-xxe">]><x>&err;</x>"#;
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "xxe_error_based"));
     }

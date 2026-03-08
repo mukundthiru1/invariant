@@ -216,7 +216,10 @@ pub fn detect_embedded_scripts(content: &[u8], file_type: FileType) -> Vec<FileA
             }
         }
         FileType::Pdf => {
-            if lower.contains("/javascript") || lower.contains("/js") || lower.contains("/openaction") {
+            if lower.contains("/javascript")
+                || lower.contains("/js")
+                || lower.contains("/openaction")
+            {
                 anomalies.push(FileAnomaly::new(
                     "active_content",
                     "pdf contains JavaScript or automatic actions",
@@ -300,7 +303,9 @@ pub fn detect_polyglot_file(content: &[u8]) -> Vec<FileAnomaly> {
             60,
         ));
     }
-    if is_pdf(content) && (lower.contains("<script") || lower.contains("/javascript") || lower.contains("<html")) {
+    if is_pdf(content)
+        && (lower.contains("<script") || lower.contains("/javascript") || lower.contains("<html"))
+    {
         anomalies.push(FileAnomaly::new(
             "polyglot",
             "PDF active-content polyglot indicators detected",
@@ -318,7 +323,10 @@ pub fn detect_polyglot_file(content: &[u8]) -> Vec<FileAnomaly> {
     if anomalies.is_empty() {
         anomalies.push(FileAnomaly::new(
             "polyglot",
-            format!("content matches multiple file formats: {}", names.join(", ")),
+            format!(
+                "content matches multiple file formats: {}",
+                names.join(", ")
+            ),
             50,
         ));
     }
@@ -326,7 +334,10 @@ pub fn detect_polyglot_file(content: &[u8]) -> Vec<FileAnomaly> {
     anomalies
 }
 
-pub fn detect_content_type_mismatch(content: &[u8], content_type_header: Option<&str>) -> Vec<FileAnomaly> {
+pub fn detect_content_type_mismatch(
+    content: &[u8],
+    content_type_header: Option<&str>,
+) -> Vec<FileAnomaly> {
     let mut anomalies = Vec::new();
     let Some(content_type) = content_type_header else {
         return anomalies;
@@ -383,9 +394,7 @@ pub fn detect_magic_byte_spoofing(content: &[u8]) -> Vec<FileAnomaly> {
         return anomalies;
     }
 
-    if (is_gif(content) || is_png(content) || is_jpeg(content))
-        && has_script_payload
-    {
+    if (is_gif(content) || is_png(content) || is_jpeg(content)) && has_script_payload {
         anomalies.push(FileAnomaly::new(
             "magic_byte_spoofing",
             "binary file magic bytes are followed by script/markup payload indicators",
@@ -425,7 +434,8 @@ pub fn detect_svg_script_payload(content: &[u8]) -> Vec<FileAnomaly> {
 pub fn detect_xml_xslt_injection(content: &[u8]) -> Vec<FileAnomaly> {
     let mut anomalies = Vec::new();
     let lower = to_lower_ascii(content);
-    let is_markup = lower.contains("<?xml") || lower.contains("<!doctype") || lower.contains("<xsl:");
+    let is_markup =
+        lower.contains("<?xml") || lower.contains("<!doctype") || lower.contains("<xsl:");
     if !is_markup {
         return anomalies;
     }
@@ -490,7 +500,10 @@ pub fn detect_archive_slip(content: &[u8]) -> Vec<FileAnomaly> {
 pub fn detect_embedded_macros_and_hta(content: &[u8], file_type: FileType) -> Vec<FileAnomaly> {
     let mut anomalies = Vec::new();
     let lower = to_lower_ascii(content);
-    let is_office = matches!(file_type, FileType::Doc | FileType::Docx | FileType::Xls | FileType::Xlsx);
+    let is_office = matches!(
+        file_type,
+        FileType::Doc | FileType::Docx | FileType::Xls | FileType::Xlsx
+    );
 
     if is_office
         && (lower.contains("vbaproject.bin")
@@ -529,7 +542,9 @@ pub fn detect_mime_sniffing_attack(
 ) -> Vec<FileAnomaly> {
     let mut anomalies = Vec::new();
     let lower = to_lower_ascii(content);
-    let xcto = x_content_type_options.unwrap_or_default().to_ascii_lowercase();
+    let xcto = x_content_type_options
+        .unwrap_or_default()
+        .to_ascii_lowercase();
     let nosniff_missing = !xcto.contains("nosniff");
     if !nosniff_missing {
         return anomalies;
@@ -547,11 +562,11 @@ pub fn detect_mime_sniffing_attack(
         || lower.contains("<script")
         || lower.contains("<svg")
         || lower.contains("javascript:");
-    let ambiguous_binary_text = (is_png(content) || is_gif(content) || is_jpeg(content) || is_pdf(content))
-        && has_active_markup;
-    let ambiguously_typed = declared.is_empty()
-        || declared == "application/octet-stream"
-        || declared == "text/plain";
+    let ambiguous_binary_text =
+        (is_png(content) || is_gif(content) || is_jpeg(content) || is_pdf(content))
+            && has_active_markup;
+    let ambiguously_typed =
+        declared.is_empty() || declared == "application/octet-stream" || declared == "text/plain";
 
     if ambiguous_binary_text || (ambiguously_typed && has_active_markup) {
         anomalies.push(FileAnomaly::new(
@@ -949,7 +964,8 @@ fn is_pe(content: &[u8]) -> bool {
         return false;
     }
 
-    let pe_offset = u32::from_le_bytes([content[0x3c], content[0x3d], content[0x3e], content[0x3f]]) as usize;
+    let pe_offset =
+        u32::from_le_bytes([content[0x3c], content[0x3d], content[0x3e], content[0x3f]]) as usize;
     content.len() >= pe_offset + 4 && &content[pe_offset..pe_offset + 4] == b"PE\0\0"
 }
 
@@ -958,7 +974,8 @@ fn is_pe_dll(content: &[u8]) -> bool {
         return false;
     }
 
-    let pe_offset = u32::from_le_bytes([content[0x3c], content[0x3d], content[0x3e], content[0x3f]]) as usize;
+    let pe_offset =
+        u32::from_le_bytes([content[0x3c], content[0x3d], content[0x3e], content[0x3f]]) as usize;
     if content.len() < pe_offset + 24 {
         return false;
     }
@@ -988,11 +1005,15 @@ fn is_mach(content: &[u8]) -> bool {
 }
 
 fn is_zip_like(content: &[u8]) -> bool {
-    content.starts_with(b"PK\x03\x04") || content.starts_with(b"PK\x05\x06") || content.starts_with(b"PK\x07\x08")
+    content.starts_with(b"PK\x03\x04")
+        || content.starts_with(b"PK\x05\x06")
+        || content.starts_with(b"PK\x07\x08")
 }
 
 fn contains_zip_signature(content: &[u8]) -> bool {
-    content.windows(4).any(|w| w == b"PK\x03\x04" || w == b"PK\x05\x06" || w == b"PK\x07\x08")
+    content
+        .windows(4)
+        .any(|w| w == b"PK\x03\x04" || w == b"PK\x05\x06" || w == b"PK\x07\x08")
 }
 
 fn contains_zip_signature_after_prefix(content: &[u8]) -> bool {
@@ -1060,8 +1081,18 @@ fn parse_zip_local_headers(content: &[u8]) -> ZipStats {
 
         stats.entry_count += 1;
 
-        let compressed = u32::from_le_bytes([content[i + 18], content[i + 19], content[i + 20], content[i + 21]]) as u64;
-        let uncompressed = u32::from_le_bytes([content[i + 22], content[i + 23], content[i + 24], content[i + 25]]) as u64;
+        let compressed = u32::from_le_bytes([
+            content[i + 18],
+            content[i + 19],
+            content[i + 20],
+            content[i + 21],
+        ]) as u64;
+        let uncompressed = u32::from_le_bytes([
+            content[i + 22],
+            content[i + 23],
+            content[i + 24],
+            content[i + 25],
+        ]) as u64;
         let name_len = u16::from_le_bytes([content[i + 26], content[i + 27]]) as usize;
         let extra_len = u16::from_le_bytes([content[i + 28], content[i + 29]]) as usize;
 
@@ -1108,7 +1139,12 @@ fn parse_zip_entry_names(content: &[u8]) -> Vec<String> {
             continue;
         }
 
-        let compressed = u32::from_le_bytes([content[i + 18], content[i + 19], content[i + 20], content[i + 21]]) as usize;
+        let compressed = u32::from_le_bytes([
+            content[i + 18],
+            content[i + 19],
+            content[i + 20],
+            content[i + 21],
+        ]) as usize;
         let name_len = u16::from_le_bytes([content[i + 26], content[i + 27]]) as usize;
         let extra_len = u16::from_le_bytes([content[i + 28], content[i + 29]]) as usize;
 
@@ -1118,7 +1154,9 @@ fn parse_zip_entry_names(content: &[u8]) -> Vec<String> {
             names.push(String::from_utf8_lossy(&content[name_start..name_end]).to_string());
         }
 
-        let next = name_end.saturating_add(extra_len).saturating_add(compressed);
+        let next = name_end
+            .saturating_add(extra_len)
+            .saturating_add(compressed);
         if next <= i {
             break;
         }
@@ -1153,7 +1191,9 @@ fn file_type_from_content_type(content_type: &str) -> Option<FileType> {
         "application/java-archive" => Some(FileType::Jar),
         "application/vnd.android.package-archive" => Some(FileType::Apk),
         "application/msword" => Some(FileType::Doc),
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => Some(FileType::Docx),
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+            Some(FileType::Docx)
+        }
         "application/vnd.ms-excel" => Some(FileType::Xls),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" => Some(FileType::Xlsx),
         "text/csv" => Some(FileType::Csv),
@@ -1208,7 +1248,10 @@ mod tests {
 
     #[test]
     fn detect_html_text() {
-        assert_eq!(detect_file_type(b"<!DOCTYPE html><html></html>"), FileType::Html);
+        assert_eq!(
+            detect_file_type(b"<!DOCTYPE html><html></html>"),
+            FileType::Html
+        );
     }
 
     #[test]
@@ -1276,7 +1319,12 @@ mod tests {
 
         assert_eq!(result.detected_type, FileType::Jpeg);
         assert!(result.anomalies.iter().any(|a| a.kind == "embedded_script"));
-        assert!(result.anomalies.iter().any(|a| a.kind == "double_extension"));
+        assert!(
+            result
+                .anomalies
+                .iter()
+                .any(|a| a.kind == "double_extension")
+        );
         assert!(result.risk_score > 0);
     }
 
@@ -1365,8 +1413,7 @@ mod tests {
     #[test]
     fn no_mime_sniffing_when_nosniff_present() {
         let sample = b"text payload <html><script>x</script></html>";
-        let anomalies =
-            detect_mime_sniffing_attack(sample, Some("text/plain"), Some("nosniff"));
+        let anomalies = detect_mime_sniffing_attack(sample, Some("text/plain"), Some("nosniff"));
         assert!(anomalies.is_empty());
     }
 
@@ -1386,14 +1433,16 @@ mod tests {
 
     #[test]
     fn benign_svg_without_script_is_clean() {
-        let sample = b"<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"10\" height=\"10\"/></svg>";
+        let sample =
+            b"<svg xmlns=\"http://www.w3.org/2000/svg\"><rect width=\"10\" height=\"10\"/></svg>";
         let anomalies = detect_svg_script_payload(sample);
         assert!(anomalies.is_empty());
     }
 
     #[test]
     fn detects_xml_entity_expansion_pattern() {
-        let sample = br#"<?xml version="1.0"?><!DOCTYPE root [<!ENTITY x "aaaa">]><root>&x;</root>"#;
+        let sample =
+            br#"<?xml version="1.0"?><!DOCTYPE root [<!ENTITY x "aaaa">]><root>&x;</root>"#;
         let anomalies = detect_xml_xslt_injection(sample);
         assert!(anomalies.iter().any(|a| a.kind == "xml_entity_expansion"));
     }
@@ -1443,16 +1492,21 @@ mod tests {
     #[test]
     fn scan_with_metadata_detects_content_confusion_attacks() {
         let sample = b"GIF89a....<html><script>alert(1)</script></html>";
-        let result = scan_file_content_with_metadata(
-            "avatar.gif",
-            sample,
-            Some("image/png"),
-            None,
-        );
+        let result = scan_file_content_with_metadata("avatar.gif", sample, Some("image/png"), None);
 
-        assert!(result.anomalies.iter().any(|a| a.kind == "content_type_mismatch"));
+        assert!(
+            result
+                .anomalies
+                .iter()
+                .any(|a| a.kind == "content_type_mismatch")
+        );
         assert!(result.anomalies.iter().any(|a| a.kind == "mime_sniffing"));
-        assert!(result.anomalies.iter().any(|a| a.kind == "magic_byte_spoofing"));
+        assert!(
+            result
+                .anomalies
+                .iter()
+                .any(|a| a.kind == "magic_byte_spoofing")
+        );
     }
 
     #[test]
@@ -1464,7 +1518,12 @@ mod tests {
             Some("image/png"),
             Some("nosniff"),
         );
-        assert!(!result.anomalies.iter().any(|a| a.kind == "content_type_mismatch"));
+        assert!(
+            !result
+                .anomalies
+                .iter()
+                .any(|a| a.kind == "content_type_mismatch")
+        );
         assert!(!result.anomalies.iter().any(|a| a.kind == "mime_sniffing"));
     }
 }

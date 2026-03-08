@@ -186,10 +186,7 @@ impl Telemetry {
 
         for m in matches {
             self.record_detection_at(m.class, m.confidence, 0, ts_sec, blocked);
-            *self
-                .detections_by_severity
-                .entry(m.severity)
-                .or_insert(0) += 1;
+            *self.detections_by_severity.entry(m.severity).or_insert(0) += 1;
         }
     }
 
@@ -329,7 +326,10 @@ impl Telemetry {
         let mut out = String::new();
 
         out.push_str("# TYPE invariant_total_requests counter\n");
-        out.push_str(&format!("invariant_total_requests {}\n", metrics.total_requests));
+        out.push_str(&format!(
+            "invariant_total_requests {}\n",
+            metrics.total_requests
+        ));
 
         out.push_str("# TYPE invariant_total_detections counter\n");
         out.push_str(&format!(
@@ -523,7 +523,10 @@ impl Telemetry {
         *self.detections_by_class.entry(class).or_insert(0) += 1;
         self.confidence_samples.push(confidence.clamp(0.0, 1.0));
 
-        let entry = self.coverage.entry(class).or_insert_with(CoverageCell::default);
+        let entry = self
+            .coverage
+            .entry(class)
+            .or_insert_with(CoverageCell::default);
         entry.total_seen += 1;
         if blocked {
             entry.total_blocked += 1;
@@ -566,8 +569,10 @@ impl Telemetry {
     fn memory_estimate_bytes(&self) -> u64 {
         let mut total = 0_u64;
 
-        total += (self.detections_by_class.len() * std::mem::size_of::<(InvariantClass, u64)>()) as u64;
-        total += (self.detections_by_severity.len() * std::mem::size_of::<(Severity, u64)>()) as u64;
+        total +=
+            (self.detections_by_class.len() * std::mem::size_of::<(InvariantClass, u64)>()) as u64;
+        total +=
+            (self.detections_by_severity.len() * std::mem::size_of::<(Severity, u64)>()) as u64;
         total += (self.confidence_samples.len() * std::mem::size_of::<f64>()) as u64;
         total += (self.latency_bucket_counts.len() * std::mem::size_of::<u64>()) as u64;
 
@@ -576,7 +581,8 @@ impl Telemetry {
             total += std::mem::size_of_val(count) as u64;
         }
 
-        total += (self.coverage.len() * std::mem::size_of::<(InvariantClass, CoverageCell)>()) as u64;
+        total +=
+            (self.coverage.len() * std::mem::size_of::<(InvariantClass, CoverageCell)>()) as u64;
 
         for events in self.trend_events.values() {
             total += (events.len() * std::mem::size_of::<u64>()) as u64;

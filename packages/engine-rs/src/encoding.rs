@@ -144,9 +144,8 @@ fn try_url_decode(input: &str) -> Option<String> {
     }
 
     if changed {
-        let decoded = String::from_utf8(result.clone()).unwrap_or_else(|_| {
-            result.iter().map(|&b| b as char).collect::<String>()
-        });
+        let decoded = String::from_utf8(result.clone())
+            .unwrap_or_else(|_| result.iter().map(|&b| b as char).collect::<String>());
         Some(decoded)
     } else {
         None
@@ -234,7 +233,10 @@ fn decode_unicode_escapes(input: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 5 < bytes.len() && (bytes[i + 1] == b'u' || bytes[i + 1] == b'U') {
+        if bytes[i] == b'\\'
+            && i + 5 < bytes.len()
+            && (bytes[i + 1] == b'u' || bytes[i + 1] == b'U')
+        {
             let hex_str = &input[i + 2..i + 6];
             if let Ok(code) = u32::from_str_radix(hex_str, 16) {
                 if let Some(ch) = char::from_u32(code) {
@@ -256,7 +258,10 @@ fn decode_hex_escapes(input: &str) -> String {
     let mut i = 0;
 
     while i < bytes.len() {
-        if bytes[i] == b'\\' && i + 3 < bytes.len() && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X')
+        {
             let hi = hex_digit(bytes[i + 2]);
             let lo = hex_digit(bytes[i + 3]);
             if let (Some(h), Some(l)) = (hi, lo) {
@@ -401,9 +406,7 @@ fn detect_percent_utf8_anomalies(input: &str, anomalies: &mut std::collections::
             if b == 0xE0 && idx + 2 < decoded.len() {
                 let b2 = decoded[idx + 1];
                 let b3 = decoded[idx + 2];
-                if (0x80..=0x9F).contains(&b2)
-                    && (0x80..=0xBF).contains(&b3)
-                {
+                if (0x80..=0x9F).contains(&b2) && (0x80..=0xBF).contains(&b3) {
                     anomalies.insert("overlong_utf8_sequence".to_owned());
                 }
             }
@@ -528,9 +531,11 @@ fn decode_overlong_utf8(input: &str) -> String {
 /// or decodes to non-printable content.
 fn try_base64_decode(input: &str) -> Option<String> {
     // Only attempt if input looks like base64: length >= 16, valid charset
-    let candidate = input
-        .split(|c: char| c == '=' || c == '&')
-        .find(|s| s.len() >= 16 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/'))?;
+    let candidate = input.split(|c: char| c == '=' || c == '&').find(|s| {
+        s.len() >= 16
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/')
+    })?;
 
     // Manual base64 decode (no dependency)
     let decoded_bytes = base64_decode(candidate.as_bytes())?;
@@ -562,7 +567,11 @@ fn base64_decode(input: &[u8]) -> Option<Vec<u8>> {
         }
     }
 
-    let clean: Vec<u8> = input.iter().copied().filter(|&b| b != b'\n' && b != b'\r' && b != b' ').collect();
+    let clean: Vec<u8> = input
+        .iter()
+        .copied()
+        .filter(|&b| b != b'\n' && b != b'\r' && b != b' ')
+        .collect();
     if clean.len() % 4 != 0 {
         return None;
     }
@@ -692,7 +701,11 @@ mod tests {
     #[test]
     fn detects_invalid_utf8_continuation_bytes() {
         let d = multi_layer_decode("%80%80");
-        assert!(d.anomalies.iter().any(|a| a == "invalid_utf8_leading_continuation"));
+        assert!(
+            d.anomalies
+                .iter()
+                .any(|a| a == "invalid_utf8_leading_continuation")
+        );
         assert_eq!(d.fully_decoded, "\u{80}\u{80}");
     }
 
@@ -712,7 +725,11 @@ mod tests {
     #[test]
     fn detects_truncated_utf8_sequence() {
         let d = multi_layer_decode("%E2%82");
-        assert!(d.anomalies.iter().any(|a| a == "invalid_utf8_truncated_sequence"));
+        assert!(
+            d.anomalies
+                .iter()
+                .any(|a| a == "invalid_utf8_truncated_sequence")
+        );
     }
 
     #[test]

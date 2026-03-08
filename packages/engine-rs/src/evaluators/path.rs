@@ -10,11 +10,21 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 const SENSITIVE_PATHS: &[&str] = &[
-    "/etc/passwd", "/etc/shadow", "/etc/hosts", "/etc/ssh",
-    "/proc/self/environ", "/proc/self/cmdline",
-    "/var/log", "/root/.ssh",
-    "win.ini", "boot.ini", "SAM", "SYSTEM",
-    "web.config", ".htaccess", ".env",
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/hosts",
+    "/etc/ssh",
+    "/proc/self/environ",
+    "/proc/self/cmdline",
+    "/var/log",
+    "/root/.ssh",
+    "win.ini",
+    "boot.ini",
+    "SAM",
+    "SYSTEM",
+    "web.config",
+    ".htaccess",
+    ".env",
 ];
 
 pub struct PathTraversalEvaluator;
@@ -45,8 +55,12 @@ static PATH_TRUNCATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\\/])[^\\/\s]{260,}(?:[\\/]|$)"#).unwrap());
 
 impl L2Evaluator for PathTraversalEvaluator {
-    fn id(&self) -> &'static str { "path_traversal" }
-    fn prefix(&self) -> &'static str { "L2 Path" }
+    fn id(&self) -> &'static str {
+        "path_traversal"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 Path"
+    }
 
     #[inline]
 
@@ -66,9 +80,11 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Mixed traversal separators bypass canonical directory checks".into(),
+                    interpretation: "Mixed traversal separators bypass canonical directory checks"
+                        .into(),
                     offset: m.start(),
-                    property: "Path input must not include cross-platform traversal bypasses".into(),
+                    property: "Path input must not include cross-platform traversal bypasses"
+                        .into(),
                 }],
             });
         }
@@ -100,7 +116,8 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Dot-segment normalization can collapse to escaped parent paths".into(),
+                    interpretation:
+                        "Dot-segment normalization can collapse to escaped parent paths".into(),
                     offset: m.start(),
                     property: "Path normalization must preserve sandbox boundaries".into(),
                 }],
@@ -117,7 +134,8 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Case/encoding variants of traversal can evade naive filters".into(),
+                    interpretation: "Case/encoding variants of traversal can evade naive filters"
+                        .into(),
                     offset: m.start(),
                     property: "Canonicalize before evaluating path traversal".into(),
                 }],
@@ -134,9 +152,12 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Process root/file-descriptor paths can bypass intended filesystem roots".into(),
+                    interpretation:
+                        "Process root/file-descriptor paths can bypass intended filesystem roots"
+                            .into(),
                     offset: m.start(),
-                    property: "User paths must not reference procfs or live file descriptors".into(),
+                    property: "User paths must not reference procfs or live file descriptors"
+                        .into(),
                 }],
             });
         }
@@ -151,7 +172,8 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "URL/device path form bypasses local path-only assumptions".into(),
+                    interpretation: "URL/device path form bypasses local path-only assumptions"
+                        .into(),
                     offset: m.start(),
                     property: "User input must resolve to a canonical local filesystem path".into(),
                 }],
@@ -185,7 +207,9 @@ impl L2Evaluator for PathTraversalEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: input.to_owned(),
-                    interpretation: "Excessively long segments can collide with legacy path truncation behavior".into(),
+                    interpretation:
+                        "Excessively long segments can collide with legacy path truncation behavior"
+                            .into(),
                     offset: 0,
                     property: "Reject path segments beyond platform-safe limits".into(),
                 }],
@@ -193,7 +217,8 @@ impl L2Evaluator for PathTraversalEvaluator {
         }
 
         // Count traversal tokens
-        let traversal_count = tokens.iter()
+        let traversal_count = tokens
+            .iter()
             .filter(|t| t.token_type == PathTokenType::Traversal)
             .count();
         let has_null_byte = input.contains('\0') || input.contains("%00");
@@ -222,8 +247,12 @@ impl L2Evaluator for PathTraversalEvaluator {
 
         // Check for sensitive file target
         let input_lower = input.to_lowercase();
-        let targets_sensitive = SENSITIVE_PATHS.iter().any(|p| input_lower.contains(&p.to_lowercase()));
-        if targets_sensitive { confidence = confidence.max(0.92); }
+        let targets_sensitive = SENSITIVE_PATHS
+            .iter()
+            .any(|p| input_lower.contains(&p.to_lowercase()));
+        if targets_sensitive {
+            confidence = confidence.max(0.92);
+        }
 
         if has_null_byte {
             confidence = confidence.max(0.90);
@@ -240,15 +269,18 @@ impl L2Evaluator for PathTraversalEvaluator {
                 dets.push(L2Detection {
                     detection_type: "directory_traversal".into(),
                     confidence,
-                    detail: format!("Directory traversal: {} escapes intended directory scope (depth: {})",
-                        tok.value, traversal_count),
+                    detail: format!(
+                        "Directory traversal: {} escapes intended directory scope (depth: {})",
+                        tok.value, traversal_count
+                    ),
                     position: tok.start,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::ContextEscape,
                         matched_input: tok.value.clone(),
                         interpretation: "Path traversal sequence escapes directory boundary".into(),
                         offset: tok.start,
-                        property: "User-supplied path must remain within intended directory scope".into(),
+                        property: "User-supplied path must remain within intended directory scope"
+                            .into(),
                     }],
                 });
                 break; // One detection per input (traversal count already captured)
@@ -264,10 +296,13 @@ impl L2Evaluator for PathTraversalEvaluator {
             "null_byte" => Some(InvariantClass::PathNullTerminate),
             "path_windows_bypass" => Some(InvariantClass::PathDotdotEscape),
             "path_unc_injection" => Some(InvariantClass::PathEncodingBypass),
-            "path_normalization_bypass" | "path_symlink_indicator"
-                => Some(InvariantClass::PathNormalizationBypass),
-            "path_url_injection" | "path_double_url_encoded" | "path_case_variation_bypass" | "path_overlong_component"
-                => Some(InvariantClass::PathEncodingBypass),
+            "path_normalization_bypass" | "path_symlink_indicator" => {
+                Some(InvariantClass::PathNormalizationBypass)
+            }
+            "path_url_injection"
+            | "path_double_url_encoded"
+            | "path_case_variation_bypass"
+            | "path_overlong_component" => Some(InvariantClass::PathEncodingBypass),
             _ => None,
         }
     }
@@ -295,42 +330,60 @@ mod tests {
     fn detects_windows_bypass_sequences() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect(r"..\..\windows\win.ini");
-        assert!(dets.iter().any(|d| d.detection_type == "path_windows_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_windows_bypass")
+        );
     }
 
     #[test]
     fn detects_unc_path_injection() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect(r"\\server\share\secret.txt");
-        assert!(dets.iter().any(|d| d.detection_type == "path_unc_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_unc_injection")
+        );
     }
 
     #[test]
     fn detects_normalization_bypass() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("/./../../etc/passwd");
-        assert!(dets.iter().any(|d| d.detection_type == "path_normalization_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_normalization_bypass")
+        );
     }
 
     #[test]
     fn detects_symlink_escape_indicators() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("/proc/self/root/etc/shadow");
-        assert!(dets.iter().any(|d| d.detection_type == "path_symlink_indicator"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_symlink_indicator")
+        );
     }
 
     #[test]
     fn detects_url_in_path_payloads() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("file:///etc/passwd");
-        assert!(dets.iter().any(|d| d.detection_type == "path_url_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_url_injection")
+        );
     }
 
     #[test]
     fn detects_double_encoded_traversal() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("%252e%252e%252fetc%252fpasswd");
-        assert!(dets.iter().any(|d| d.detection_type == "path_double_url_encoded"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_double_url_encoded")
+        );
     }
 
     #[test]
@@ -339,7 +392,8 @@ mod tests {
         let dets = eval.detect("....//....//etc/passwd");
         assert!(
             dets.iter().any(|d| {
-                d.detection_type == "directory_traversal" || d.detection_type == "path_normalization_bypass"
+                d.detection_type == "directory_traversal"
+                    || d.detection_type == "path_normalization_bypass"
             }),
             "Dot inflation traversal should be detected"
         );
@@ -349,7 +403,13 @@ mod tests {
     fn detects_single_encoded_traversal() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("%2e%2e%2fsecret.txt");
-        assert!(dets.iter().any(|d| d.detection_type == "path_case_variation_bypass") || dets.iter().any(|d| d.detection_type == "directory_traversal"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_case_variation_bypass")
+                || dets
+                    .iter()
+                    .any(|d| d.detection_type == "directory_traversal")
+        );
     }
 
     #[test]
@@ -363,7 +423,13 @@ mod tests {
     fn detects_case_variation_bypass_windows_separator_mix() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect(r"..\..%2Fadmin");
-        assert!(dets.iter().any(|d| d.detection_type == "path_case_variation_bypass") || dets.iter().any(|d| d.detection_type == "path_windows_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_case_variation_bypass")
+                || dets
+                    .iter()
+                    .any(|d| d.detection_type == "path_windows_bypass")
+        );
     }
 
     #[test]
@@ -372,13 +438,22 @@ mod tests {
         let long = "a".repeat(280);
         let input = format!("/tmp/{long}/index.html");
         let dets = eval.detect(&input);
-        assert!(dets.iter().any(|d| d.detection_type == "path_overlong_component"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_overlong_component")
+        );
     }
 
     #[test]
     fn maps_path_case_variation_and_overlong_to_encoding_bypass_class() {
         let eval = PathTraversalEvaluator;
-        assert_eq!(eval.map_class("path_case_variation_bypass"), Some(InvariantClass::PathEncodingBypass));
-        assert_eq!(eval.map_class("path_overlong_component"), Some(InvariantClass::PathEncodingBypass));
+        assert_eq!(
+            eval.map_class("path_case_variation_bypass"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_overlong_component"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
     }
 }

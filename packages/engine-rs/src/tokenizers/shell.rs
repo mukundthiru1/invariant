@@ -243,7 +243,9 @@ impl ShellTokenizer {
                     i += 1;
                 }
                 let word = to_value(bytes, start, i);
-                if word.starts_with("--") || (word.starts_with('-') && word.len() > 1 && !is_numeric_flag(&word)) {
+                if word.starts_with("--")
+                    || (word.starts_with('-') && word.len() > 1 && !is_numeric_flag(&word))
+                {
                     tokens.push(Token {
                         token_type: ShellTokenType::Flag,
                         value: word,
@@ -278,11 +280,18 @@ fn is_var_char(b: u8) -> bool {
 }
 
 fn is_special_shell_var(b: u8) -> bool {
-    matches!(b, b'?' | b'!' | b'$' | b'@' | b'*' | b'#' | b'-' | b'0'..=b'9')
+    matches!(
+        b,
+        b'?' | b'!' | b'$' | b'@' | b'*' | b'#' | b'-' | b'0'..=b'9'
+    )
 }
 
 fn is_word_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'/' | b'~' | b'@' | b':' | b'%' | b'+' | b',' | b'=' | b'\\' | b'-')
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'_' | b'.' | b'/' | b'~' | b'@' | b':' | b'%' | b'+' | b',' | b'=' | b'\\' | b'-'
+        )
 }
 
 fn is_numeric_flag(word: &str) -> bool {
@@ -290,7 +299,13 @@ fn is_numeric_flag(word: &str) -> bool {
     bytes.len() > 1 && bytes[0] == b'-' && bytes[1].is_ascii_digit()
 }
 
-fn push(tokens: &mut Vec<Token<ShellTokenType>>, ty: ShellTokenType, bytes: &[u8], start: usize, end: usize) {
+fn push(
+    tokens: &mut Vec<Token<ShellTokenType>>,
+    ty: ShellTokenType,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) {
     tokens.push(Token {
         token_type: ty,
         value: to_value(bytes, start, end),

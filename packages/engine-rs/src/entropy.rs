@@ -17,9 +17,8 @@ use std::collections::{HashMap, HashSet};
 // ── Metacharacter Set ─────────────────────────────────────────────
 
 const META_CHARS: &[char] = &[
-    '(', ')', '[', ']', '{', '}', '<', '>', '|', ';', '&',
-    '$', '#', '`', '\\', '/', '=', '"', '\'', '%', '@', '!',
-    '^', '~', '*', '?', '+',
+    '(', ')', '[', ']', '{', '}', '<', '>', '|', ';', '&', '$', '#', '`', '\\', '/', '=', '"',
+    '\'', '%', '@', '!', '^', '~', '*', '?', '+',
 ];
 
 fn is_meta(ch: char) -> bool {
@@ -83,8 +82,13 @@ pub struct CharClassDistribution {
 pub fn char_class_distribution(input: &str) -> CharClassDistribution {
     if input.is_empty() {
         return CharClassDistribution {
-            alpha: 0.0, numeric: 0.0, whitespace: 0.0,
-            punctuation: 0.0, metachar: 0.0, control: 0.0, other: 0.0,
+            alpha: 0.0,
+            numeric: 0.0,
+            whitespace: 0.0,
+            punctuation: 0.0,
+            metachar: 0.0,
+            control: 0.0,
+            other: 0.0,
         };
     }
 
@@ -269,13 +273,9 @@ pub fn entropy_by_uri_parts(input: &str) -> UriEntropyProfile {
         None
     };
 
-    let query_entropy = query_part
-        .filter(|q| q.len() > 3)
-        .map(shannon_entropy);
+    let query_entropy = query_part.filter(|q| q.len() > 3).map(shannon_entropy);
 
-    let body_entropy = body
-        .filter(|b| b.len() > 6)
-        .map(shannon_entropy);
+    let body_entropy = body.filter(|b| b.len() > 6).map(shannon_entropy);
 
     let mut signals = Vec::new();
 
@@ -781,9 +781,7 @@ pub fn is_likely_encoded(input: &str) -> bool {
     let mut pct_count = 0u32;
     let mut i = 0;
     while i + 2 < bytes.len() {
-        if bytes[i] == b'%'
-            && bytes[i + 1].is_ascii_hexdigit()
-            && bytes[i + 2].is_ascii_hexdigit()
+        if bytes[i] == b'%' && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit()
         {
             pct_count += 1;
             i += 3;
@@ -821,7 +819,10 @@ mod tests {
     #[test]
     fn entropy_sql_injection() {
         let e = shannon_entropy("' OR 1=1 -- ' OR 1=1 -- ' OR 1=1 --");
-        assert!(e < 3.5, "repetitive SQL payload should have low entropy, got {e}");
+        assert!(
+            e < 3.5,
+            "repetitive SQL payload should have low entropy, got {e}"
+        );
     }
 
     #[test]
@@ -834,7 +835,11 @@ mod tests {
     #[test]
     fn shannon_entropy_printable_ascii_is_high() {
         let input: String = (0x20u8..=0x7E).map(char::from).collect();
-        assert!(shannon_entropy(&input) > 5.8, "expected high printable ASCII entropy, got {}", shannon_entropy(&input));
+        assert!(
+            shannon_entropy(&input) > 5.8,
+            "expected high printable ASCII entropy, got {}",
+            shannon_entropy(&input)
+        );
     }
 
     #[test]
@@ -842,15 +847,25 @@ mod tests {
         let bytes = [0x00u8, 0xFF, 0x10, 0x7F, b'A', b'\n', 0x80];
         let input = String::from_utf8_lossy(&bytes).to_string();
         let e = shannon_entropy(&input);
-        assert!(e > 1.0, "binary-like payload should still yield entropy, got {e}");
+        assert!(
+            e > 1.0,
+            "binary-like payload should still yield entropy, got {e}"
+        );
         let _ = is_likely_encoded(&input);
     }
 
     #[test]
     fn shannon_entropy_unicode_heavy_input() {
         let input = "火".repeat(5_000);
-        assert!(shannon_entropy(&input) < 0.5, "uniform unicode should be low entropy, got {}", shannon_entropy(&input));
-        assert_eq!(shannon_entropy_non_whitespace(&input), shannon_entropy(&input));
+        assert!(
+            shannon_entropy(&input) < 0.5,
+            "uniform unicode should be low entropy, got {}",
+            shannon_entropy(&input)
+        );
+        assert_eq!(
+            shannon_entropy_non_whitespace(&input),
+            shannon_entropy(&input)
+        );
     }
 
     #[test]
@@ -860,7 +875,11 @@ mod tests {
         let high_entropy = "aB3!xZ9@qR7#wK1$mN5%pL2^vT8&cF4*jH6(gY0)dSuE";
         let input = format!("{low_entropy}{high_entropy}{low_entropy}{high_entropy}");
         let segments = entropy_segments(&input, 10, 1, 3.0);
-        assert!(segments.len() >= 2, "expected at least two high-entropy segments, got {:?}", segments);
+        assert!(
+            segments.len() >= 2,
+            "expected at least two high-entropy segments, got {:?}",
+            segments
+        );
         assert!(segments.iter().any(|s| s.entropy > 3.0));
     }
 
@@ -872,14 +891,17 @@ mod tests {
         let padded: String = core.chars().flat_map(|c| [c, ' ']).collect();
         let compact_entropy = shannon_entropy_non_whitespace(&padded);
         let full_entropy = shannon_entropy(&padded);
-        assert!(compact_entropy > full_entropy + 0.05,
-            "compact={compact_entropy} full={full_entropy}");
+        assert!(
+            compact_entropy > full_entropy + 0.05,
+            "compact={compact_entropy} full={full_entropy}"
+        );
         let profile = compute_anomaly_profile(&padded);
         assert!(
-            profile
-                .signals
-                .iter()
-                .any(|s| matches!(*s, "high_entropy_after_whitespace_stripping" | "embedded_high_entropy_segment_after_whitespace_stripping")),
+            profile.signals.iter().any(|s| matches!(
+                *s,
+                "high_entropy_after_whitespace_stripping"
+                    | "embedded_high_entropy_segment_after_whitespace_stripping"
+            )),
             "signals: {:?}, compact_entropy={compact_entropy}, full_entropy={full_entropy}",
             profile.signals
         );
@@ -903,32 +925,49 @@ mod tests {
     #[test]
     fn structural_density_normal_text() {
         let d = structural_density("Hello this is a normal search query");
-        assert!(d < 0.05, "normal text should have low structural density, got {d}");
+        assert!(
+            d < 0.05,
+            "normal text should have low structural density, got {d}"
+        );
     }
 
     #[test]
     fn structural_density_attack() {
         let d = structural_density("';|$(cat /etc/passwd)&& rm -rf /");
-        assert!(d > 0.15, "attack payload should have high structural density, got {d}");
+        assert!(
+            d > 0.15,
+            "attack payload should have high structural density, got {d}"
+        );
     }
 
     #[test]
     fn anomaly_profile_benign() {
         let p = compute_anomaly_profile("Hello world this is a normal message");
-        assert!(p.anomaly_score < 0.20, "benign input should have low anomaly: {}", p.anomaly_score);
+        assert!(
+            p.anomaly_score < 0.20,
+            "benign input should have low anomaly: {}",
+            p.anomaly_score
+        );
     }
 
     #[test]
     fn anomaly_profile_attack() {
         // High metachar density payload triggers anomaly signals
         let p = compute_anomaly_profile("';|$(cat /etc/passwd)&&rm -rf /;echo$IFS'pwned'");
-        assert!(p.anomaly_score > 0.10, "attack should have elevated anomaly: {}", p.anomaly_score);
+        assert!(
+            p.anomaly_score > 0.10,
+            "attack should have elevated anomaly: {}",
+            p.anomaly_score
+        );
     }
 
     #[test]
     fn multiplier_benign() {
         let m = anomaly_confidence_multiplier("Just a normal search query here");
-        assert!((0.95..=1.05).contains(&m), "benign multiplier should be near 1.0, got {m}");
+        assert!(
+            (0.95..=1.05).contains(&m),
+            "benign multiplier should be near 1.0, got {m}"
+        );
     }
 
     #[test]
@@ -950,7 +989,10 @@ mod tests {
     fn entropy_segments_detects_high_entropy_payload() {
         let input = "cmd=run&payload=QmFzZTY0RW5jb2RlZFNlY3JldEhlbGxvV29ybGQxMjM0NQ==&done";
         let segments = entropy_segments(input, 20, 1, 4.0);
-        assert!(!segments.is_empty(), "embedded high-entropy window should be extracted");
+        assert!(
+            !segments.is_empty(),
+            "embedded high-entropy window should be extracted"
+        );
         assert!(segments.iter().any(|s| s.entropy > 4.0 && s.length >= 12));
     }
 
@@ -958,31 +1000,57 @@ mod tests {
     fn entropy_by_uri_parts_detects_spikes() {
         let req = "/api/v1/report?user=alice&token=QmFzZTY0VG9rZW5NYW5pZmVzdDEyMzQ1Njc4OTA=\r\nHost: x\r\n\r\nWWV0YVNlY3JldFRva2VuSW50ZXJuYWxQYXlsb2Fk";
         let profile = entropy_by_uri_parts(req);
-        assert!(profile.query_entropy.is_some(), "query entropy should be available");
-        assert!(profile.body_entropy.is_some(), "body entropy should be available");
-        assert!(profile.signals.iter().any(|s| matches!(*s, "query_entropy_high_and_spiky" | "query_entropy_spike")));
-        assert!(profile.signals.iter().any(|s| matches!(*s, "body_entropy_spike")));
+        assert!(
+            profile.query_entropy.is_some(),
+            "query entropy should be available"
+        );
+        assert!(
+            profile.body_entropy.is_some(),
+            "body entropy should be available"
+        );
+        assert!(
+            profile
+                .signals
+                .iter()
+                .any(|s| matches!(*s, "query_entropy_high_and_spiky" | "query_entropy_spike"))
+        );
+        assert!(
+            profile
+                .signals
+                .iter()
+                .any(|s| matches!(*s, "body_entropy_spike"))
+        );
     }
 
     #[test]
     fn chi_square_base64_and_hex() {
         let uniform_base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let skewed_base64 = "AAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-        let uniform_chi = chi_squared_base64(uniform_base64).unwrap_or_else(|| panic!("uniform base64 should be detectable"));
-        let skewed_chi = chi_squared_base64(skewed_base64).unwrap_or_else(|| panic!("uniform candidate should be detectable"));
-        assert!(uniform_chi < skewed_chi, "uniform-like base64 should produce lower chi-squared score");
+        let uniform_chi = chi_squared_base64(uniform_base64)
+            .unwrap_or_else(|| panic!("uniform base64 should be detectable"));
+        let skewed_chi = chi_squared_base64(skewed_base64)
+            .unwrap_or_else(|| panic!("uniform candidate should be detectable"));
+        assert!(
+            uniform_chi < skewed_chi,
+            "uniform-like base64 should produce lower chi-squared score"
+        );
 
         let uniform_hex = "0123456789abcdef0123456789abcdef";
         let skewed_hex = "00000000000000000000000000000000000000000000";
-        let uniform_hex_chi = chi_squared_hex(uniform_hex).unwrap_or_else(|| panic!("uniform hex should be detectable"));
-        let skewed_hex_chi = chi_squared_hex(skewed_hex).unwrap_or_else(|| panic!("skewed hex should be detectable"));
+        let uniform_hex_chi = chi_squared_hex(uniform_hex)
+            .unwrap_or_else(|| panic!("uniform hex should be detectable"));
+        let skewed_hex_chi = chi_squared_hex(skewed_hex)
+            .unwrap_or_else(|| panic!("skewed hex should be detectable"));
         assert!(uniform_hex_chi < skewed_hex_chi);
     }
 
     #[test]
     fn repetition_high() {
         let r = repetition_index("AAAAAAAAAAAAAAAAAAAAAA", 3);
-        assert!(r > 0.8, "fully repetitive input should have high index, got {r}");
+        assert!(
+            r > 0.8,
+            "fully repetitive input should have high index, got {r}"
+        );
     }
 
     #[test]
@@ -1000,8 +1068,11 @@ mod tests {
 
     #[test]
     fn index_of_coincidence_separates_randomish_from_text() {
-        let text_ioc = index_of_coincidence("this is normal english text repeated this is normal english text");
-        let randomish_ioc = index_of_coincidence("QmFzZTY0RW5jb2RlZFBheWxvYWRTdHJlYW0xMjM0NTY3ODkwQUJDREVGRw==");
+        let text_ioc = index_of_coincidence(
+            "this is normal english text repeated this is normal english text",
+        );
+        let randomish_ioc =
+            index_of_coincidence("QmFzZTY0RW5jb2RlZFBheWxvYWRTdHJlYW0xMjM0NTY3ODkwQUJDREVGRw==");
         assert!(text_ioc > randomish_ioc);
     }
 
@@ -1014,7 +1085,13 @@ mod tests {
 
     #[test]
     fn anomaly_profile_emits_random_stream_signal() {
-        let p = compute_anomaly_profile("QmFzZTY0RW5jb2RlZE1hbGljaW91c1BheWxvYWQxMjM0NTY3ODkwQUJDREVGR0hJSg==");
-        assert!(p.signals.iter().any(|s| *s == "random_like_stream" || *s == "high_lz_complexity"));
+        let p = compute_anomaly_profile(
+            "QmFzZTY0RW5jb2RlZE1hbGljaW91c1BheWxvYWQxMjM0NTY3ODkwQUJDREVGR0hJSg==",
+        );
+        assert!(
+            p.signals
+                .iter()
+                .any(|s| *s == "random_like_stream" || *s == "high_lz_complexity")
+        );
     }
 }

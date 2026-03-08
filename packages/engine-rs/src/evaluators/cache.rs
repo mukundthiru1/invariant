@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct CacheEvaluator;
 
 impl L2Evaluator for CacheEvaluator {
-    fn id(&self) -> &'static str { "cache" }
-    fn prefix(&self) -> &'static str { "L2 Cache" }
+    fn id(&self) -> &'static str {
+        "cache"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 Cache"
+    }
 
     #[inline]
 
@@ -18,13 +22,18 @@ impl L2Evaluator for CacheEvaluator {
         let low = decoded.to_lowercase();
 
         // Unkeyed headers used for cache poisoning
-        static unkeyed: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*(?:X-Forwarded-Host|X-Forwarded-Scheme|X-Original-URL|X-Rewrite-URL|X-Forwarded-Prefix)\s*:\s*([^\r\n]+)").unwrap());
+        static unkeyed: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*(?:X-Forwarded-Host|X-Forwarded-Scheme|X-Original-URL|X-Rewrite-URL|X-Forwarded-Prefix)\s*:\s*([^\r\n]+)").unwrap()
+        });
         if let Some(m) = unkeyed.find(&decoded) {
             let header_line = m.as_str();
             let has_host = header_line.to_lowercase().contains("x-forwarded-host");
             let has_path = header_line.to_lowercase().contains("x-original-url");
             static HOST_PAYLOAD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                Regex::new(r"(?i)(?:https?://|/|\.{2}|%2e%2e|%252e%252e|javascript:|%0a|%0d|script)").unwrap()
+                Regex::new(
+                    r"(?i)(?:https?://|/|\.{2}|%2e%2e|%252e%252e|javascript:|%0a|%0d|script)",
+                )
+                .unwrap()
             });
             let has_host_payload = HOST_PAYLOAD_RE.is_match(&decoded);
             if has_host_payload && (has_host || has_path) {
@@ -36,40 +45,55 @@ impl L2Evaluator for CacheEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: header_line.to_owned(),
-                        interpretation: "Unkeyed header values can alter cache key resolution".into(),
+                        interpretation: "Unkeyed header values can alter cache key resolution"
+                            .into(),
                         offset: m.start(),
-                        property: "Cache key derivation must include and normalize trusted proxy headers".into(),
+                        property:
+                            "Cache key derivation must include and normalize trusted proxy headers"
+                                .into(),
                     }],
                 });
             }
         }
 
         // Cache deception: path confusion to cache sensitive pages
-        static cache_deception: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)/(?:account|profile|settings|admin|api/me|dashboard)(?:/[^?\s]{0,80})?\.(?:css|js|jpg|png|gif|ico|svg|woff2?)(?:\?.*)?$").unwrap());
+        static cache_deception: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)/(?:account|profile|settings|admin|api/me|dashboard)(?:/[^?\s]{0,80})?\.(?:css|js|jpg|png|gif|ico|svg|woff2?)(?:\?.*)?$").unwrap()
+        });
         if let Some(m) = cache_deception.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "cache_deception".into(),
                 confidence: 0.82,
-                detail: format!("Web cache deception: static extension on sensitive path: {}", m.as_str()),
+                detail: format!(
+                    "Web cache deception: static extension on sensitive path: {}",
+                    m.as_str()
+                ),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Static file extension causes cache to store sensitive page".into(),
+                    interpretation: "Static file extension causes cache to store sensitive page"
+                        .into(),
                     offset: m.start(),
-                    property: "Cache must not store responses for paths with trailing static extensions".into(),
+                    property:
+                        "Cache must not store responses for paths with trailing static extensions"
+                            .into(),
                 }],
             });
         }
 
         // Cache key injection via sensitive query parameters (parameter cloaking)
-        static cloak: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)[?&](utm_content|utm_campaign|utm_source)\s*=\s*([^&\s]+)").unwrap());
+        static cloak: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&](utm_content|utm_campaign|utm_source)\s*=\s*([^&\s]+)").unwrap()
+        });
         for caps in cloak.captures_iter(&decoded) {
             let raw = caps.get(0).map(|m| m.as_str()).unwrap_or("");
             let value = caps.get(2).map(|m| m.as_str()).unwrap_or("");
-            static SUSPICIOUS_PARAM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-                Regex::new(r"(?i)<|javascript:|%3c|onerror|onload|<script|eval|alert|svg").unwrap()
-            });
+            static SUSPICIOUS_PARAM_RE: std::sync::LazyLock<Regex> =
+                std::sync::LazyLock::new(|| {
+                    Regex::new(r"(?i)<|javascript:|%3c|onerror|onload|<script|eval|alert|svg")
+                        .unwrap()
+                });
             let suspicious = SUSPICIOUS_PARAM_RE.is_match(value);
             if suspicious {
                 dets.push(L2Detection {
@@ -89,7 +113,9 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Cache poisoning via path confusion in static prefixes
-        static path_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)/(?:static|assets|public|cdn)(?:/[^/\s?#]{1,30})*/(?:\.{2}|%2e%2e|%252e%252e)/(?:[^?\s#]{1,120})").unwrap());
+        static path_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)/(?:static|assets|public|cdn)(?:/[^/\s?#]{1,30})*/(?:\.{2}|%2e%2e|%252e%252e)/(?:[^?\s#]{1,120})").unwrap()
+        });
         if path_confusion.is_match(&low) {
             if let Some(m) = path_confusion.find(&decoded) {
                 dets.push(L2Detection {
@@ -109,7 +135,11 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Static extension on sensitive path with traversal prefix
-        static static_extension_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)/(?:static|assets|public|cdn)/\.\./(?:api|v[0-9]+/user|account|profile|settings|dashboard|admin)(?:/[^.\s?]+)?\.(?:css|js|json|html|xml|txt)").unwrap());
+        static static_extension_confusion: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r"(?i)/(?:static|assets|public|cdn)/\.\./(?:api|v[0-9]+/user|account|profile|settings|dashboard|admin)(?:/[^.\s?]+)?\.(?:css|js|json|html|xml|txt)").unwrap()
+            },
+        );
         if let Some(m) = static_extension_confusion.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "cache_path_confusion".into(),
@@ -129,14 +159,11 @@ impl L2Evaluator for CacheEvaluator {
         // Host header override poisoning: conflicting Host and X-Forwarded-Host
         static HOST_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*Host\s*:\s*([^\r\n]+)").unwrap());
-        static XFH_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*X-Forwarded-Host\s*:\s*([^\r\n]+)").unwrap());
-        let host = HOST_RE
-            .captures(&decoded)
-            .and_then(|c| c.get(1));
-        let xfh = XFH_RE
-            .captures(&decoded)
-            .and_then(|c| c.get(1));
+        static XFH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*X-Forwarded-Host\s*:\s*([^\r\n]+)").unwrap()
+        });
+        let host = HOST_RE.captures(&decoded).and_then(|c| c.get(1));
+        let xfh = XFH_RE.captures(&decoded).and_then(|c| c.get(1));
         if let (Some(host), Some(xfh)) = (host, xfh) {
             let host_val = host.as_str().trim().to_ascii_lowercase();
             let xfh_val = xfh.as_str().trim().to_ascii_lowercase();
@@ -158,7 +185,12 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Forwarded/X-Host poisoning vectors often excluded from default cache keys
-        static forwarded_host: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?im)^\s*(?:Forwarded\s*:\s*[^\r\n]*\bhost=|X-Host\s*:)\s*([^\r\n;,\"]+)"#).unwrap());
+        static forwarded_host: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r#"(?im)^\s*(?:Forwarded\s*:\s*[^\r\n]*\bhost=|X-Host\s*:)\s*([^\r\n;,\"]+)"#,
+            )
+            .unwrap()
+        });
         if let Some(m) = forwarded_host.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "forwarded_host_poison".into(),
@@ -176,7 +208,9 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Query parameter cloaking using ';' delimiter to desync cache and origin parsers
-        static param_cloak: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)\?[^#\r\n]{0,200}(?:;|%3b)[^#\r\n]{0,200}(?:admin|role|token|redirect|callback|url|format|lang)\s*=").unwrap());
+        static param_cloak: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\?[^#\r\n]{0,200}(?:;|%3b)[^#\r\n]{0,200}(?:admin|role|token|redirect|callback|url|format|lang)\s*=").unwrap()
+        });
         if let Some(m) = param_cloak.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "cache_param_cloaking".into(),
@@ -197,7 +231,8 @@ impl L2Evaluator for CacheEvaluator {
         static AUTH_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*Authorization\s*:").unwrap());
         static CACHE_PUBLIC_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?im)^\s*Cache-Control\s*:\s*[^\r\n]*(?:public|s-maxage=\d+|max-age=\d+)").unwrap()
+            Regex::new(r"(?im)^\s*Cache-Control\s*:\s*[^\r\n]*(?:public|s-maxage=\d+|max-age=\d+)")
+                .unwrap()
         });
         static CACHE_CONTROL_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*Cache-Control\s*:[^\r\n]+").unwrap());
@@ -205,7 +240,9 @@ impl L2Evaluator for CacheEvaluator {
         let cache_public = CACHE_PUBLIC_RE.is_match(&decoded);
         if has_auth && cache_public {
             let m = CACHE_CONTROL_RE.find(&decoded);
-            let (snippet, pos) = m.map(|x| (x.as_str().to_owned(), x.start())).unwrap_or(("Cache-Control".into(), 0));
+            let (snippet, pos) = m
+                .map(|x| (x.as_str().to_owned(), x.start()))
+                .unwrap_or(("Cache-Control".into(), 0));
             dets.push(L2Detection {
                 detection_type: "auth_cacheable_response".into(),
                 confidence: 0.86,
@@ -222,7 +259,9 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Vary on attacker-controlled headers can enable cache poisoning across variants
-        static vary_untrusted: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*Vary\s*:\s*[^\r\n]*(?:X-Forwarded-Host|X-Original-URL|X-Rewrite-URL|Origin)").unwrap());
+        static vary_untrusted: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^\s*Vary\s*:\s*[^\r\n]*(?:X-Forwarded-Host|X-Original-URL|X-Rewrite-URL|Origin)").unwrap()
+        });
         if let Some(m) = vary_untrusted.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "cache_vary_override".into(),
@@ -261,7 +300,10 @@ impl L2Evaluator for CacheEvaluator {
         static WCD_REQUEST_TARGET_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r#"(?i)(?:^|[\s"'])/(?:account|profile|settings|dashboard)(?:/[^/?#\s]{1,40}){1,5}\.(?:css|js|jpg|png|gif|ico|svg|woff2?)(?:\?[^ \r\n]*)?(?:\s|$)"#).unwrap()
         });
-        if dets.iter().all(|d| d.detection_type != "web_cache_deception_path_confusion") {
+        if dets
+            .iter()
+            .all(|d| d.detection_type != "web_cache_deception_path_confusion")
+        {
             if let Some(m) = WCD_REQUEST_TARGET_RE.find(&decoded) {
                 dets.push(L2Detection {
                     detection_type: "web_cache_deception_path_confusion".into(),
@@ -280,9 +322,11 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // Cache key normalization bypass via encoded separators / null bytes in routes
-        static CACHE_KEY_NORMALIZATION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)/(?:api|account|profile|users?|v[0-9]+)[^?\s\r\n]{0,180}(?:%00|%2500|%2f|%252f|%5c|%255c|%2e|%252e)[^?\s\r\n]{0,120}").unwrap()
-        });
+        static CACHE_KEY_NORMALIZATION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r"(?i)/(?:api|account|profile|users?|v[0-9]+)[^?\s\r\n]{0,180}(?:%00|%2500|%2f|%252f|%5c|%255c|%2e|%252e)[^?\s\r\n]{0,120}").unwrap()
+            },
+        );
         if let Some(m) = CACHE_KEY_NORMALIZATION_RE.find(&low) {
             dets.push(L2Detection {
                 detection_type: "cache_key_normalization_bypass".into(),
@@ -298,12 +342,17 @@ impl L2Evaluator for CacheEvaluator {
                 }],
             });
         }
-        static CACHE_KEY_NORMALIZATION_RAW_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?i)(?:^|[\s"'])/(?:api|account|profile|users?|v[0-9]+)[^ \r\n?]{0,180}(?:%00|%2500|%2f|%252f|%5c|%255c|%2e|%252e)[^ \r\n?]{0,120}(?:\s|$)"#).unwrap()
-        });
-        static CACHE_KEY_NORMALIZATION_NUL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)/(?:api|account|profile|users?|v[0-9]+)[^\r\n]{0,120}\x00[^\r\n]{0,120}").unwrap()
-        });
+        static CACHE_KEY_NORMALIZATION_RAW_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?i)(?:^|[\s"'])/(?:api|account|profile|users?|v[0-9]+)[^ \r\n?]{0,180}(?:%00|%2500|%2f|%252f|%5c|%255c|%2e|%252e)[^ \r\n?]{0,120}(?:\s|$)"#).unwrap()
+            });
+        static CACHE_KEY_NORMALIZATION_NUL_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?is)/(?:api|account|profile|users?|v[0-9]+)[^\r\n]{0,120}\x00[^\r\n]{0,120}",
+                )
+                .unwrap()
+            });
         if dets
             .iter()
             .all(|d| d.detection_type != "cache_key_normalization_bypass")
@@ -366,7 +415,8 @@ impl L2Evaluator for CacheEvaluator {
 
         // CDN IP segmentation abuse via spoofed client-IP headers
         static CDN_IP_HEADER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?im)^\s*(CF-Connecting-IP|X-Real-IP|Fastly-Client-IP)\s*:\s*([^\r\n]+)").unwrap()
+            Regex::new(r"(?im)^\s*(CF-Connecting-IP|X-Real-IP|Fastly-Client-IP)\s*:\s*([^\r\n]+)")
+                .unwrap()
         });
         static CDN_IP_SPOOF_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?i)(?:,|%0a|%0d|127\.|10\.|192\.168\.|172\.(?:1[6-9]|2[0-9]|3[0-1])\.|localhost|::1)").unwrap()
@@ -395,12 +445,18 @@ impl L2Evaluator for CacheEvaluator {
         }
 
         // HTTP response splitting payloads targeting cached headers
-        static RESPONSE_SPLIT_ENCODED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)%0d%0a\s*(?:set-cookie|location)\s*:|%0a\s*(?:set-cookie|location)\s*:").unwrap()
-        });
-        static RESPONSE_SPLIT_DECODED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)(?:x-forwarded-host|x-original-url|x-rewrite-url|x-host|referer|user-agent)\s*:[^\r\n]*(?:\r\n|\n)\s*(?:set-cookie|location)\s*:").unwrap()
-        });
+        static RESPONSE_SPLIT_ENCODED_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?i)%0d%0a\s*(?:set-cookie|location)\s*:|%0a\s*(?:set-cookie|location)\s*:",
+                )
+                .unwrap()
+            });
+        static RESPONSE_SPLIT_DECODED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r"(?is)(?:x-forwarded-host|x-original-url|x-rewrite-url|x-host|referer|user-agent)\s*:[^\r\n]*(?:\r\n|\n)\s*(?:set-cookie|location)\s*:").unwrap()
+            },
+        );
         if let Some(m) = RESPONSE_SPLIT_ENCODED_RE.find(&low) {
             dets.push(L2Detection {
                 detection_type: "cache_response_splitting".into(),
@@ -410,9 +466,12 @@ impl L2Evaluator for CacheEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SyntaxRepair,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Injected CRLF can append Set-Cookie/Location to cached responses".into(),
+                    interpretation:
+                        "Injected CRLF can append Set-Cookie/Location to cached responses".into(),
                     offset: m.start(),
-                    property: "All header values must reject CR/LF and encoded CRLF before cache storage".into(),
+                    property:
+                        "All header values must reject CR/LF and encoded CRLF before cache storage"
+                            .into(),
                 }],
             });
         } else if let Some(m) = RESPONSE_SPLIT_DECODED_RE.find(&decoded) {
@@ -453,7 +512,10 @@ impl L2Evaluator for CacheEvaluator {
             }
         }
         if host_count > 1 || xfh_count > 1 {
-            let offset = MULTI_HOST_KEY_RE.find(&decoded).map(|m| m.start()).unwrap_or(0);
+            let offset = MULTI_HOST_KEY_RE
+                .find(&decoded)
+                .map(|m| m.start())
+                .unwrap_or(0);
             dets.push(L2Detection {
                 detection_type: "cache_key_confusion_multi_host".into(),
                 confidence: 0.93,
@@ -487,8 +549,15 @@ impl L2Evaluator for CacheEvaluator {
             return Some(InvariantClass::CacheDeception);
         }
         match detection_type {
-            "header_key_injection" | "query_cloak" | "host_header_override" | "forwarded_host_poison" | "cache_param_cloaking" | "cache_vary_override" => Some(InvariantClass::CachePoisoning),
-            "cache_deception" | "cache_path_confusion" | "auth_cacheable_response" => Some(InvariantClass::CacheDeception),
+            "header_key_injection"
+            | "query_cloak"
+            | "host_header_override"
+            | "forwarded_host_poison"
+            | "cache_param_cloaking"
+            | "cache_vary_override" => Some(InvariantClass::CachePoisoning),
+            "cache_deception" | "cache_path_confusion" | "auth_cacheable_response" => {
+                Some(InvariantClass::CacheDeception)
+            }
             _ => None,
         }
     }
@@ -503,13 +572,21 @@ mod tests {
         let results = crate::evaluators::evaluate_l2(
             "GET /search?q=1 HTTP/1.1\nX-Original-URL: /admin\nX-Forwarded-Host: attacker.com\n",
         );
-        assert!(results.iter().any(|r| r.class == InvariantClass::CachePoisoning));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.class == InvariantClass::CachePoisoning)
+        );
     }
 
     #[test]
     fn detects_static_path_confusion_cache_deception() {
         let results = crate::evaluators::evaluate_l2("/static/../api/user.js?cache=1");
-        assert!(results.iter().any(|r| r.class == InvariantClass::CacheDeception));
+        assert!(
+            results
+                .iter()
+                .any(|r| r.class == InvariantClass::CacheDeception)
+        );
     }
 
     #[test]
@@ -518,15 +595,24 @@ mod tests {
         let dets = eval.detect(
             "GET / HTTP/1.1\r\nHost: app.example.com\r\nX-Forwarded-Host: attacker.example\r\n\r\n",
         );
-        assert!(dets.iter().any(|d| d.detection_type == "host_header_override"));
-        assert_eq!(eval.map_class("host_header_override"), Some(InvariantClass::CachePoisoning));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "host_header_override")
+        );
+        assert_eq!(
+            eval.map_class("host_header_override"),
+            Some(InvariantClass::CachePoisoning)
+        );
     }
 
     #[test]
     fn detects_semicolon_parameter_cloaking() {
         let eval = CacheEvaluator;
         let dets = eval.detect("/products?item=1;admin=true&view=public");
-        assert!(dets.iter().any(|d| d.detection_type == "cache_param_cloaking"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_param_cloaking")
+        );
     }
 
     #[test]
@@ -535,17 +621,25 @@ mod tests {
         let dets = eval.detect(
             "GET /account HTTP/1.1\r\nAuthorization: Bearer token\r\nCache-Control: public, max-age=600\r\n\r\n",
         );
-        assert!(dets.iter().any(|d| d.detection_type == "auth_cacheable_response"));
-        assert_eq!(eval.map_class("auth_cacheable_response"), Some(InvariantClass::CacheDeception));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "auth_cacheable_response")
+        );
+        assert_eq!(
+            eval.map_class("auth_cacheable_response"),
+            Some(InvariantClass::CacheDeception)
+        );
     }
 
     #[test]
     fn detects_web_cache_deception_nonexistent_css_on_authenticated_path() {
         let eval = CacheEvaluator;
-        let dets = eval.detect("GET /account/profile/nonexistent.css HTTP/1.1\r\nHost: app.example\r\n\r\n");
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "web_cache_deception_path_confusion"));
+        let dets = eval
+            .detect("GET /account/profile/nonexistent.css HTTP/1.1\r\nHost: app.example\r\n\r\n");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "web_cache_deception_path_confusion")
+        );
         assert_eq!(
             eval.map_class("web_cache_deception_path_confusion"),
             Some(InvariantClass::CacheDeception)
@@ -556,9 +650,10 @@ mod tests {
     fn detects_cache_key_normalization_bypass_with_null_byte_encoding() {
         let eval = CacheEvaluator;
         let dets = eval.detect("GET /api/v1/users%00 HTTP/1.1\r\nHost: app.example\r\n\r\n");
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cache_key_normalization_bypass"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_key_normalization_bypass")
+        );
         assert_eq!(
             eval.map_class("cache_key_normalization_bypass"),
             Some(InvariantClass::CachePoisoning)
@@ -571,9 +666,10 @@ mod tests {
         let dets = eval.detect(
             "HTTP/1.1 200 OK\r\nVary: Accept-Language, X-Forwarded-Host\r\nAccept-Language: en-US,en;q=0.9,zz-ZZ;q=0.8\r\nX-Forwarded-Host: attacker.example\r\n\r\n",
         );
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "vary_header_manipulation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "vary_header_manipulation")
+        );
     }
 
     #[test]
@@ -582,9 +678,10 @@ mod tests {
         let dets = eval.detect(
             "GET / HTTP/1.1\r\nHost: app.example\r\nCF-Connecting-IP: 127.0.0.1, 8.8.8.8\r\n\r\n",
         );
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cdn_ip_header_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cdn_ip_header_injection")
+        );
     }
 
     #[test]
@@ -593,9 +690,10 @@ mod tests {
         let dets = eval.detect(
             "GET / HTTP/1.1\r\nHost: app.example\r\nX-Forwarded-Host: attacker.example%0d%0aSet-Cookie: cachepwn=1\r\n\r\n",
         );
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cache_response_splitting"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_response_splitting")
+        );
     }
 
     #[test]
@@ -604,9 +702,10 @@ mod tests {
         let dets = eval.detect(
             "GET / HTTP/1.1\r\nHost: app.example\r\nX-Original-URL: /ok\r\nLocation: /safe\r\nUser-Agent: ok%0d%0aLocation: https://evil.example\r\n\r\n",
         );
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cache_response_splitting"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_response_splitting")
+        );
     }
 
     #[test]
@@ -615,9 +714,10 @@ mod tests {
         let dets = eval.detect(
             "GET / HTTP/1.1\r\nHost: app.example\r\nHost: attacker.example\r\nX-Forwarded-Host: app.example\r\n\r\n",
         );
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cache_key_confusion_multi_host"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_key_confusion_multi_host")
+        );
         assert_eq!(
             eval.map_class("cache_key_confusion_multi_host"),
             Some(InvariantClass::CachePoisoning)

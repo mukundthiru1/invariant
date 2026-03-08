@@ -9,9 +9,7 @@ pub mod url;
 pub use html::{HtmlTokenType, HtmlTokenizer};
 pub use path::{PathTokenType, PathTokenizer};
 pub use shell::{ShellTokenType, ShellTokenizer};
-pub use sql::{
-    SqlTokenType, SqlTokenizer, TautologyDetection, detect_tautologies,
-};
+pub use sql::{SqlTokenType, SqlTokenizer, TautologyDetection, detect_tautologies};
 pub use url::{UrlTokenType, UrlTokenizer};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +55,7 @@ where
             .collect()
     }
 
-    pub fn find_sequence(&self, pattern: &[T]) -> Vec<(usize, Vec<Token<T>>)> 
+    pub fn find_sequence(&self, pattern: &[T]) -> Vec<(usize, Vec<Token<T>>)>
     where
         T: Clone,
     {

@@ -119,7 +119,7 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
 
     // ── Structural Analysis via Shell Tokenizer ──
     const stream = shellTokenizer.tokenize(decoded)
-    const allTokens = stream.tokens
+    const allTokens = (stream as any).tokens as any[]
     const meaningful = allTokens.filter(t =>
         t.type !== 'WHITESPACE' && t.type !== 'NEWLINE'
     )
@@ -134,10 +134,10 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     detectVariableExpansionViolations(meaningful, decoded, detections)
 
     // Strategy 4: Quote fragmentation (w'h'o'a'm'i)
-    detectQuoteFragmentation(allTokens, decoded, detections)
+    detectQuoteFragmentation(allTokens as any, decoded, detections)
 
     // Strategy 5: Glob-in-path analysis (/???/??t)
-    detectGlobPaths(allTokens, decoded, detections)
+    detectGlobPaths(allTokens as any, decoded, detections)
 
     // Strategy 6: Argument injection (--exec, -e)
     detectArgumentInjection(meaningful, detections)

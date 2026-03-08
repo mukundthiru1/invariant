@@ -54,12 +54,14 @@ pub fn analyze_response(
     findings.extend(detect_version_disclosure(body, headers));
     findings.extend(audit_security_headers(headers));
 
-    if request_classes.iter().any(|c| matches!(
-        c,
-        InvariantClass::SsrfInternalReach
-            | InvariantClass::SsrfCloudMetadata
-            | InvariantClass::SsrfProtocolSmuggle
-    )) {
+    if request_classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::SsrfInternalReach
+                | InvariantClass::SsrfCloudMetadata
+                | InvariantClass::SsrfProtocolSmuggle
+        )
+    }) {
         if let Some(confirm) = confirm_ssrf_success(status, body) {
             findings.push(confirmation_to_finding(confirm, Severity::Critical));
         }
@@ -70,11 +72,26 @@ pub fn analyze_response(
 
 pub fn detect_sql_error_leak(body: &str) -> Vec<ResponseFinding> {
     let patterns = [
-        ("mysql", r"(?i)(you have an error in your sql syntax|warning:\s*mysql_|mysqli?_[a-z_]+\(|mysql server version for the right syntax)"),
-        ("postgresql", r"(?i)(pg::\w+error|postgresql.*error|org\.postgresql\.util\.psqlexception|error:\s*syntax error at or near)"),
-        ("mssql", r"(?i)(sqlserverexception|unclosed quotation mark after the character string|microsoft ole db provider for sql server|incorrect syntax near)"),
-        ("oracle", r"(?i)(ora-\d{5}|oracle error|quoted string not properly terminated)"),
-        ("sqlite", r#"(?i)(sqlite\.exception|sqlite/jdbcdriver|sqlite_error|near ".*": syntax error)"#),
+        (
+            "mysql",
+            r"(?i)(you have an error in your sql syntax|warning:\s*mysql_|mysqli?_[a-z_]+\(|mysql server version for the right syntax)",
+        ),
+        (
+            "postgresql",
+            r"(?i)(pg::\w+error|postgresql.*error|org\.postgresql\.util\.psqlexception|error:\s*syntax error at or near)",
+        ),
+        (
+            "mssql",
+            r"(?i)(sqlserverexception|unclosed quotation mark after the character string|microsoft ole db provider for sql server|incorrect syntax near)",
+        ),
+        (
+            "oracle",
+            r"(?i)(ora-\d{5}|oracle error|quoted string not properly terminated)",
+        ),
+        (
+            "sqlite",
+            r#"(?i)(sqlite\.exception|sqlite/jdbcdriver|sqlite_error|near ".*": syntax error)"#,
+        ),
     ];
 
     let mut findings = Vec::new();
@@ -93,11 +110,26 @@ pub fn detect_sql_error_leak(body: &str) -> Vec<ResponseFinding> {
 
 pub fn detect_stack_trace_leak(body: &str) -> Vec<ResponseFinding> {
     let patterns = [
-        ("java", r"(?mi)(exception in thread|java\.lang\.\w+exception|^\s+at [\w.$_]+\(.*:\d+\))"),
-        ("python", r#"(?mi)(traceback \(most recent call last\):|^\s*file ".*", line \d+)"#),
-        ("php", r"(?mi)(php fatal error|uncaught .*exception|stack trace:)"),
-        (".net", r"(?mi)(system\.[\w.]+exception| at [\w.]+\(.*\) in .*:line \d+)"),
-        ("node.js", r"(?mi)(node:internal|^\s+at (?:new )?[\w.$<>\[\]]+\s+\(.*:\d+:\d+\)|referenceerror:|typeerror:)"),
+        (
+            "java",
+            r"(?mi)(exception in thread|java\.lang\.\w+exception|^\s+at [\w.$_]+\(.*:\d+\))",
+        ),
+        (
+            "python",
+            r#"(?mi)(traceback \(most recent call last\):|^\s*file ".*", line \d+)"#,
+        ),
+        (
+            "php",
+            r"(?mi)(php fatal error|uncaught .*exception|stack trace:)",
+        ),
+        (
+            ".net",
+            r"(?mi)(system\.[\w.]+exception| at [\w.]+\(.*\) in .*:line \d+)",
+        ),
+        (
+            "node.js",
+            r"(?mi)(node:internal|^\s+at (?:new )?[\w.$<>\[\]]+\s+\(.*:\d+:\d+\)|referenceerror:|typeerror:)",
+        ),
     ];
 
     let mut findings = Vec::new();
@@ -138,7 +170,10 @@ pub fn detect_sensitive_data_leak(body: &str) -> Vec<ResponseFinding> {
     let key_patterns = [
         ("aws_access_key_id", r"\bAKIA[0-9A-Z]{16}\b"),
         ("github_pat", r"\bghp_[A-Za-z0-9]{36}\b"),
-        ("generic_api_key", r#"(?i)\b(api[_-]?key|access[_-]?token)\b\s*[:=]\s*["'][A-Za-z0-9_\-]{16,}["']"#),
+        (
+            "generic_api_key",
+            r#"(?i)\b(api[_-]?key|access[_-]?token)\b\s*[:=]\s*["'][A-Za-z0-9_\-]{16,}["']"#,
+        ),
     ];
     for (kind, pattern) in key_patterns {
         if let Some(ev) = first_regex_match(body, pattern) {
@@ -151,7 +186,10 @@ pub fn detect_sensitive_data_leak(body: &str) -> Vec<ResponseFinding> {
         }
     }
 
-    if let Some(ev) = first_regex_match(body, r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----") {
+    if let Some(ev) = first_regex_match(
+        body,
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----",
+    ) {
         findings.push(ResponseFinding {
             finding_type: ResponseFindingType::SensitiveDataLeak,
             severity: Severity::Critical,
@@ -160,7 +198,10 @@ pub fn detect_sensitive_data_leak(body: &str) -> Vec<ResponseFinding> {
         });
     }
 
-    if let Some(ev) = first_regex_match(body, r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b") {
+    if let Some(ev) = first_regex_match(
+        body,
+        r"\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b",
+    ) {
         findings.push(ResponseFinding {
             finding_type: ResponseFindingType::SensitiveDataLeak,
             severity: Severity::High,
@@ -208,7 +249,9 @@ pub fn detect_version_disclosure(body: &str, headers: &[(String, String)]) -> Ve
     let version_re = Regex::new(r"(?i)\b(?:\d+\.){1,3}\d+\b").expect("valid version regex");
 
     for (name, value) in headers {
-        if interesting_headers.iter().any(|h| name.eq_ignore_ascii_case(h))
+        if interesting_headers
+            .iter()
+            .any(|h| name.eq_ignore_ascii_case(h))
             && version_re.is_match(value)
         {
             findings.push(ResponseFinding {
@@ -235,7 +278,10 @@ pub fn detect_version_disclosure(body: &str, headers: &[(String, String)]) -> Ve
     findings
 }
 
-pub fn confirm_sqli_success(request_input: &str, response_body: &str) -> Option<ExploitConfirmation> {
+pub fn confirm_sqli_success(
+    request_input: &str,
+    response_body: &str,
+) -> Option<ExploitConfirmation> {
     if request_input.trim().is_empty() || response_body.is_empty() {
         return None;
     }
@@ -272,7 +318,10 @@ pub fn confirm_sqli_success(request_input: &str, response_body: &str) -> Option<
     None
 }
 
-pub fn confirm_xss_reflection(request_input: &str, response_body: &str) -> Option<ExploitConfirmation> {
+pub fn confirm_xss_reflection(
+    request_input: &str,
+    response_body: &str,
+) -> Option<ExploitConfirmation> {
     if request_input.trim().is_empty() || response_body.is_empty() {
         return None;
     }
@@ -287,7 +336,10 @@ pub fn confirm_xss_reflection(request_input: &str, response_body: &str) -> Optio
     None
 }
 
-pub fn confirm_ssrf_success(response_status: u16, response_body: &str) -> Option<ExploitConfirmation> {
+pub fn confirm_ssrf_success(
+    response_status: u16,
+    response_body: &str,
+) -> Option<ExploitConfirmation> {
     if response_body.is_empty() {
         return None;
     }
@@ -384,11 +436,17 @@ pub fn audit_security_headers(headers: &[(String, String)]) -> Vec<ResponseFindi
     findings
 }
 
-pub fn confirmation_to_finding(confirm: ExploitConfirmation, severity: Severity) -> ResponseFinding {
+pub fn confirmation_to_finding(
+    confirm: ExploitConfirmation,
+    severity: Severity,
+) -> ResponseFinding {
     ResponseFinding {
         finding_type: ResponseFindingType::ExploitConfirmation,
         severity,
-        detail: format!("{} exploit confirmed: {}", confirm.exploit_type, confirm.detail),
+        detail: format!(
+            "{} exploit confirmed: {}",
+            confirm.exploit_type, confirm.detail
+        ),
         evidence: confirm.evidence,
     }
 }
@@ -509,7 +567,8 @@ mod tests {
 
     #[test]
     fn directory_listing_detection() {
-        let body = "<html><title>Index of /backups</title><a href=\"../\">Parent Directory</a></html>";
+        let body =
+            "<html><title>Index of /backups</title><a href=\"../\">Parent Directory</a></html>";
         let findings = detect_directory_listing(body);
         assert_eq!(findings.len(), 1);
     }
@@ -547,7 +606,11 @@ mod tests {
     #[test]
     fn audit_security_headers_reports_missing() {
         let findings = audit_security_headers(&[]);
-        assert!(findings.iter().any(|f| f.detail.contains("content-security-policy")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.detail.contains("content-security-policy"))
+        );
     }
 
     #[test]
@@ -558,7 +621,10 @@ mod tests {
             500,
             &headers,
             body,
-            &[InvariantClass::SqlErrorOracle, InvariantClass::SsrfCloudMetadata],
+            &[
+                InvariantClass::SqlErrorOracle,
+                InvariantClass::SsrfCloudMetadata,
+            ],
         );
         assert!(analysis.findings.len() >= 3);
     }

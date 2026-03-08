@@ -97,7 +97,8 @@ pub struct SchemaViolation {
 }
 
 pub fn load_schema(json: &str) -> Result<ApiSchema, String> {
-    let root: Value = serde_json::from_str(json).map_err(|e| format!("invalid schema json: {e}"))?;
+    let root: Value =
+        serde_json::from_str(json).map_err(|e| format!("invalid schema json: {e}"))?;
     let paths_val = root
         .get("paths")
         .ok_or_else(|| "missing 'paths' in schema".to_string())?;
@@ -109,8 +110,8 @@ pub fn load_schema(json: &str) -> Result<ApiSchema, String> {
 }
 
 pub fn load_schema_from_paths(paths_json: &str) -> Result<ApiSchema, String> {
-    let paths_value: Value = serde_json::from_str(paths_json)
-        .map_err(|e| format!("invalid paths json: {e}"))?;
+    let paths_value: Value =
+        serde_json::from_str(paths_json).map_err(|e| format!("invalid paths json: {e}"))?;
     let paths = parse_paths(&paths_value)?;
     Ok(ApiSchema {
         paths,
@@ -280,13 +281,7 @@ pub fn validate_request(
                             severity: severity_for(SchemaViolationType::DepthExceeded),
                         });
                     }
-                    validate_schema_node(
-                        &body_spec.schema,
-                        &json_body,
-                        "$",
-                        path,
-                        &mut violations,
-                    );
+                    validate_schema_node(&body_spec.schema, &json_body, "$", path, &mut violations);
                 }
                 Err(err) => {
                     violations.push(SchemaViolation {
@@ -351,7 +346,11 @@ fn parse_paths(paths_val: &Value) -> Result<HashMap<String, PathSpec>, String> {
             .as_object()
             .ok_or_else(|| format!("path entry '{path}' must be an object"))?;
 
-        if entry_obj.contains_key("method") || entry_obj.contains_key("parameters") || entry_obj.contains_key("request_body") || entry_obj.contains_key("requestBody") {
+        if entry_obj.contains_key("method")
+            || entry_obj.contains_key("parameters")
+            || entry_obj.contains_key("request_body")
+            || entry_obj.contains_key("requestBody")
+        {
             let spec = parse_path_spec(entry_obj)?;
             paths.insert(schema_path_key(path, &spec.method), spec);
             continue;
@@ -385,7 +384,10 @@ fn parse_path_spec_with_method(
     method: String,
     entry: &serde_json::Map<String, Value>,
 ) -> Result<PathSpec, String> {
-    let params_val = entry.get("parameters").cloned().unwrap_or(Value::Array(vec![]));
+    let params_val = entry
+        .get("parameters")
+        .cloned()
+        .unwrap_or(Value::Array(vec![]));
     let mut parameters = Vec::new();
     if let Some(arr) = params_val.as_array() {
         for p in arr {
@@ -395,7 +397,10 @@ fn parse_path_spec_with_method(
         return Err("parameters must be an array".to_string());
     }
 
-    let request_body = if let Some(rb) = entry.get("requestBody").or_else(|| entry.get("request_body")) {
+    let request_body = if let Some(rb) = entry
+        .get("requestBody")
+        .or_else(|| entry.get("request_body"))
+    {
         Some(parse_body_spec(rb)?)
     } else {
         None
@@ -445,8 +450,14 @@ fn parse_param_spec(value: &Value) -> Result<ParamSpec, String> {
         ParamType::String
     };
 
-    let required = obj.get("required").and_then(Value::as_bool).unwrap_or(false);
-    let pattern = obj.get("pattern").and_then(Value::as_str).map(ToOwned::to_owned);
+    let required = obj
+        .get("required")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let pattern = obj
+        .get("pattern")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
 
     Ok(ParamSpec {
         name,
@@ -645,7 +656,9 @@ fn validate_schema_node(
                             field: format!("{field}.{key}"),
                             expected: "allowlisted writable field".to_owned(),
                             actual: key.clone(),
-                            severity: severity_for(SchemaViolationType::MassAssignmentUndocumentedField),
+                            severity: severity_for(
+                                SchemaViolationType::MassAssignmentUndocumentedField,
+                            ),
                         });
                     }
                 }
@@ -692,12 +705,15 @@ fn validate_schema_node(
                                 severity: severity_for(SchemaViolationType::ExtraField),
                             });
                             violations.push(SchemaViolation {
-                                violation_type: SchemaViolationType::MassAssignmentUndocumentedField,
+                                violation_type:
+                                    SchemaViolationType::MassAssignmentUndocumentedField,
                                 path: path.to_owned(),
                                 field: format!("{field}.{key}"),
                                 expected: "allowlisted writable field".to_owned(),
                                 actual: key.clone(),
-                                severity: severity_for(SchemaViolationType::MassAssignmentUndocumentedField),
+                                severity: severity_for(
+                                    SchemaViolationType::MassAssignmentUndocumentedField,
+                                ),
                             });
                         }
                     }
@@ -837,7 +853,10 @@ fn extract_path_params(template: &str, actual: &str) -> HashMap<String, String> 
 
     for (t, a) in template_parts.iter().zip(actual_parts.iter()) {
         if is_path_placeholder(t) {
-            out.insert(t.trim_matches('{').trim_matches('}').to_owned(), (*a).to_owned());
+            out.insert(
+                t.trim_matches('{').trim_matches('}').to_owned(),
+                (*a).to_owned(),
+            );
         }
     }
     out
@@ -849,10 +868,16 @@ fn is_path_placeholder(segment: &str) -> bool {
 
 fn schema_depth(node: &SchemaNode) -> usize {
     match node {
-        SchemaNode::String | SchemaNode::Integer | SchemaNode::Number | SchemaNode::Boolean | SchemaNode::Enum(_) => 1,
+        SchemaNode::String
+        | SchemaNode::Integer
+        | SchemaNode::Number
+        | SchemaNode::Boolean
+        | SchemaNode::Enum(_) => 1,
         SchemaNode::Array(inner) => 1 + schema_depth(inner),
         SchemaNode::Object(fields) => 1 + fields.values().map(schema_depth).max().unwrap_or(0),
-        SchemaNode::ObjectWithRules { fields, .. } => 1 + fields.values().map(schema_depth).max().unwrap_or(0),
+        SchemaNode::ObjectWithRules { fields, .. } => {
+            1 + fields.values().map(schema_depth).max().unwrap_or(0)
+        }
     }
 }
 
@@ -902,7 +927,10 @@ fn detect_param_coercion_attack(raw: &str, expected: &ParamType) -> Option<Strin
             }
         }
         ParamType::Boolean => {
-            if matches!(trimmed.to_ascii_lowercase().as_str(), "1" | "0" | "\"true\"" | "\"false\"") {
+            if matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "1" | "0" | "\"true\"" | "\"false\""
+            ) {
                 return Some(format!("coercion_candidate:{trimmed}"));
             }
         }
@@ -1065,9 +1093,11 @@ mod tests {
     fn validate_unknown_endpoint() {
         let schema = sample_schema();
         let violations = validate_request(&schema, "GET", "/unknown", "", "", &[]);
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::UnknownEndpoint));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::UnknownEndpoint)
+        );
     }
 
     #[test]
@@ -1081,18 +1111,20 @@ mod tests {
             "",
             &[("x-trace-id".into(), "abc-123".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::UnknownMethod));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::UnknownMethod)
+        );
     }
 
     #[test]
     fn validate_missing_required_param() {
         let schema = sample_schema();
         let violations = validate_request(&schema, "GET", "/users/10", "", "", &[]);
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::MissingRequiredParam && v.field == "x-trace-id"));
+        assert!(violations.iter().any(|v| v.violation_type
+            == SchemaViolationType::MissingRequiredParam
+            && v.field == "x-trace-id"));
     }
 
     #[test]
@@ -1106,9 +1138,11 @@ mod tests {
             "",
             &[("x-trace-id".into(), "abc-123".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::TypeMismatch && v.field == "id"));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::TypeMismatch && v.field == "id")
+        );
     }
 
     #[test]
@@ -1122,9 +1156,11 @@ mod tests {
             "",
             &[("x-trace-id".into(), "NOT-VALID*".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::PatternViolation));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::PatternViolation)
+        );
     }
 
     #[test]
@@ -1138,9 +1174,11 @@ mod tests {
             r#"{"role":"super_admin","age":20}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::EnumViolation));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::EnumViolation)
+        );
     }
 
     #[test]
@@ -1154,9 +1192,11 @@ mod tests {
             r#"{"role":"user","age":20,"is_admin":true}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::ExtraField));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::ExtraField)
+        );
     }
 
     #[test]
@@ -1170,9 +1210,11 @@ mod tests {
             r#"{"role":"user","age":20,"profile":{"name":{"nested":true}}}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::DepthExceeded));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::DepthExceeded)
+        );
     }
 
     #[test]
@@ -1185,7 +1227,10 @@ mod tests {
             "/billing".to_string(),
         ];
         let shadow = detect_shadow_endpoints(&schema, &observed);
-        assert_eq!(shadow, vec!["/admin/secret".to_string(), "/billing".to_string()]);
+        assert_eq!(
+            shadow,
+            vec!["/admin/secret".to_string(), "/billing".to_string()]
+        );
     }
 
     fn strict_body_schema() -> ApiSchema {
@@ -1243,9 +1288,9 @@ mod tests {
             r#"{"role":"user","age":21}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::MissingRequiredField && v.field.ends_with(".meta")));
+        assert!(violations.iter().any(|v| v.violation_type
+            == SchemaViolationType::MissingRequiredField
+            && v.field.ends_with(".meta")));
     }
 
     #[test]
@@ -1259,9 +1304,11 @@ mod tests {
             r#"{"role":"user","age":21,"meta":{"name":"a"},"isAdmin":true}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::MassAssignmentUndocumentedField));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::MassAssignmentUndocumentedField)
+        );
     }
 
     #[test]
@@ -1275,9 +1322,12 @@ mod tests {
             r#"{"role":"user","age":"21","meta":{"name":"a"}}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::CoercionAttack && v.actual.contains("string_to_integer")));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::CoercionAttack
+                    && v.actual.contains("string_to_integer"))
+        );
     }
 
     #[test]
@@ -1291,9 +1341,12 @@ mod tests {
             r#"{"role":"user","age":21,"meta":[{"name":"a"}]}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::CoercionAttack && v.actual == "array_to_object"));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::CoercionAttack
+                    && v.actual == "array_to_object")
+        );
     }
 
     #[test]
@@ -1307,9 +1360,9 @@ mod tests {
             "",
             &[("x-trace-id".into(), "abc-123".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::CoercionAttack && v.field == "verbose"));
+        assert!(violations.iter().any(
+            |v| v.violation_type == SchemaViolationType::CoercionAttack && v.field == "verbose"
+        ));
     }
 
     #[test]
@@ -1323,18 +1376,22 @@ mod tests {
             r#"{"role":"user"}"#,
             &[("content-type".into(), "application/json".into())],
         );
-        assert!(violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::EndpointEnumeration));
+        assert!(
+            violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::EndpointEnumeration)
+        );
     }
 
     #[test]
     fn validate_endpoint_enumeration_not_flagged_for_unrelated_unknown_path() {
         let schema = strict_body_schema();
         let violations = validate_request(&schema, "GET", "/totally/unknown/path", "", "", &[]);
-        assert!(!violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::EndpointEnumeration));
+        assert!(
+            !violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::EndpointEnumeration)
+        );
     }
 
     #[test]
@@ -1344,7 +1401,11 @@ mod tests {
         let spec = schema.paths.get(&key).expect("path must exist");
         let body = spec.request_body.as_ref().expect("body must exist");
         match &body.schema {
-            SchemaNode::ObjectWithRules { required, allow_additional, .. } => {
+            SchemaNode::ObjectWithRules {
+                required,
+                allow_additional,
+                ..
+            } => {
                 assert!(required.iter().any(|r| r == "role"));
                 assert!(!allow_additional);
             }

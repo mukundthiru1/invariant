@@ -13,11 +13,14 @@ static CRLF_HEADER_RE: LazyLock<Regex> =
 static LOG_TIMESTAMP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)(?:\r\n|\n)\s*(?:\d{4}[-/]\d{2}[-/]\d{2}[Tt ]\d{2}:\d{2}:\d{2}|\w+\s+\d{1,2},\s*\d{4}\s+\d{2}:\d{2}:\d{2})\s*\[(?:INFO|ERROR|WARN|DEBUG|TRACE|FATAL)\]").unwrap()
 });
-static LOG_LEVEL_ONLY_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)(?:\r\n|\n)\s*\[(?:INFO|ERROR|WARN|DEBUG|TRACE|FATAL)\]").unwrap());
+static LOG_LEVEL_ONLY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)(?:\r\n|\n)\s*\[(?:INFO|ERROR|WARN|DEBUG|TRACE|FATAL)\]").unwrap()
+});
 static ENCODED_PERCENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)%0d%0a").unwrap());
-static DOUBLE_ENCODED_PERCENT_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)%250d%250a").unwrap());
-static ENCODED_UNICODE_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\\u000d\\u000a").unwrap());
+static DOUBLE_ENCODED_PERCENT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)%250d%250a").unwrap());
+static ENCODED_UNICODE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\\u000d\\u000a").unwrap());
 static ENCODED_UNICODE_LINE_SEP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)(?:\\u2028|\\u2029|%e2%80%a8|%e2%80%a9)").unwrap());
 static SET_COOKIE_RE: LazyLock<Regex> =
@@ -36,8 +39,12 @@ static HTML_BODY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)<(?:script|html|body|iframe|img)").unwrap());
 
 impl L2Evaluator for CrlfEvaluator {
-    fn id(&self) -> &'static str { "crlf" }
-    fn prefix(&self) -> &'static str { "L2 CRLF" }
+    fn id(&self) -> &'static str {
+        "crlf"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 CRLF"
+    }
 
     #[inline]
 
@@ -49,15 +56,25 @@ impl L2Evaluator for CrlfEvaluator {
 
         // CRLF followed by HTTP header injection
         if let Some(m) = CRLF_HEADER_RE.find(&decoded) {
-            let header_name = CRLF_HEADER_RE.captures(&decoded)
+            let header_name = CRLF_HEADER_RE
+                .captures(&decoded)
                 .and_then(|c| c.get(1))
                 .map(|m| m.as_str())
                 .unwrap_or("unknown");
 
             let mut confidence = 0.82;
-            let dangerous_headers = ["Set-Cookie", "Location", "Content-Type",
-                "X-Forwarded-For", "Host", "Transfer-Encoding"];
-            if dangerous_headers.iter().any(|h| h.eq_ignore_ascii_case(header_name)) {
+            let dangerous_headers = [
+                "Set-Cookie",
+                "Location",
+                "Content-Type",
+                "X-Forwarded-For",
+                "Host",
+                "Transfer-Encoding",
+            ];
+            if dangerous_headers
+                .iter()
+                .any(|h| h.eq_ignore_ascii_case(header_name))
+            {
                 confidence = 0.92;
             }
 
@@ -71,13 +88,17 @@ impl L2Evaluator for CrlfEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Line break injects new HTTP header into response".into(),
                     offset: m.start(),
-                    property: "User input must not contain CRLF sequences that inject HTTP headers".into(),
+                    property: "User input must not contain CRLF sequences that inject HTTP headers"
+                        .into(),
                 }],
             });
         }
 
         // Log injection/forgery: fake log timestamps and levels after CRLF.
-        if let Some(m) = LOG_TIMESTAMP_RE.find(&decoded).or_else(|| LOG_LEVEL_ONLY_RE.find(&decoded)) {
+        if let Some(m) = LOG_TIMESTAMP_RE
+            .find(&decoded)
+            .or_else(|| LOG_LEVEL_ONLY_RE.find(&decoded))
+        {
             dets.push(L2Detection {
                 detection_type: "log_forgery".into(),
                 confidence: 0.88,
@@ -86,7 +107,8 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Line break injects fake timestamp/level log entry format".into(),
+                    interpretation: "Line break injects fake timestamp/level log entry format"
+                        .into(),
                     offset: m.start(),
                     property: "User input should not inject synthetic log lines".into(),
                 }],
@@ -94,7 +116,9 @@ impl L2Evaluator for CrlfEvaluator {
         }
 
         // Encoded CRLF forms (\u000d\u000a, %0d%0a, etc.) and literal CRLF variants.
-        if let Some(form) = all_forms.iter().find(|f| ENCODED_PERCENT_RE.is_match(f) || ENCODED_UNICODE_RE.is_match(f) || f.contains("\r\n")) {
+        if let Some(form) = all_forms.iter().find(|f| {
+            ENCODED_PERCENT_RE.is_match(f) || ENCODED_UNICODE_RE.is_match(f) || f.contains("\r\n")
+        }) {
             let matched = if ENCODED_PERCENT_RE.is_match(form) {
                 "percent-encoded CRLF (%0d%0a)".to_owned()
             } else if ENCODED_UNICODE_RE.is_match(form) {
@@ -110,7 +134,8 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: form[..form.len().min(80)].to_owned(),
-                    interpretation: "Decoder output still contains CRLF-style control encoding".into(),
+                    interpretation: "Decoder output still contains CRLF-style control encoding"
+                        .into(),
                     offset: decoded.find("\r\n").unwrap_or(0),
                     property: "User input must not encode CRLF control sequences".into(),
                 }],
@@ -118,7 +143,10 @@ impl L2Evaluator for CrlfEvaluator {
         }
 
         // Double-encoded CRLF often bypasses single-pass decoders (%250d%250a -> %0d%0a -> CRLF).
-        if let Some(form) = all_forms.iter().find(|f| DOUBLE_ENCODED_PERCENT_RE.is_match(f)) {
+        if let Some(form) = all_forms
+            .iter()
+            .find(|f| DOUBLE_ENCODED_PERCENT_RE.is_match(f))
+        {
             let offset = decoded.find("%0d%0a").unwrap_or(0);
             dets.push(L2Detection {
                 detection_type: "double_encoded_crlf".into(),
@@ -128,9 +156,11 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: form[..form.len().min(80)].to_owned(),
-                    interpretation: "Nested percent-encoding can reveal CRLF after multi-pass decode".into(),
+                    interpretation:
+                        "Nested percent-encoding can reveal CRLF after multi-pass decode".into(),
                     offset,
-                    property: "Input normalization must block multi-layer encoded CRLF controls".into(),
+                    property: "Input normalization must block multi-layer encoded CRLF controls"
+                        .into(),
                 }],
             });
         }
@@ -145,13 +175,21 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: decoded[m.start()..decoded.len().min(m.end() + 8)].to_owned(),
-                    interpretation: "Unicode separator may bypass CRLF-only sanitizers and split headers/logs".into(),
+                    interpretation:
+                        "Unicode separator may bypass CRLF-only sanitizers and split headers/logs"
+                            .into(),
                     offset: m.start(),
-                    property: "Input validation must normalize and reject alternate newline codepoints".into(),
+                    property:
+                        "Input validation must normalize and reject alternate newline codepoints"
+                            .into(),
                 }],
             });
         } else if let Some(i) = decoded.find(['\u{2028}', '\u{2029}']) {
-            let end = decoded[i..].chars().next().map(|c| i + c.len_utf8()).unwrap_or(i);
+            let end = decoded[i..]
+                .chars()
+                .next()
+                .map(|c| i + c.len_utf8())
+                .unwrap_or(i);
             dets.push(L2Detection {
                 detection_type: "unicode_line_separator".into(),
                 confidence: 0.84,
@@ -160,9 +198,13 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: decoded[i..decoded.len().min(end + 8)].to_owned(),
-                    interpretation: "Unicode separator may bypass CRLF-only sanitizers and split headers/logs".into(),
+                    interpretation:
+                        "Unicode separator may bypass CRLF-only sanitizers and split headers/logs"
+                            .into(),
                     offset: i,
-                    property: "Input validation must normalize and reject alternate newline codepoints".into(),
+                    property:
+                        "Input validation must normalize and reject alternate newline codepoints"
+                            .into(),
                 }],
             });
         }
@@ -177,9 +219,12 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Injected folded header line can extend or smuggle header content".into(),
+                    interpretation:
+                        "Injected folded header line can extend or smuggle header content".into(),
                     offset: m.start(),
-                    property: "HTTP header values must not include CRLF followed by SP/HT continuation".into(),
+                    property:
+                        "HTTP header values must not include CRLF followed by SP/HT continuation"
+                            .into(),
                 }],
             });
         }
@@ -194,16 +239,21 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Injected line break starts a new server-controlled HTTP header".into(),
+                    interpretation:
+                        "Injected line break starts a new server-controlled HTTP header".into(),
                     offset: m.start(),
-                    property: "Header names like Set-Cookie/Location must never be user-injectable".into(),
+                    property: "Header names like Set-Cookie/Location must never be user-injectable"
+                        .into(),
                 }],
             });
         }
 
         // Null-byte + CRLF combinations can bypass parsers and trigger split behavior.
         if let Some(form) = all_forms.iter().find(|f| NULL_BYTE_CRLF_RE.is_match(f)) {
-            let offset = decoded.find('\0').or_else(|| decoded.find("%00")).unwrap_or(0);
+            let offset = decoded
+                .find('\0')
+                .or_else(|| decoded.find("%00"))
+                .unwrap_or(0);
             dets.push(L2Detection {
                 detection_type: "null_byte_crlf".into(),
                 confidence: 0.91,
@@ -212,9 +262,11 @@ impl L2Evaluator for CrlfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::EncodingDecode,
                     matched_input: form[..form.len().min(90)].to_owned(),
-                    interpretation: "NUL with CRLF can desync validation and downstream parser behavior".into(),
+                    interpretation:
+                        "NUL with CRLF can desync validation and downstream parser behavior".into(),
                     offset,
-                    property: "Control bytes (NUL/CR/LF) must be rejected across all decoded forms".into(),
+                    property: "Control bytes (NUL/CR/LF) must be rejected across all decoded forms"
+                        .into(),
                 }],
             });
         }
@@ -231,7 +283,8 @@ impl L2Evaluator for CrlfEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Line break injects a response Set-Cookie header".into(),
                     offset: m.start(),
-                    property: "Response headers must stay immutable and strictly server-controlled".into(),
+                    property: "Response headers must stay immutable and strictly server-controlled"
+                        .into(),
                 }],
             });
         }
@@ -248,7 +301,8 @@ impl L2Evaluator for CrlfEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Line break injects cache-influencing proxy header".into(),
                     offset: m.start(),
-                    property: "Proxy-derived cache keys must not be controllable by user input".into(),
+                    property: "Proxy-derived cache keys must not be controllable by user input"
+                        .into(),
                 }],
             });
         }
@@ -259,8 +313,14 @@ impl L2Evaluator for CrlfEvaluator {
             dets.push(L2Detection {
                 detection_type: "response_splitting".into(),
                 confidence: if has_html { 0.92 } else { 0.80 },
-                detail: format!("HTTP response splitting via double CRLF{}",
-                    if has_html { " with HTML body injection" } else { "" }),
+                detail: format!(
+                    "HTTP response splitting via double CRLF{}",
+                    if has_html {
+                        " with HTML body injection"
+                    } else {
+                        ""
+                    }
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
@@ -317,14 +377,20 @@ mod tests {
     fn detects_set_cookie_header_injection_chain() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("id=1\r\nSet-Cookie: session=attacker");
-        assert!(dets.iter().any(|d| d.detection_type == "set_cookie_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "set_cookie_injection")
+        );
     }
 
     #[test]
     fn detects_x_forwarded_host_cache_poisoning() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("id=1\r\nX-Forwarded-Host: evil.example");
-        assert!(dets.iter().any(|d| d.detection_type == "cache_key_poisoning"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cache_key_poisoning")
+        );
     }
 
     #[test]
@@ -338,42 +404,60 @@ mod tests {
     fn detects_double_encoded_crlf_sequence() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("foo%250d%250aSet-Cookie:%20x=1");
-        assert!(dets.iter().any(|d| d.detection_type == "double_encoded_crlf"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "double_encoded_crlf")
+        );
     }
 
     #[test]
     fn detects_unicode_line_separator_literal() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("username\u{2028}Set-Cookie: session=evil");
-        assert!(dets.iter().any(|d| d.detection_type == "unicode_line_separator"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "unicode_line_separator")
+        );
     }
 
     #[test]
     fn detects_unicode_line_separator_escape_form() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("username\\u2029Location: https://evil.example");
-        assert!(dets.iter().any(|d| d.detection_type == "unicode_line_separator"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "unicode_line_separator")
+        );
     }
 
     #[test]
     fn detects_header_continuation_injection() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("X-Test: ok\r\n\tSet-Cookie: injected=true");
-        assert!(dets.iter().any(|d| d.detection_type == "header_continuation_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "header_continuation_injection")
+        );
     }
 
     #[test]
     fn detects_response_split_header_chain_location() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("name=abc\r\nLocation: https://evil.example");
-        assert!(dets.iter().any(|d| d.detection_type == "response_split_header_chain"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "response_split_header_chain")
+        );
     }
 
     #[test]
     fn detects_response_split_header_chain_transfer_encoding() {
         let eval = CrlfEvaluator;
         let dets = eval.detect("x\r\nTransfer-Encoding: chunked");
-        assert!(dets.iter().any(|d| d.detection_type == "response_split_header_chain"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "response_split_header_chain")
+        );
     }
 
     #[test]

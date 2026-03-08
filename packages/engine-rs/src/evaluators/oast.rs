@@ -40,20 +40,29 @@ const OAST_DOMAINS: &[&str] = &[
 pub struct OastEvaluator;
 
 impl L2Evaluator for OastEvaluator {
-    fn id(&self) -> &'static str { "oast" }
-    fn prefix(&self) -> &'static str { "L2 OAST" }
+    fn id(&self) -> &'static str {
+        "oast"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 OAST"
+    }
 
     #[inline]
     fn detect(&self, input: &str) -> Vec<L2Detection> {
         let mut dets = Vec::new();
-        let decoded = crate::encoding::multi_layer_decode(input).fully_decoded.to_lowercase();
+        let decoded = crate::encoding::multi_layer_decode(input)
+            .fully_decoded
+            .to_lowercase();
 
         for &domain in OAST_DOMAINS {
             if decoded.contains(domain) {
                 // To avoid partial matching of harmless domains, ensure it's a domain boundary.
                 // It should be preceded by '.' or '@' or '/' or space or start of string,
                 // and followed by end of string, '/', '?', ':', etc.
-                let pattern = format!(r"(?i)(?:^|[\s/@.\\])[a-z0-9-]*\.?{}\b", domain.replace(".", "\\."));
+                let pattern = format!(
+                    r"(?i)(?:^|[\s/@.\\])[a-z0-9-]*\.?{}\b",
+                    domain.replace(".", "\\.")
+                );
                 if let Ok(re) = Regex::new(&pattern) {
                     if let Some(m) = re.find(&decoded) {
                         dets.push(L2Detection {

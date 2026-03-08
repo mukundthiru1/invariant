@@ -109,7 +109,7 @@ export async function decryptRuleBundle(
         )
 
         const sharedBits = await crypto.subtle.deriveBits(
-            { name: 'X25519', public: ephemeralPublicKey },
+            { name: 'X25519', public: ephemeralPublicKey } as any,
             subscriberPrivateKey,
             256,
         )
@@ -165,7 +165,8 @@ export async function decryptRuleBundle(
         // AAD = subscriberId || bundleVersion (UTF-8), matching what central writes.
         // Using a colon separator makes the concatenation unambiguous across all possible
         // subscriberId values (which are UUIDs — no colons — so this is collision-free).
-        const aad = encode(bundle.subscriberId + ':' + String(bundle.bundleVersion))
+        const subscriberId = (bundle as EncryptedRuleBundle & { subscriberId?: string }).subscriberId ?? ''
+        const aad = encode(subscriberId + ':' + String(bundle.bundleVersion))
         const plaintext = new Uint8Array(
             await crypto.subtle.decrypt(
                 {

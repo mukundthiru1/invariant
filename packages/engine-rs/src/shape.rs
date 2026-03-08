@@ -91,12 +91,25 @@ pub struct ShapeValidation {
 fn validate_username(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     if input.len() > 128 {
-        v.push(ShapeViolation { constraint: "length".into(), expected: "≤128".into(), found: format!("{}", input.len()), severity: 0.3 });
+        v.push(ShapeViolation {
+            constraint: "length".into(),
+            expected: "≤128".into(),
+            found: format!("{}", input.len()),
+            severity: 0.3,
+        });
     }
     if input.is_empty() {
-        v.push(ShapeViolation { constraint: "length".into(), expected: "≥1".into(), found: "0".into(), severity: 0.2 });
+        v.push(ShapeViolation {
+            constraint: "length".into(),
+            expected: "≥1".into(),
+            found: "0".into(),
+            severity: 0.2,
+        });
     }
-    let illegal: String = input.chars().filter(|c| !c.is_ascii_alphanumeric() && !"_.@-".contains(*c)).collect();
+    let illegal: String = input
+        .chars()
+        .filter(|c| !c.is_ascii_alphanumeric() && !"_.@-".contains(*c))
+        .collect();
     if !illegal.is_empty() {
         let ratio = illegal.len() as f64 / input.len() as f64;
         v.push(ShapeViolation {
@@ -107,7 +120,12 @@ fn validate_username(input: &str) -> Vec<ShapeViolation> {
         });
     }
     if input.chars().any(|c| c.is_whitespace()) {
-        v.push(ShapeViolation { constraint: "whitespace".into(), expected: "none".into(), found: "contains whitespace".into(), severity: 0.5 });
+        v.push(ShapeViolation {
+            constraint: "whitespace".into(),
+            expected: "none".into(),
+            found: "contains whitespace".into(),
+            severity: 0.5,
+        });
     }
     v
 }
@@ -115,21 +133,44 @@ fn validate_username(input: &str) -> Vec<ShapeViolation> {
 fn validate_email(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     if !input.contains('@') {
-        v.push(ShapeViolation { constraint: "format".into(), expected: "local@domain".into(), found: "no @ sign".into(), severity: 0.8 });
+        v.push(ShapeViolation {
+            constraint: "format".into(),
+            expected: "local@domain".into(),
+            found: "no @ sign".into(),
+            severity: 0.8,
+        });
         return v;
     }
     let at_idx = input.rfind('@').unwrap();
     let local = &input[..at_idx];
     let domain = &input[at_idx + 1..];
     if local.is_empty() || local.len() > 64 {
-        v.push(ShapeViolation { constraint: "local_part".into(), expected: "1-64 chars".into(), found: format!("{}", local.len()), severity: 0.4 });
+        v.push(ShapeViolation {
+            constraint: "local_part".into(),
+            expected: "1-64 chars".into(),
+            found: format!("{}", local.len()),
+            severity: 0.4,
+        });
     }
     if domain.is_empty() || !domain.contains('.') || domain.len() < 4 {
-        v.push(ShapeViolation { constraint: "domain".into(), expected: "valid domain".into(), found: domain.to_string(), severity: 0.5 });
+        v.push(ShapeViolation {
+            constraint: "domain".into(),
+            expected: "valid domain".into(),
+            found: domain.to_string(),
+            severity: 0.5,
+        });
     }
-    let illegal_domain: String = domain.chars().filter(|c| !c.is_ascii_alphanumeric() && !".-".contains(*c)).collect();
+    let illegal_domain: String = domain
+        .chars()
+        .filter(|c| !c.is_ascii_alphanumeric() && !".-".contains(*c))
+        .collect();
     if !illegal_domain.is_empty() {
-        v.push(ShapeViolation { constraint: "domain_charset".into(), expected: "alphanumeric + .- only".into(), found: format!("illegal: {:?}", violation_preview(&illegal_domain)), severity: 0.7 });
+        v.push(ShapeViolation {
+            constraint: "domain_charset".into(),
+            expected: "alphanumeric + .- only".into(),
+            found: format!("illegal: {:?}", violation_preview(&illegal_domain)),
+            severity: 0.7,
+        });
     }
     v
 }
@@ -144,12 +185,25 @@ fn validate_url(input: &str) -> Vec<ShapeViolation> {
             .is_some_and(|p| p.eq_ignore_ascii_case("https://"))
         || input.starts_with('/');
     if !scheme_ok {
-        v.push(ShapeViolation { constraint: "scheme".into(), expected: "http(s):// or /".into(), found: violation_preview(input), severity: 0.3 });
+        v.push(ShapeViolation {
+            constraint: "scheme".into(),
+            expected: "http(s):// or /".into(),
+            found: violation_preview(input),
+            severity: 0.3,
+        });
     }
     if input.bytes().any(|b| b < 0x20 || b == 0x7F) {
-        v.push(ShapeViolation { constraint: "control_chars".into(), expected: "none".into(), found: "contains control chars".into(), severity: 0.8 });
+        v.push(ShapeViolation {
+            constraint: "control_chars".into(),
+            expected: "none".into(),
+            found: "contains control chars".into(),
+            severity: 0.8,
+        });
     }
-    let suspicious: String = input.chars().filter(|c| !c.is_ascii_alphanumeric() && !":/_~?&=#%+@!$'()*,;.-".contains(*c)).collect();
+    let suspicious: String = input
+        .chars()
+        .filter(|c| !c.is_ascii_alphanumeric() && !":/_~?&=#%+@!$'()*,;.-".contains(*c))
+        .collect();
     if !suspicious.is_empty() {
         let ratio = suspicious.len() as f64 / input.len().max(1) as f64;
         v.push(ShapeViolation {
@@ -170,7 +224,12 @@ fn validate_integer(input: &str) -> Vec<ShapeViolation> {
         trimmed.chars().all(|c| c.is_ascii_digit())
     };
     if !valid || trimmed.is_empty() || (trimmed.starts_with('-') && trimmed.len() == 1) {
-        vec![ShapeViolation { constraint: "format".into(), expected: "integer".into(), found: violation_preview(trimmed), severity: 0.9 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "integer".into(),
+            found: violation_preview(trimmed),
+            severity: 0.9,
+        }]
     } else {
         vec![]
     }
@@ -179,7 +238,12 @@ fn validate_integer(input: &str) -> Vec<ShapeViolation> {
 fn validate_float(input: &str) -> Vec<ShapeViolation> {
     let trimmed = input.trim();
     if trimmed.parse::<f64>().is_err() {
-        vec![ShapeViolation { constraint: "format".into(), expected: "float".into(), found: violation_preview(trimmed), severity: 0.9 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "float".into(),
+            found: violation_preview(trimmed),
+            severity: 0.9,
+        }]
     } else {
         vec![]
     }
@@ -194,9 +258,16 @@ fn validate_uuid(input: &str) -> Vec<ShapeViolation> {
         && parts[2].len() == 4
         && parts[3].len() == 4
         && parts[4].len() == 12
-        && parts.iter().all(|p| p.chars().all(|c| c.is_ascii_hexdigit()));
+        && parts
+            .iter()
+            .all(|p| p.chars().all(|c| c.is_ascii_hexdigit()));
     if !valid {
-        vec![ShapeViolation { constraint: "format".into(), expected: "UUID v4".into(), found: violation_preview(trimmed), severity: 0.9 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "UUID v4".into(),
+            found: violation_preview(trimmed),
+            severity: 0.9,
+        }]
     } else {
         vec![]
     }
@@ -206,11 +277,24 @@ fn validate_phone(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     let digits: String = input.chars().filter(|c| c.is_ascii_digit()).collect();
     if digits.len() < 7 || digits.len() > 15 {
-        v.push(ShapeViolation { constraint: "digit_count".into(), expected: "7-15 digits".into(), found: format!("{}", digits.len()), severity: 0.5 });
+        v.push(ShapeViolation {
+            constraint: "digit_count".into(),
+            expected: "7-15 digits".into(),
+            found: format!("{}", digits.len()),
+            severity: 0.5,
+        });
     }
-    let illegal: String = input.chars().filter(|c| !c.is_ascii_digit() && !"+() .-".contains(*c)).collect();
+    let illegal: String = input
+        .chars()
+        .filter(|c| !c.is_ascii_digit() && !"+() .-".contains(*c))
+        .collect();
     if !illegal.is_empty() {
-        v.push(ShapeViolation { constraint: "charset".into(), expected: "digits + +()-. space".into(), found: format!("illegal: {:?}", violation_preview(&illegal)), severity: 0.7 });
+        v.push(ShapeViolation {
+            constraint: "charset".into(),
+            expected: "digits + +()-. space".into(),
+            found: format!("illegal: {:?}", violation_preview(&illegal)),
+            severity: 0.7,
+        });
     }
     v
 }
@@ -229,8 +313,7 @@ fn validate_date(input: &str) -> Vec<ShapeViolation> {
     };
     let iso_datetime = trimmed_chars.len() >= 16 && trimmed.contains('T') && iso_date;
     let us_date = if trimmed_chars.len() == 10 {
-        matches!(trimmed_chars[2], '/')
-            && matches!(trimmed_chars[5], '/')
+        matches!(trimmed_chars[2], '/') && matches!(trimmed_chars[5], '/')
     } else {
         false
     };
@@ -238,14 +321,23 @@ fn validate_date(input: &str) -> Vec<ShapeViolation> {
     if iso_date || iso_datetime || us_date {
         vec![]
     } else {
-        vec![ShapeViolation { constraint: "format".into(), expected: "date format".into(), found: violation_preview(trimmed), severity: 0.8 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "date format".into(),
+            found: violation_preview(trimmed),
+            severity: 0.8,
+        }]
     }
 }
 
 fn validate_search(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     let alpha_count = input.chars().filter(|c| c.is_ascii_alphabetic()).count();
-    let ratio = if input.is_empty() { 0.0 } else { alpha_count as f64 / input.len() as f64 };
+    let ratio = if input.is_empty() {
+        0.0
+    } else {
+        alpha_count as f64 / input.len() as f64
+    };
     if ratio < 0.4 && input.len() > 5 {
         v.push(ShapeViolation {
             constraint: "alpha_ratio".into(),
@@ -255,10 +347,22 @@ fn validate_search(input: &str) -> Vec<ShapeViolation> {
         });
     }
     if input.len() > 500 {
-        v.push(ShapeViolation { constraint: "length".into(), expected: "≤500".into(), found: format!("{}", input.len()), severity: 0.4 });
+        v.push(ShapeViolation {
+            constraint: "length".into(),
+            expected: "≤500".into(),
+            found: format!("{}", input.len()),
+            severity: 0.4,
+        });
     }
-    let meta_count = input.chars().filter(|c| "<>'\"`;\t|&${}()[]\\".contains(*c)).count();
-    let meta_ratio = if input.is_empty() { 0.0 } else { meta_count as f64 / input.len() as f64 };
+    let meta_count = input
+        .chars()
+        .filter(|c| "<>'\"`;\t|&${}()[]\\".contains(*c))
+        .count();
+    let meta_ratio = if input.is_empty() {
+        0.0
+    } else {
+        meta_count as f64 / input.len() as f64
+    };
     if meta_ratio > 0.10 && input.len() > 5 {
         v.push(ShapeViolation {
             constraint: "metachar_ratio".into(),
@@ -273,19 +377,44 @@ fn validate_search(input: &str) -> Vec<ShapeViolation> {
 fn validate_filename(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     if has_encoded_path_traversal(input) {
-        v.push(ShapeViolation { constraint: "path_traversal".into(), expected: "no traversal sequences".into(), found: "encoded traversal attempt".into(), severity: 1.0 });
+        v.push(ShapeViolation {
+            constraint: "path_traversal".into(),
+            expected: "no traversal sequences".into(),
+            found: "encoded traversal attempt".into(),
+            severity: 1.0,
+        });
     }
     if input.contains('/') || input.contains('\\') {
-        v.push(ShapeViolation { constraint: "path_separator".into(), expected: "none".into(), found: "contains / or \\".into(), severity: 0.9 });
+        v.push(ShapeViolation {
+            constraint: "path_separator".into(),
+            expected: "none".into(),
+            found: "contains / or \\".into(),
+            severity: 0.9,
+        });
     }
     if input.contains('\0') {
-        v.push(ShapeViolation { constraint: "null_byte".into(), expected: "none".into(), found: "contains null byte".into(), severity: 1.0 });
+        v.push(ShapeViolation {
+            constraint: "null_byte".into(),
+            expected: "none".into(),
+            found: "contains null byte".into(),
+            severity: 1.0,
+        });
     }
     if input.contains("..") {
-        v.push(ShapeViolation { constraint: "dotdot".into(), expected: "no ..".into(), found: "contains ..".into(), severity: 0.9 });
+        v.push(ShapeViolation {
+            constraint: "dotdot".into(),
+            expected: "no ..".into(),
+            found: "contains ..".into(),
+            severity: 0.9,
+        });
     }
     if input.len() > 255 {
-        v.push(ShapeViolation { constraint: "length".into(), expected: "≤255".into(), found: format!("{}", input.len()), severity: 0.3 });
+        v.push(ShapeViolation {
+            constraint: "length".into(),
+            expected: "≤255".into(),
+            found: format!("{}", input.len()),
+            severity: 0.3,
+        });
     }
     v
 }
@@ -327,7 +456,9 @@ fn json_key_stats(v: &Value, keys: &mut usize, suspicious: &mut usize) {
 
 fn has_xml_like_markers(input: &str) -> bool {
     let lower = input.to_lowercase();
-    lower.contains("<?xml") || lower.contains("<!doctype") || (lower.contains('<') && lower.contains("</"))
+    lower.contains("<?xml")
+        || lower.contains("<!doctype")
+        || (lower.contains('<') && lower.contains("</"))
 }
 
 fn percent_decode_once(input: &str) -> String {
@@ -361,7 +492,10 @@ fn nested_encoding_depth(input: &str, max_layers: usize) -> usize {
         let mut pct_sequences = 0usize;
         let mut i = 0usize;
         while i + 2 < bytes.len() {
-            if bytes[i] == b'%' && bytes[i + 1].is_ascii_hexdigit() && bytes[i + 2].is_ascii_hexdigit() {
+            if bytes[i] == b'%'
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit()
+            {
                 pct_sequences += 1;
                 i += 3;
             } else {
@@ -458,11 +592,26 @@ fn validate_json_value(input: &str) -> Vec<ShapeViolation> {
 
 fn validate_freetext(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
-    if input.bytes().any(|b| matches!(b, 0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F)) {
-        v.push(ShapeViolation { constraint: "control_chars".into(), expected: "no control chars".into(), found: "contains control chars".into(), severity: 0.6 });
+    if input
+        .bytes()
+        .any(|b| matches!(b, 0x00..=0x08 | 0x0B | 0x0C | 0x0E..=0x1F))
+    {
+        v.push(ShapeViolation {
+            constraint: "control_chars".into(),
+            expected: "no control chars".into(),
+            found: "contains control chars".into(),
+            severity: 0.6,
+        });
     }
-    let meta_count = input.chars().filter(|c| "<>'\"`;\t|&${}()[]\\".contains(*c)).count();
-    let meta_ratio = if input.is_empty() { 0.0 } else { meta_count as f64 / input.len() as f64 };
+    let meta_count = input
+        .chars()
+        .filter(|c| "<>'\"`;\t|&${}()[]\\".contains(*c))
+        .count();
+    let meta_ratio = if input.is_empty() {
+        0.0
+    } else {
+        meta_count as f64 / input.len() as f64
+    };
     if meta_ratio > 0.25 && input.len() > 10 {
         v.push(ShapeViolation {
             constraint: "metachar_density".into(),
@@ -477,21 +626,41 @@ fn validate_freetext(input: &str) -> Vec<ShapeViolation> {
 fn validate_slug(input: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
     let valid = !input.is_empty()
-        && input.split('-').all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()));
+        && input
+            .split('-')
+            .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_alphanumeric()));
     if !valid {
-        v.push(ShapeViolation { constraint: "format".into(), expected: "url-slug".into(), found: violation_preview(input), severity: 0.7 });
+        v.push(ShapeViolation {
+            constraint: "format".into(),
+            expected: "url-slug".into(),
+            found: violation_preview(input),
+            severity: 0.7,
+        });
     }
     if input.len() > 200 {
-        v.push(ShapeViolation { constraint: "length".into(), expected: "≤200".into(), found: format!("{}", input.len()), severity: 0.3 });
+        v.push(ShapeViolation {
+            constraint: "length".into(),
+            expected: "≤200".into(),
+            found: format!("{}", input.len()),
+            severity: 0.3,
+        });
     }
     v
 }
 
 fn validate_hex(input: &str) -> Vec<ShapeViolation> {
     let trimmed = input.trim();
-    let s = trimmed.strip_prefix("0x").or_else(|| trimmed.strip_prefix("0X")).unwrap_or(trimmed);
+    let s = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+        .unwrap_or(trimmed);
     if s.is_empty() || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-        vec![ShapeViolation { constraint: "format".into(), expected: "hex string".into(), found: violation_preview(trimmed), severity: 0.8 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "hex string".into(),
+            found: violation_preview(trimmed),
+            severity: 0.8,
+        }]
     } else {
         vec![]
     }
@@ -499,10 +668,17 @@ fn validate_hex(input: &str) -> Vec<ShapeViolation> {
 
 fn validate_base64(input: &str) -> Vec<ShapeViolation> {
     let trimmed = input.trim();
-    let valid = trimmed.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+    let valid = trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
         && trimmed.chars().filter(|&c| c == '=').count() <= 2;
     if !valid || trimmed.is_empty() {
-        vec![ShapeViolation { constraint: "format".into(), expected: "base64".into(), found: violation_preview(trimmed), severity: 0.8 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "base64".into(),
+            found: violation_preview(trimmed),
+            severity: 0.8,
+        }]
     } else {
         vec![]
     }
@@ -511,11 +687,20 @@ fn validate_base64(input: &str) -> Vec<ShapeViolation> {
 fn validate_ipv4(input: &str) -> Vec<ShapeViolation> {
     let trimmed = input.trim();
     let parts: Vec<&str> = trimmed.split('.').collect();
-    let valid = parts.len() == 4 && parts.iter().all(|p| {
-        !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit()) && p.parse::<u16>().map_or(false, |n| n <= 255)
-    });
+    let valid = parts.len() == 4
+        && parts.iter().all(|p| {
+            !p.is_empty()
+                && p.len() <= 3
+                && p.chars().all(|c| c.is_ascii_digit())
+                && p.parse::<u16>().map_or(false, |n| n <= 255)
+        });
     if !valid {
-        vec![ShapeViolation { constraint: "format".into(), expected: "IPv4 address".into(), found: violation_preview(trimmed), severity: 0.9 }]
+        vec![ShapeViolation {
+            constraint: "format".into(),
+            expected: "IPv4 address".into(),
+            found: violation_preview(trimmed),
+            severity: 0.9,
+        }]
     } else {
         vec![]
     }
@@ -575,12 +760,11 @@ fn xml_structure_violations(input: &str) -> Vec<ShapeViolation> {
 
 fn multipart_boundary_violations(input: &str, content_type: &str) -> Vec<ShapeViolation> {
     let mut v = Vec::new();
-    let boundary = content_type
-        .split(';')
-        .find_map(|part| {
-            let p = part.trim();
-            p.strip_prefix("boundary=").map(|b| b.trim_matches('"').to_string())
-        });
+    let boundary = content_type.split(';').find_map(|part| {
+        let p = part.trim();
+        p.strip_prefix("boundary=")
+            .map(|b| b.trim_matches('"').to_string())
+    });
 
     let Some(boundary) = boundary else {
         v.push(ShapeViolation {
@@ -668,7 +852,8 @@ pub fn validate_shape(input: &str, expected_type: FieldType) -> ShapeValidation 
         0.02
     };
 
-    let summary: Vec<String> = violations.iter()
+    let summary: Vec<String> = violations
+        .iter()
         .map(|v| format!("{}: expected {}, got {}", v.constraint, v.expected, v.found))
         .collect();
 
@@ -677,7 +862,11 @@ pub fn validate_shape(input: &str, expected_type: FieldType) -> ShapeValidation 
         deviation,
         violations,
         confidence_boost,
-        detail: format!("Input violates {:?} shape: {}", expected_type, summary.join("; ")),
+        detail: format!(
+            "Input violates {:?} shape: {}",
+            expected_type,
+            summary.join("; ")
+        ),
     }
 }
 
@@ -688,17 +877,78 @@ pub fn infer_field_type(param_name: &str) -> Option<FieldType> {
     if lower == "id" || lower.ends_with("_id") {
         return Some(FieldType::Uuid);
     }
-    if lower.contains("email") || lower.contains("mail") { return Some(FieldType::Email); }
-    if lower.contains("username") || lower.contains("user_name") || lower.contains("login") || lower.contains("handle") { return Some(FieldType::Username); }
-    if lower.contains("phone") || lower.contains("tel") || lower.contains("mobile") { return Some(FieldType::Phone); }
-    if lower == "url" || lower.contains("website") || lower.contains("homepage") || lower.contains("link") || lower.contains("redirect") || lower.contains("callback") || lower.contains("return_url") || lower.contains("next") || lower.contains("goto") { return Some(FieldType::Url); }
-    if lower == "q" || lower.contains("query") || lower.contains("search") || lower.contains("keyword") || lower.contains("term") { return Some(FieldType::Search); }
-    if lower.contains("date") || lower.contains("time") || lower.contains("created") || lower.contains("updated") || lower.contains("expires") || lower.contains("birthday") { return Some(FieldType::Date); }
-    if lower.contains("file") || lower.contains("filename") || lower.contains("attachment") { return Some(FieldType::Filename); }
-    if lower == "page" || lower == "limit" || lower == "offset" || lower == "count" || lower == "size" || lower == "port" || lower == "age" || lower == "amount" || lower.starts_with("num") { return Some(FieldType::Integer); }
-    if lower == "price" || lower == "rate" || lower == "score" || lower == "weight" || lower == "lat" || lower == "lng" { return Some(FieldType::Float); }
-    if lower.contains("slug") || lower.contains("permalink") { return Some(FieldType::Slug); }
-    if lower == "ip" || lower.contains("ip_address") || lower.contains("remote_addr") { return Some(FieldType::Ipv4); }
+    if lower.contains("email") || lower.contains("mail") {
+        return Some(FieldType::Email);
+    }
+    if lower.contains("username")
+        || lower.contains("user_name")
+        || lower.contains("login")
+        || lower.contains("handle")
+    {
+        return Some(FieldType::Username);
+    }
+    if lower.contains("phone") || lower.contains("tel") || lower.contains("mobile") {
+        return Some(FieldType::Phone);
+    }
+    if lower == "url"
+        || lower.contains("website")
+        || lower.contains("homepage")
+        || lower.contains("link")
+        || lower.contains("redirect")
+        || lower.contains("callback")
+        || lower.contains("return_url")
+        || lower.contains("next")
+        || lower.contains("goto")
+    {
+        return Some(FieldType::Url);
+    }
+    if lower == "q"
+        || lower.contains("query")
+        || lower.contains("search")
+        || lower.contains("keyword")
+        || lower.contains("term")
+    {
+        return Some(FieldType::Search);
+    }
+    if lower.contains("date")
+        || lower.contains("time")
+        || lower.contains("created")
+        || lower.contains("updated")
+        || lower.contains("expires")
+        || lower.contains("birthday")
+    {
+        return Some(FieldType::Date);
+    }
+    if lower.contains("file") || lower.contains("filename") || lower.contains("attachment") {
+        return Some(FieldType::Filename);
+    }
+    if lower == "page"
+        || lower == "limit"
+        || lower == "offset"
+        || lower == "count"
+        || lower == "size"
+        || lower == "port"
+        || lower == "age"
+        || lower == "amount"
+        || lower.starts_with("num")
+    {
+        return Some(FieldType::Integer);
+    }
+    if lower == "price"
+        || lower == "rate"
+        || lower == "score"
+        || lower == "weight"
+        || lower == "lat"
+        || lower == "lng"
+    {
+        return Some(FieldType::Float);
+    }
+    if lower.contains("slug") || lower.contains("permalink") {
+        return Some(FieldType::Slug);
+    }
+    if lower == "ip" || lower.contains("ip_address") || lower.contains("remote_addr") {
+        return Some(FieldType::Ipv4);
+    }
 
     None
 }
@@ -760,7 +1010,10 @@ pub fn validate_json_required_fields(input: &str, required_fields: &[&str]) -> V
 }
 
 /// Validate body structure against declared content type.
-pub fn validate_content_type_consistency(input: &str, content_type: Option<&str>) -> Option<ShapeValidation> {
+pub fn validate_content_type_consistency(
+    input: &str,
+    content_type: Option<&str>,
+) -> Option<ShapeValidation> {
     let content_type = content_type?;
     if input.len() > MAX_JSON_PAYLOAD_BYTES {
         let violation = ShapeValidation {
@@ -825,14 +1078,25 @@ pub fn validate_content_type_consistency(input: &str, content_type: Option<&str>
         });
     }
 
-    let deviation = (violations.iter().map(|v| v.severity).sum::<f64>() / violations.len() as f64).min(1.0);
-    let confidence_boost = if deviation > 0.75 { 0.10 } else if deviation > 0.4 { 0.05 } else { 0.02 };
+    let deviation =
+        (violations.iter().map(|v| v.severity).sum::<f64>() / violations.len() as f64).min(1.0);
+    let confidence_boost = if deviation > 0.75 {
+        0.10
+    } else if deviation > 0.4 {
+        0.05
+    } else {
+        0.02
+    };
 
     Some(ShapeValidation {
         matches: false,
         deviation,
         confidence_boost,
-        detail: format!("Input inconsistent with {}: {} issues", token, violations.len()),
+        detail: format!(
+            "Input inconsistent with {}: {} issues",
+            token,
+            violations.len()
+        ),
         violations,
     })
 }
@@ -962,7 +1226,11 @@ mod tests {
     fn filename_traversal() {
         let r = validate_shape("../../etc/passwd", FieldType::Filename);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "path_separator" || v.constraint == "dotdot"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "path_separator" || v.constraint == "dotdot")
+        );
     }
 
     #[test]
@@ -1016,7 +1284,11 @@ mod tests {
         let payload: String = (0x20u8..=0x7E).map(char::from).collect();
         let r = validate_shape(&payload, FieldType::Search);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "metachar_ratio"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "metachar_ratio")
+        );
     }
 
     #[test]
@@ -1025,7 +1297,11 @@ mod tests {
         let payload = String::from_utf8_lossy(&bytes).to_string();
         let r = validate_shape(&payload, FieldType::Username);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "charset" || v.constraint == "control_chars"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "charset" || v.constraint == "control_chars")
+        );
     }
 
     #[test]
@@ -1041,7 +1317,11 @@ mod tests {
         let payload = format!("safe_name_{}{}_{}", "A".repeat(300), "%2e%2e%2f", "/tmp");
         let r = validate_shape(&payload, FieldType::Filename);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "path_traversal"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "path_traversal")
+        );
     }
 
     #[test]
@@ -1069,12 +1349,17 @@ mod tests {
     fn json_value_detects_suspicious_operator_keys() {
         let r = validate_shape(r#"{"username":"a","$ne":"x"}"#, FieldType::JsonValue);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "suspicious_keys"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "suspicious_keys")
+        );
     }
 
     #[test]
     fn json_required_fields_negative_space() {
-        let violations = validate_json_required_fields(r#"{"username":"alice"}"#, &["username", "password"]);
+        let violations =
+            validate_json_required_fields(r#"{"username":"alice"}"#, &["username", "password"]);
         assert!(violations.iter().any(|v| v.constraint == "required_field"));
     }
 
@@ -1089,15 +1374,24 @@ mod tests {
     fn content_type_json_mismatch() {
         let r = validate_content_type_consistency("<xml></xml>", Some("application/json")).unwrap();
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "valid_json" || v.constraint == "content_mismatch"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "valid_json" || v.constraint == "content_mismatch")
+        );
     }
 
     #[test]
     fn multipart_boundary_manipulation_detected() {
         let body = "--abc\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nhello";
-        let r = validate_content_type_consistency(body, Some("multipart/form-data; boundary=abc")).unwrap();
+        let r = validate_content_type_consistency(body, Some("multipart/form-data; boundary=abc"))
+            .unwrap();
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "boundary_format" || v.constraint == "boundary_closure"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "boundary_format" || v.constraint == "boundary_closure")
+        );
     }
 
     #[test]
@@ -1105,7 +1399,11 @@ mod tests {
         let body = "<?xml version=\"1.0\"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM \"file:///etc/passwd\">]><foo>&xxe;</foo>";
         let r = validate_content_type_consistency(body, Some("application/xml")).unwrap();
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "xml_dtd_entity"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "xml_dtd_entity")
+        );
     }
 
     #[test]
@@ -1113,7 +1411,11 @@ mod tests {
         let deep = r#""%25252525253Cscript%25252525253Ealert(1)%25252525253C%25252525252Fscript%25252525253E""#;
         let r = validate_shape(deep, FieldType::JsonValue);
         assert!(!r.matches);
-        assert!(r.violations.iter().any(|v| v.constraint == "encoding_layers"));
+        assert!(
+            r.violations
+                .iter()
+                .any(|v| v.constraint == "encoding_layers")
+        );
     }
 
     #[test]

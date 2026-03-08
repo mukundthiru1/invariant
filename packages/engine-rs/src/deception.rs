@@ -5,8 +5,10 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 static LEAKED_PASSWORD_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)^(123456|password|qwerty|letmein|welcome123|admin123|changeme|iloveyou|p@ssw0rd)$")
-        .unwrap()
+    Regex::new(
+        r"(?i)^(123456|password|qwerty|letmein|welcome123|admin123|changeme|iloveyou|p@ssw0rd)$",
+    )
+    .unwrap()
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -225,53 +227,56 @@ impl DeceptionEngine {
 
         let mut body_params: HashMap<String, String> = HashMap::new();
 
-        let mut check_param_source = |source: Option<&HashMap<String, String>>, location: ParamLocation, fired: &mut Vec<TrapTrigger>| {
-            let Some(source_map) = source else {
-                return;
-            };
-            for canary in &self.parameters {
-                if !canary.locations.contains(&location) {
-                    continue;
-                }
-                let Some(value) = source_map.get(&canary.name) else {
-                    continue;
+        let mut check_param_source =
+            |source: Option<&HashMap<String, String>>,
+             location: ParamLocation,
+             fired: &mut Vec<TrapTrigger>| {
+                let Some(source_map) = source else {
+                    return;
                 };
-                if let Some(re) = &canary.value_pattern {
-                    if !re.is_match(value) {
+                for canary in &self.parameters {
+                    if !canary.locations.contains(&location) {
                         continue;
                     }
-                }
-
-                let mut trigger_params = HashMap::new();
-                trigger_params.insert(canary.name.clone(), value.clone());
-                let trigger = TrapTrigger {
-                    trap_type: TrapType::Parameter,
-                    trap_id: format!(
-                        "param:{}:{}",
-                        canary.name,
-                        match location {
-                            ParamLocation::Query => "query",
-                            ParamLocation::Body => "body",
-                            ParamLocation::Cookie => "cookie",
-                            ParamLocation::Header => "header",
+                    let Some(value) = source_map.get(&canary.name) else {
+                        continue;
+                    };
+                    if let Some(re) = &canary.value_pattern {
+                        if !re.is_match(value) {
+                            continue;
                         }
-                    ),
-                    source_hash: source_hash.to_string(),
-                    severity: canary.severity,
-                    category: TrapCategory::Custom,
-                    timestamp,
-                    request: TrapRequestInfo {
-                        method: method.to_string(),
-                        path: path.to_string(),
-                        params: Some(trigger_params),
-                    },
-                    description: canary.description.clone(),
-                    confidence: 1.0,
-                };
-                fired.push(trigger.clone());
-                pending_records.push(trigger);
-            }
-        };
+                    }
+
+                    let mut trigger_params = HashMap::new();
+                    trigger_params.insert(canary.name.clone(), value.clone());
+                    let trigger = TrapTrigger {
+                        trap_type: TrapType::Parameter,
+                        trap_id: format!(
+                            "param:{}:{}",
+                            canary.name,
+                            match location {
+                                ParamLocation::Query => "query",
+                                ParamLocation::Body => "body",
+                                ParamLocation::Cookie => "cookie",
+                                ParamLocation::Header => "header",
+                            }
+                        ),
+                        source_hash: source_hash.to_string(),
+                        severity: canary.severity,
+                        category: TrapCategory::Custom,
+                        timestamp,
+                        request: TrapRequestInfo {
+                            method: method.to_string(),
+                            path: path.to_string(),
+                            params: Some(trigger_params),
+                        },
+                        description: canary.description.clone(),
+                        confidence: 1.0,
+                    };
+                    fired.push(trigger.clone());
+                    pending_records.push(trigger);
+                }
+            };
 
         check_param_source(params, ParamLocation::Query, &mut fired);
         check_param_source(headers, ParamLocation::Header, &mut fired);
@@ -327,7 +332,14 @@ impl DeceptionEngine {
             pending_records.push(trigger);
         }
 
-        let credential_triggers = detect_fake_credentials(method, path, source_hash, params, Some(&body_params), timestamp);
+        let credential_triggers = detect_fake_credentials(
+            method,
+            path,
+            source_hash,
+            params,
+            Some(&body_params),
+            timestamp,
+        );
         for trigger in credential_triggers {
             fired.push(trigger.clone());
             pending_records.push(trigger);
@@ -340,7 +352,9 @@ impl DeceptionEngine {
         if let Some(headers_map) = headers {
             let response_ms = parse_u64_ci(headers_map, "x-response-time-ms");
             let redirect_hops = parse_u64_ci(headers_map, "x-redirect-hops").map(|v| v as u32);
-            for trigger in self.check_tarpit_indicators(method, path, source_hash, response_ms, redirect_hops) {
+            for trigger in
+                self.check_tarpit_indicators(method, path, source_hash, response_ms, redirect_hops)
+            {
                 fired.push(trigger);
             }
         }
@@ -377,7 +391,10 @@ impl DeceptionEngine {
                         path: path.to_string(),
                         params: None,
                     },
-                    description: format!("Tarpit indicator: unusually slow response observed ({}ms)", ms),
+                    description: format!(
+                        "Tarpit indicator: unusually slow response observed ({}ms)",
+                        ms
+                    ),
                     confidence: 1.0,
                 };
                 fired.push(trigger.clone());
@@ -399,7 +416,10 @@ impl DeceptionEngine {
                         path: path.to_string(),
                         params: None,
                     },
-                    description: format!("Tarpit indicator: potential infinite redirect chain ({} hops)", hops),
+                    description: format!(
+                        "Tarpit indicator: potential infinite redirect chain ({} hops)",
+                        hops
+                    ),
                     confidence: 1.0,
                 };
                 fired.push(trigger.clone());
@@ -515,7 +535,10 @@ fn detect_fake_credentials(
     let user_keys = ["username", "user", "login", "email"];
     let pass_keys = ["password", "pass", "passwd", "pwd"];
 
-    let username = user_keys.iter().find_map(|k| merged.get(*k)).map(|s| s.to_ascii_lowercase());
+    let username = user_keys
+        .iter()
+        .find_map(|k| merged.get(*k))
+        .map(|s| s.to_ascii_lowercase());
     let password = pass_keys.iter().find_map(|k| merged.get(*k)).cloned();
 
     let mut triggers = Vec::new();
@@ -548,7 +571,8 @@ fn detect_fake_credentials(
                     path: path.to_string(),
                     params: Some(params),
                 },
-                description: "Fake credential detection: common default credential pair observed".to_string(),
+                description: "Fake credential detection: common default credential pair observed"
+                    .to_string(),
                 confidence: 1.0,
             });
         }
@@ -570,7 +594,8 @@ fn detect_fake_credentials(
                     path: path.to_string(),
                     params: Some(params),
                 },
-                description: "Fake credential detection: password matches leaked/common pattern".to_string(),
+                description: "Fake credential detection: password matches leaked/common pattern"
+                    .to_string(),
                 confidence: 1.0,
             });
         }
@@ -694,44 +719,292 @@ fn now_ms() -> u64 {
 
 fn builtin_canary_endpoints() -> Vec<CanaryEndpoint> {
     vec![
-        CanaryEndpoint { path: "/wp-admin/setup-config.php".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::CmsAdmin, description: "WordPress setup page - only accessed during initial install".into(), dynamic: false },
-        CanaryEndpoint { path: "/wp-login.php".into(), methods: vec!["POST".into()], trigger_level: TriggerLevel::PostOnly, severity: TrapSeverity::High, category: TrapCategory::CmsAdmin, description: "WordPress login POST - credential stuffing attempt".into(), dynamic: false },
-        CanaryEndpoint { path: "/administrator/index.php".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::CmsAdmin, description: "Joomla admin - scanner probing for CMS".into(), dynamic: false },
-        CanaryEndpoint { path: "/.env".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: "Environment file access - seeking database credentials".into(), dynamic: false },
-        CanaryEndpoint { path: "/.git/config".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: "Git config access - seeking source code".into(), dynamic: false },
-        CanaryEndpoint { path: "/.git/HEAD".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: "Git HEAD access - source code reconnaissance".into(), dynamic: false },
-        CanaryEndpoint { path: "/web.config".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::ConfigFile, description: "IIS web.config - seeking connection strings".into(), dynamic: false },
-        CanaryEndpoint { path: "/.htpasswd".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::CredentialFile, description: "Apache password file - seeking credentials".into(), dynamic: false },
-        CanaryEndpoint { path: "/application.properties".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: "Spring Boot config - seeking database credentials".into(), dynamic: false },
-        CanaryEndpoint { path: "/config/database.yml".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: "Rails database config - seeking credentials".into(), dynamic: false },
-        CanaryEndpoint { path: "/appsettings.json".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::ConfigFile, description: ".NET config - seeking connection strings and secrets".into(), dynamic: false },
-        CanaryEndpoint { path: "/actuator/env".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::DebugEndpoint, description: "Spring actuator env - seeking environment variables".into(), dynamic: false },
-        CanaryEndpoint { path: "/actuator/heapdump".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::DebugEndpoint, description: "Spring heap dump - seeking memory contents".into(), dynamic: false },
-        CanaryEndpoint { path: "/debug/pprof".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::DebugEndpoint, description: "Go pprof debug endpoint".into(), dynamic: false },
-        CanaryEndpoint { path: "/__clockwork".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::DebugEndpoint, description: "Laravel Clockwork debug - seeking application state".into(), dynamic: false },
-        CanaryEndpoint { path: "/telescope".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::DebugEndpoint, description: "Laravel Telescope - seeking request/exception logs".into(), dynamic: false },
-        CanaryEndpoint { path: "/phpinfo.php".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Medium, category: TrapCategory::ScannerTarget, description: "PHP info page - information disclosure probe".into(), dynamic: false },
-        CanaryEndpoint { path: "/server-status".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Medium, category: TrapCategory::ScannerTarget, description: "Apache server-status - information disclosure probe".into(), dynamic: false },
-        CanaryEndpoint { path: "/server-info".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Medium, category: TrapCategory::ScannerTarget, description: "Apache server-info - information disclosure probe".into(), dynamic: false },
-        CanaryEndpoint { path: "/elmah.axd".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::High, category: TrapCategory::ScannerTarget, description: ".NET ELMAH error log - seeking stack traces".into(), dynamic: false },
-        CanaryEndpoint { path: "/swagger.json".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Medium, category: TrapCategory::ApiDiscovery, description: "Swagger/OpenAPI spec - API reconnaissance".into(), dynamic: false },
-        CanaryEndpoint { path: "/api-docs".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Medium, category: TrapCategory::ApiDiscovery, description: "API documentation endpoint - reconnaissance".into(), dynamic: false },
-        CanaryEndpoint { path: "/backup.sql".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::BackupFile, description: "SQL backup file - seeking database dump".into(), dynamic: false },
-        CanaryEndpoint { path: "/db.sql".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::BackupFile, description: "Database backup - seeking credentials and data".into(), dynamic: false },
-        CanaryEndpoint { path: "/dump.sql".into(), methods: vec![], trigger_level: TriggerLevel::AnyRequest, severity: TrapSeverity::Critical, category: TrapCategory::BackupFile, description: "Database dump - seeking credentials and data".into(), dynamic: false },
+        CanaryEndpoint {
+            path: "/wp-admin/setup-config.php".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::CmsAdmin,
+            description: "WordPress setup page - only accessed during initial install".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/wp-login.php".into(),
+            methods: vec!["POST".into()],
+            trigger_level: TriggerLevel::PostOnly,
+            severity: TrapSeverity::High,
+            category: TrapCategory::CmsAdmin,
+            description: "WordPress login POST - credential stuffing attempt".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/administrator/index.php".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::CmsAdmin,
+            description: "Joomla admin - scanner probing for CMS".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/.env".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: "Environment file access - seeking database credentials".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/.git/config".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: "Git config access - seeking source code".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/.git/HEAD".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: "Git HEAD access - source code reconnaissance".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/web.config".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::ConfigFile,
+            description: "IIS web.config - seeking connection strings".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/.htpasswd".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::CredentialFile,
+            description: "Apache password file - seeking credentials".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/application.properties".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: "Spring Boot config - seeking database credentials".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/config/database.yml".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: "Rails database config - seeking credentials".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/appsettings.json".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::ConfigFile,
+            description: ".NET config - seeking connection strings and secrets".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/actuator/env".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::DebugEndpoint,
+            description: "Spring actuator env - seeking environment variables".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/actuator/heapdump".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::DebugEndpoint,
+            description: "Spring heap dump - seeking memory contents".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/debug/pprof".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::DebugEndpoint,
+            description: "Go pprof debug endpoint".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/__clockwork".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::DebugEndpoint,
+            description: "Laravel Clockwork debug - seeking application state".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/telescope".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::DebugEndpoint,
+            description: "Laravel Telescope - seeking request/exception logs".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/phpinfo.php".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Medium,
+            category: TrapCategory::ScannerTarget,
+            description: "PHP info page - information disclosure probe".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/server-status".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Medium,
+            category: TrapCategory::ScannerTarget,
+            description: "Apache server-status - information disclosure probe".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/server-info".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Medium,
+            category: TrapCategory::ScannerTarget,
+            description: "Apache server-info - information disclosure probe".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/elmah.axd".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::High,
+            category: TrapCategory::ScannerTarget,
+            description: ".NET ELMAH error log - seeking stack traces".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/swagger.json".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Medium,
+            category: TrapCategory::ApiDiscovery,
+            description: "Swagger/OpenAPI spec - API reconnaissance".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/api-docs".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Medium,
+            category: TrapCategory::ApiDiscovery,
+            description: "API documentation endpoint - reconnaissance".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/backup.sql".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::BackupFile,
+            description: "SQL backup file - seeking database dump".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/db.sql".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::BackupFile,
+            description: "Database backup - seeking credentials and data".into(),
+            dynamic: false,
+        },
+        CanaryEndpoint {
+            path: "/dump.sql".into(),
+            methods: vec![],
+            trigger_level: TriggerLevel::AnyRequest,
+            severity: TrapSeverity::Critical,
+            category: TrapCategory::BackupFile,
+            description: "Database dump - seeking credentials and data".into(),
+            dynamic: false,
+        },
     ]
 }
 
 fn builtin_canary_parameters() -> Vec<CanaryParameter> {
     vec![
-        CanaryParameter { name: "_debug".into(), value_pattern: None, locations: vec![ParamLocation::Query, ParamLocation::Body], severity: TrapSeverity::High, description: "Debug parameter - no legitimate application should accept this".into() },
-        CanaryParameter { name: "_test".into(), value_pattern: None, locations: vec![ParamLocation::Query, ParamLocation::Body], severity: TrapSeverity::Medium, description: "Test parameter - scanner probing for debug paths".into() },
-        CanaryParameter { name: "admin".into(), value_pattern: Some(Regex::new(r"(?i)^(true|1|yes)$").unwrap()), locations: vec![ParamLocation::Query, ParamLocation::Body], severity: TrapSeverity::Critical, description: "Admin flag injection - attempting privilege escalation".into() },
-        CanaryParameter { name: "is_admin".into(), value_pattern: Some(Regex::new(r"(?i)^(true|1|yes)$").unwrap()), locations: vec![ParamLocation::Query, ParamLocation::Body], severity: TrapSeverity::Critical, description: "Admin flag injection - attempting privilege escalation".into() },
-        CanaryParameter { name: "role".into(), value_pattern: Some(Regex::new(r"(?i)^(admin|superadmin|root|super)$").unwrap()), locations: vec![ParamLocation::Query, ParamLocation::Body], severity: TrapSeverity::Critical, description: "Role escalation attempt".into() },
-        CanaryParameter { name: "x-middleware-subrequest".into(), value_pattern: None, locations: vec![ParamLocation::Header], severity: TrapSeverity::Critical, description: "Next.js middleware bypass header (CVE-2025-29927)".into() },
-        CanaryParameter { name: "x-original-url".into(), value_pattern: None, locations: vec![ParamLocation::Header], severity: TrapSeverity::High, description: "URL rewrite header - bypassing path-based access controls".into() },
-        CanaryParameter { name: "x-rewrite-url".into(), value_pattern: None, locations: vec![ParamLocation::Header], severity: TrapSeverity::High, description: "URL rewrite header - bypassing path-based access controls".into() },
+        CanaryParameter {
+            name: "_debug".into(),
+            value_pattern: None,
+            locations: vec![ParamLocation::Query, ParamLocation::Body],
+            severity: TrapSeverity::High,
+            description: "Debug parameter - no legitimate application should accept this".into(),
+        },
+        CanaryParameter {
+            name: "_test".into(),
+            value_pattern: None,
+            locations: vec![ParamLocation::Query, ParamLocation::Body],
+            severity: TrapSeverity::Medium,
+            description: "Test parameter - scanner probing for debug paths".into(),
+        },
+        CanaryParameter {
+            name: "admin".into(),
+            value_pattern: Some(Regex::new(r"(?i)^(true|1|yes)$").unwrap()),
+            locations: vec![ParamLocation::Query, ParamLocation::Body],
+            severity: TrapSeverity::Critical,
+            description: "Admin flag injection - attempting privilege escalation".into(),
+        },
+        CanaryParameter {
+            name: "is_admin".into(),
+            value_pattern: Some(Regex::new(r"(?i)^(true|1|yes)$").unwrap()),
+            locations: vec![ParamLocation::Query, ParamLocation::Body],
+            severity: TrapSeverity::Critical,
+            description: "Admin flag injection - attempting privilege escalation".into(),
+        },
+        CanaryParameter {
+            name: "role".into(),
+            value_pattern: Some(Regex::new(r"(?i)^(admin|superadmin|root|super)$").unwrap()),
+            locations: vec![ParamLocation::Query, ParamLocation::Body],
+            severity: TrapSeverity::Critical,
+            description: "Role escalation attempt".into(),
+        },
+        CanaryParameter {
+            name: "x-middleware-subrequest".into(),
+            value_pattern: None,
+            locations: vec![ParamLocation::Header],
+            severity: TrapSeverity::Critical,
+            description: "Next.js middleware bypass header (CVE-2025-29927)".into(),
+        },
+        CanaryParameter {
+            name: "x-original-url".into(),
+            value_pattern: None,
+            locations: vec![ParamLocation::Header],
+            severity: TrapSeverity::High,
+            description: "URL rewrite header - bypassing path-based access controls".into(),
+        },
+        CanaryParameter {
+            name: "x-rewrite-url".into(),
+            value_pattern: None,
+            locations: vec![ParamLocation::Header],
+            severity: TrapSeverity::High,
+            description: "URL rewrite header - bypassing path-based access controls".into(),
+        },
     ]
 }
 
@@ -810,16 +1083,38 @@ mod tests {
     fn token_replay_same_source_is_high_severity() {
         let mut engine = DeceptionEngine::new(None);
         let token = engine.generate_token("src1", "html");
-        let hits = engine.check_request("POST", "/x", "src1", None, None, None, Some(&format!("k={token}")));
-        assert!(hits.iter().any(|h| h.trap_type == TrapType::Token && h.severity == TrapSeverity::High));
+        let hits = engine.check_request(
+            "POST",
+            "/x",
+            "src1",
+            None,
+            None,
+            None,
+            Some(&format!("k={token}")),
+        );
+        assert!(
+            hits.iter()
+                .any(|h| h.trap_type == TrapType::Token && h.severity == TrapSeverity::High)
+        );
     }
 
     #[test]
     fn token_exfiltration_other_source_is_critical() {
         let mut engine = DeceptionEngine::new(None);
         let token = engine.generate_token("src1", "html");
-        let hits = engine.check_request("POST", "/x", "src2", None, None, None, Some(&format!("k={token}")));
-        assert!(hits.iter().any(|h| h.trap_type == TrapType::Token && h.severity == TrapSeverity::Critical));
+        let hits = engine.check_request(
+            "POST",
+            "/x",
+            "src2",
+            None,
+            None,
+            None,
+            Some(&format!("k={token}")),
+        );
+        assert!(
+            hits.iter()
+                .any(|h| h.trap_type == TrapType::Token && h.severity == TrapSeverity::Critical)
+        );
     }
 
     #[test]
@@ -853,7 +1148,10 @@ mod tests {
         let mut engine = DeceptionEngine::new(None);
         let params = map(&[("username", "admin"), ("password", "admin")]);
         let hits = engine.check_request("POST", "/login", "src1", Some(&params), None, None, None);
-        assert!(hits.iter().any(|h| h.trap_type == TrapType::Credential && h.trap_id == "credential:default"));
+        assert!(
+            hits.iter()
+                .any(|h| h.trap_type == TrapType::Credential && h.trap_id == "credential:default")
+        );
     }
 
     #[test]
@@ -861,9 +1159,9 @@ mod tests {
         let mut engine = DeceptionEngine::new(None);
         let body = "password=welcome123";
         let hits = engine.check_request("POST", "/login", "src1", None, None, None, Some(body));
-        assert!(hits
-            .iter()
-            .any(|h| h.trap_type == TrapType::Credential && h.trap_id == "credential:leaked_pattern"));
+        assert!(hits.iter().any(
+            |h| h.trap_type == TrapType::Credential && h.trap_id == "credential:leaked_pattern"
+        ));
     }
 
     #[test]

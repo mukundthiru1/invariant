@@ -15,13 +15,13 @@ export async function encryptSignal(
 ): Promise<EncryptedSignalBundle> {
     const token = anonToken ?? 'anonymous'
 
-    const ephemeral = await globalThis.crypto.subtle.generateKey(
+    const ephemeral = await crypto.subtle.generateKey(
         { name: 'X25519' },
         true,
         ['deriveBits'],
-    )
+    ) as CryptoKeyPair
 
-    const centralPublicKey = await globalThis.crypto.subtle.importKey(
+    const centralPublicKey = await crypto.subtle.importKey(
         'raw',
         fromBase64Url(centralPublicKeyB64),
         { name: 'X25519' },
@@ -29,13 +29,13 @@ export async function encryptSignal(
         [],
     )
 
-    const sharedBits = await globalThis.crypto.subtle.deriveBits(
-        { name: 'X25519', public: centralPublicKey },
+    const sharedBits = await crypto.subtle.deriveBits(
+        { name: 'X25519', public: centralPublicKey } as any,
         ephemeral.privateKey,
         256,
     )
 
-    const hkdfKey = await globalThis.crypto.subtle.importKey(
+    const hkdfKey = await crypto.subtle.importKey(
         'raw',
         sharedBits,
         'HKDF',
@@ -43,7 +43,7 @@ export async function encryptSignal(
         ['deriveKey'],
     )
 
-    const encKey = await globalThis.crypto.subtle.deriveKey(
+    const encKey = await crypto.subtle.deriveKey(
         {
             name: 'HKDF',
             hash: 'SHA-256',
@@ -56,17 +56,17 @@ export async function encryptSignal(
         ['encrypt'],
     )
 
-    const iv = globalThis.crypto.getRandomValues(new Uint8Array(12))
+    const iv = crypto.getRandomValues(new Uint8Array(12))
     const aad = encode(token)
     const plaintext = encode(JSON.stringify(bundle))
 
-    const ciphertext = await globalThis.crypto.subtle.encrypt(
+    const ciphertext = await crypto.subtle.encrypt(
         { name: 'AES-GCM', iv, additionalData: aad },
         encKey,
         plaintext,
     )
 
-    const ephemeralPublicKey = await globalThis.crypto.subtle.exportKey('raw', ephemeral.publicKey)
+    const ephemeralPublicKey = await crypto.subtle.exportKey('raw', ephemeral.publicKey) as ArrayBuffer
 
     return {
         ephemeralPublicKey: toBase64Url(new Uint8Array(ephemeralPublicKey)),
@@ -85,7 +85,7 @@ export async function decryptSignal(
     encrypted: EncryptedSignalBundle,
     centralPrivateKeyB64: string,
 ): Promise<SignalBundle> {
-    const centralPrivateKey = await globalThis.crypto.subtle.importKey(
+    const centralPrivateKey = await crypto.subtle.importKey(
         'raw',
         fromBase64Url(centralPrivateKeyB64),
         { name: 'X25519' },
@@ -93,7 +93,7 @@ export async function decryptSignal(
         ['deriveBits'],
     )
 
-    const ephemeralPublicKey = await globalThis.crypto.subtle.importKey(
+    const ephemeralPublicKey = await crypto.subtle.importKey(
         'raw',
         fromBase64Url(encrypted.ephemeralPublicKey),
         { name: 'X25519' },
@@ -101,13 +101,13 @@ export async function decryptSignal(
         [],
     )
 
-    const sharedBits = await globalThis.crypto.subtle.deriveBits(
-        { name: 'X25519', public: ephemeralPublicKey },
+    const sharedBits = await crypto.subtle.deriveBits(
+        { name: 'X25519', public: ephemeralPublicKey } as any,
         centralPrivateKey,
         256,
     )
 
-    const hkdfKey = await globalThis.crypto.subtle.importKey(
+    const hkdfKey = await crypto.subtle.importKey(
         'raw',
         sharedBits,
         'HKDF',
@@ -117,7 +117,7 @@ export async function decryptSignal(
 
     const token = encrypted.anonToken
 
-    const decKey = await globalThis.crypto.subtle.deriveKey(
+    const decKey = await crypto.subtle.deriveKey(
         {
             name: 'HKDF',
             hash: 'SHA-256',
@@ -130,7 +130,7 @@ export async function decryptSignal(
         ['decrypt'],
     )
 
-    const plaintext = await globalThis.crypto.subtle.decrypt(
+    const plaintext = await crypto.subtle.decrypt(
         {
             name: 'AES-GCM',
             iv: fromBase64Url(encrypted.iv),

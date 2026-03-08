@@ -5,17 +5,35 @@ use crate::types::InvariantClass;
 use regex::Regex;
 
 const DANGEROUS_FIELDS: &[&str] = &[
-    "role", "isAdmin", "is_admin", "admin", "permissions", "privilege",
-    "access_level", "verified", "email_verified", "approved",
-    "password", "password_hash", "api_key", "secret",
-    "balance", "credit", "price", "amount",
+    "role",
+    "isAdmin",
+    "is_admin",
+    "admin",
+    "permissions",
+    "privilege",
+    "access_level",
+    "verified",
+    "email_verified",
+    "approved",
+    "password",
+    "password_hash",
+    "api_key",
+    "secret",
+    "balance",
+    "credit",
+    "price",
+    "amount",
 ];
 
 pub struct MassAssignmentEvaluator;
 
 impl L2Evaluator for MassAssignmentEvaluator {
-    fn id(&self) -> &'static str { "mass_assignment" }
-    fn prefix(&self) -> &'static str { "L2 MassAssign" }
+    fn id(&self) -> &'static str {
+        "mass_assignment"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 MassAssign"
+    }
 
     #[inline]
 
@@ -36,7 +54,10 @@ impl L2Evaluator for MassAssignmentEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: format!("Field '{}' modifies authorization/privilege state", field),
+                        interpretation: format!(
+                            "Field '{}' modifies authorization/privilege state",
+                            field
+                        ),
                         offset: m.start(),
                         property: "Request body must not set privileged fields directly".into(),
                     }],
@@ -45,7 +66,10 @@ impl L2Evaluator for MassAssignmentEvaluator {
         }
 
         // Query string mass assignment: ?role=admin&isAdmin=true
-        static qs_assign: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:role|isAdmin|is_admin|admin|permissions?)=(?:admin|true|1)\b").unwrap());
+        static qs_assign: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:role|isAdmin|is_admin|admin|permissions?)=(?:admin|true|1)\b")
+                .unwrap()
+        });
         if let Some(m) = qs_assign.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "mass_assign_qs".into(),
@@ -55,7 +79,8 @@ impl L2Evaluator for MassAssignmentEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Query parameter sets privileged field to elevated value".into(),
+                    interpretation: "Query parameter sets privileged field to elevated value"
+                        .into(),
                     offset: m.start(),
                     property: "Privilege-controlling parameters must not be user-settable".into(),
                 }],
@@ -64,8 +89,14 @@ impl L2Evaluator for MassAssignmentEvaluator {
 
         // Nested dot/bracket notation: user[role]=admin, user.role=admin
         for field in DANGEROUS_FIELDS {
-            let bracket = format!(r"(?i)(?:^|[?&;,])\s*user\[\s*{}\s*\]\s*=\s*[^&\s]+", regex::escape(field));
-            let dot = format!(r"(?i)(?:^|[?&;,])\s*user\.{}\s*=\s*[^&\s]+", regex::escape(field));
+            let bracket = format!(
+                r"(?i)(?:^|[?&;,])\s*user\[\s*{}\s*\]\s*=\s*[^&\s]+",
+                regex::escape(field)
+            );
+            let dot = format!(
+                r"(?i)(?:^|[?&;,])\s*user\.{}\s*=\s*[^&\s]+",
+                regex::escape(field)
+            );
             let re_bracket = Regex::new(&bracket).unwrap();
             let re_dot = Regex::new(&dot).unwrap();
             if let Some(m) = re_bracket.find(&decoded).or_else(|| re_dot.find(&decoded)) {
@@ -77,9 +108,13 @@ impl L2Evaluator for MassAssignmentEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: format!("Nested field '{}' can bypass flat-parameter binding checks", field),
+                        interpretation: format!(
+                            "Nested field '{}' can bypass flat-parameter binding checks",
+                            field
+                        ),
                         offset: m.start(),
-                        property: "Nested request parameters should be explicitly whitelisted".into(),
+                        property: "Nested request parameters should be explicitly whitelisted"
+                            .into(),
                     }],
                 });
             }
@@ -87,7 +122,11 @@ impl L2Evaluator for MassAssignmentEvaluator {
 
         // GraphQL mutation + JSON-like variable payload mass assignment: { role: "admin" }
         let gql_fields = DANGEROUS_FIELDS.join("|");
-        let gql_re = Regex::new(&format!(r#"(?is)mutation\b[^\n]*\b(?:{})\s*:\s*(?:"[^"]+"|'[^']+'|true|false|\d+)"#, gql_fields)).unwrap();
+        let gql_re = Regex::new(&format!(
+            r#"(?is)mutation\b[^\n]*\b(?:{})\s*:\s*(?:"[^"]+"|'[^']+'|true|false|\d+)"#,
+            gql_fields
+        ))
+        .unwrap();
         if gql_re.find(&decoded).is_some() {
             dets.push(L2Detection {
                 detection_type: "mass_assign_graphql".into(),
@@ -97,21 +136,26 @@ impl L2Evaluator for MassAssignmentEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded[..decoded.len().min(90)].to_owned(),
-                    interpretation: "Mutation input payload sets authorization fields directly".into(),
+                    interpretation: "Mutation input payload sets authorization fields directly"
+                        .into(),
                     offset: 0,
-                    property: "GraphQL mutations should enforce authorization-aware input schemas".into(),
+                    property: "GraphQL mutations should enforce authorization-aware input schemas"
+                        .into(),
                 }],
             });
         }
 
         // HTTP method override: _method=PUT/PATCH with privileged fields
-        static method_override: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:^|[?&;,])_method\s*=\s*(?:PUT|PATCH)\b").unwrap());
+        static method_override: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:^|[?&;,])_method\s*=\s*(?:PUT|PATCH)\b").unwrap()
+        });
         if method_override.is_match(&decoded) {
             let mut found_privilege = false;
             let mut position = 0;
             let mut snippet = String::new();
             for field in DANGEROUS_FIELDS {
-                let field_re = format!(r"(?i)(?:^|[?&;,])\s*{}\s*=\s*[^&\s]+", regex::escape(field));
+                let field_re =
+                    format!(r"(?i)(?:^|[?&;,])\s*{}\s*=\s*[^&\s]+", regex::escape(field));
                 let re = Regex::new(&field_re).unwrap();
                 if let Some(m) = re.find(&decoded) {
                     position = m.start();
@@ -129,7 +173,8 @@ impl L2Evaluator for MassAssignmentEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: snippet,
-                        interpretation: "Method override may execute update path with sensitive fields".into(),
+                        interpretation:
+                            "Method override may execute update path with sensitive fields".into(),
                         offset: position,
                         property: "Only approved routes should accept _method overrides".into(),
                     }],
@@ -146,8 +191,12 @@ impl L2Evaluator for MassAssignmentEvaluator {
         });
         let destroy_re = &*DESTROY_RE;
         let attrs_re = &*ATTRS_RE;
-        static nested_json_destroy: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?is)(?:\{|,)\s*[\"']?_destroy[\"']?\s*:\s*(?:true|false|[0-9]+|[\"'][^\"']+[\"'])"#).unwrap());
-        static nested_json_attrs: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?is)(?:\{|,)\s*[\"']?_attributes[\"']?\s*:\s*(?:\{|\[)"#).unwrap());
+        static nested_json_destroy: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)(?:\{|,)\s*[\"']?_destroy[\"']?\s*:\s*(?:true|false|[0-9]+|[\"'][^\"']+[\"'])"#).unwrap()
+        });
+        static nested_json_attrs: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)(?:\{|,)\s*[\"']?_attributes[\"']?\s*:\s*(?:\{|\[)"#).unwrap()
+        });
         if destroy_re.find(&decoded).is_some() || nested_json_destroy.find(&decoded).is_some() {
             dets.push(L2Detection {
                 detection_type: "mass_assign_strong_params".into(),
@@ -157,9 +206,12 @@ impl L2Evaluator for MassAssignmentEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded[..decoded.len().min(90)].to_owned(),
-                    interpretation: "_destroy can bypass safe-parameter filtering in nested payloads".into(),
+                    interpretation:
+                        "_destroy can bypass safe-parameter filtering in nested payloads".into(),
                     offset: 0,
-                    property: "Nested allowlist validation must strip framework-specific override keys".into(),
+                    property:
+                        "Nested allowlist validation must strip framework-specific override keys"
+                            .into(),
                 }],
             });
         } else if attrs_re.find(&decoded).is_some() || nested_json_attrs.find(&decoded).is_some() {
@@ -171,16 +223,22 @@ impl L2Evaluator for MassAssignmentEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded[..decoded.len().min(90)].to_owned(),
-                    interpretation: "_attributes can bypass attribute filtering in nested structures".into(),
+                    interpretation:
+                        "_attributes can bypass attribute filtering in nested structures".into(),
                     offset: 0,
-                    property: "Nested allowlist validation must strip framework-specific override keys".into(),
+                    property:
+                        "Nested allowlist validation must strip framework-specific override keys"
+                            .into(),
                 }],
             });
         }
 
         // ORM operator/metadata injection in TypeORM / Sequelize payloads.
-        static typeorm_metadata: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)__typeorm_metadata__").unwrap());
-        static sequelize_ops: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r#"(?i)(?:^|[^a-zA-Z0-9_])\$(?:or|and|not|where|gt|gte|lt|lte|ne|in|nin|like|regex|eq)\b"#).unwrap());
+        static typeorm_metadata: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)__typeorm_metadata__").unwrap());
+        static sequelize_ops: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)(?:^|[^a-zA-Z0-9_])\$(?:or|and|not|where|gt|gte|lt|lte|ne|in|nin|like|regex|eq)\b"#).unwrap()
+        });
         if typeorm_metadata.find(&decoded).is_some() || sequelize_ops.find(&decoded).is_some() {
             dets.push(L2Detection {
                 detection_type: "mass_assign_orm_injection".into(),
@@ -255,9 +313,12 @@ impl L2Evaluator for MassAssignmentEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::TypeCoerce,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Array binding can inject unauthorized role/permission collections".into(),
+                    interpretation:
+                        "Array binding can inject unauthorized role/permission collections".into(),
                     offset: m.start(),
-                    property: "Array-valued privilege fields must be explicit-allowlisted and normalized".into(),
+                    property:
+                        "Array-valued privilege fields must be explicit-allowlisted and normalized"
+                            .into(),
                 }],
             });
         }
@@ -295,9 +356,8 @@ impl L2Evaluator for MassAssignmentEvaluator {
         }
 
         // JSON Merge Patch abuse (RFC 7396): merge-patch content type plus privileged key mutation/nullification.
-        static MERGE_PATCH_CT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)application/merge-patch\+json").unwrap()
-        });
+        static MERGE_PATCH_CT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)application/merge-patch\+json").unwrap());
         static MERGE_PATCH_FIELD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(
                 r#"(?is)[\"'](?:role|isAdmin|is_admin|admin|permissions?|access_level|verified|approved|password|secret)[\"']\s*:\s*(?:null|true|false|[0-9]+|\"[^\"]*\"|'[^']*'|\[[^\]]*\]|\{[^}]*\})"#,
@@ -322,9 +382,10 @@ impl L2Evaluator for MassAssignmentEvaluator {
             }
         }
         // Fallback for canonicalization pipelines that normalize '+' in merge-patch content type.
-        static MERGE_PATCH_CT_FLEX_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)application/merge-patch(?:\+|\s)json").unwrap()
-        });
+        static MERGE_PATCH_CT_FLEX_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)application/merge-patch(?:\+|\s)json").unwrap()
+            });
         if dets
             .iter()
             .all(|d| d.detection_type != "mass_assign_json_merge_patch")
@@ -375,11 +436,18 @@ impl L2Evaluator for MassAssignmentEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "mass_assign_field" | "mass_assign_qs" | "mass_assign_nested_field" | "mass_assign_graphql"
-            | "mass_assign_method_override" | "mass_assign_strong_params" | "mass_assign_orm_injection"
-            | "mass_assign_nested_generic" | "mass_assign_array_param" | "mass_assign_graphql_unauthorized"
-            | "mass_assign_json_merge_patch" | "mass_assign_multipart_field"
-                => Some(InvariantClass::MassAssignment),
+            "mass_assign_field"
+            | "mass_assign_qs"
+            | "mass_assign_nested_field"
+            | "mass_assign_graphql"
+            | "mass_assign_method_override"
+            | "mass_assign_strong_params"
+            | "mass_assign_orm_injection"
+            | "mass_assign_nested_generic"
+            | "mass_assign_array_param"
+            | "mass_assign_graphql_unauthorized"
+            | "mass_assign_json_merge_patch"
+            | "mass_assign_multipart_field" => Some(InvariantClass::MassAssignment),
             _ => None,
         }
     }
@@ -393,72 +461,108 @@ mod tests {
     fn detects_nested_dot_bracket_fields() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("user[role]=admin&user.role=admin");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_nested_field"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_nested_field")
+        );
     }
 
     #[test]
     fn detects_graphql_mass_assignment() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("mutation { updateUser(input: { role: \"admin\" }) { id } }");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_graphql"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_graphql")
+        );
     }
 
     #[test]
     fn detects_http_method_override_mass_assignment() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("id=1&_method=PUT&role=admin");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_method_override"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_method_override")
+        );
     }
 
     #[test]
     fn detects_strong_params_bypass_keys() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("user[_destroy]=true&user[_attributes][role]=admin");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_strong_params"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_strong_params")
+        );
     }
 
     #[test]
     fn detects_orm_operator_injection() {
         let eval = MassAssignmentEvaluator;
-        let dets = eval.detect("{ \"__typeorm_metadata__\": { source: \"x\" }, \"role\": \"admin\" }");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_orm_injection"));
+        let dets =
+            eval.detect("{ \"__typeorm_metadata__\": { source: \"x\" }, \"role\": \"admin\" }");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_orm_injection")
+        );
         let dets = eval.detect("{ \"where\": { \"$or\": [{ \"role\": \"admin\" }] }");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_orm_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_orm_injection")
+        );
     }
 
     #[test]
     fn detects_generic_nested_bracket_assignment() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("account[role]=admin&account[name]=bob");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_nested_generic"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_nested_generic")
+        );
     }
 
     #[test]
     fn detects_generic_nested_dot_assignment() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("profile.is_admin=true&profile.email=a@b.com");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_nested_generic"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_nested_generic")
+        );
     }
 
     #[test]
     fn detects_array_parameter_privilege_escalation() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("roles[]=admin&roles[]=user");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_array_param"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_array_param")
+        );
     }
 
     #[test]
     fn detects_array_parameter_repeated_permission_manipulation() {
         let eval = MassAssignmentEvaluator;
         let dets = eval.detect("permissions[]=read&permissions[]=write&permissions[]=all");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_array_param"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_array_param")
+        );
     }
 
     #[test]
     fn detects_graphql_unauthorized_mutation_assignment() {
         let eval = MassAssignmentEvaluator;
-        let dets = eval.detect("mutation UpdateUser { updateUser(input: { id: 1, permissions: [\"admin\"] }) { id } }");
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_graphql_unauthorized"));
+        let dets = eval.detect(
+            "mutation UpdateUser { updateUser(input: { id: 1, permissions: [\"admin\"] }) { id } }",
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_graphql_unauthorized")
+        );
     }
 
     #[test]
@@ -466,7 +570,10 @@ mod tests {
         let eval = MassAssignmentEvaluator;
         let payload = r#"{"query":"mutation U($input: UpdateUserInput!){updateUser(input:$input){id}}","variables":{"input":{"admin":true,"name":"x"}}}"#;
         let dets = eval.detect(payload);
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_graphql_unauthorized"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_graphql_unauthorized")
+        );
     }
 
     #[test]
@@ -474,7 +581,10 @@ mod tests {
         let eval = MassAssignmentEvaluator;
         let payload = "PATCH /users/1 HTTP/1.1\r\nContent-Type: application/merge-patch+json\r\n\r\n{\"role\":\"admin\",\"email\":\"x@y.z\"}";
         let dets = eval.detect(payload);
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_json_merge_patch"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_json_merge_patch")
+        );
     }
 
     #[test]
@@ -482,7 +592,10 @@ mod tests {
         let eval = MassAssignmentEvaluator;
         let payload = "Content-Type: application/merge-patch+json\n{\"permissions\":null}";
         let dets = eval.detect(payload);
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_json_merge_patch"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_json_merge_patch")
+        );
     }
 
     #[test]
@@ -490,6 +603,9 @@ mod tests {
         let eval = MassAssignmentEvaluator;
         let payload = "--boundary\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--boundary\r\nContent-Disposition: form-data; name=\"admin\"\r\n\r\ntrue\r\n--boundary--";
         let dets = eval.detect(payload);
-        assert!(dets.iter().any(|d| d.detection_type == "mass_assign_multipart_field"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_multipart_field")
+        );
     }
 }

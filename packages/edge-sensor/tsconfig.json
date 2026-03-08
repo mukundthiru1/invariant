@@ -12,13 +12,17 @@
         "skipLibCheck": true,
         "forceConsistentCasingInFileNames": true,
         "types": [
-            "@cloudflare/workers-types"
+            "@cloudflare/workers-types",
+            "node"
         ],
         "outDir": "./dist",
         "rootDir": "../.."
     },
     "include": [
-        "src/**/*",
-        "../engine/src/**/*"
+        "src/**/*"
+    ],
+    "exclude": [
+        "src/**/*.test.ts",
+        "tests/**/*"
     ]
 }

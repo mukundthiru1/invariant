@@ -128,7 +128,13 @@ impl PathTokenizer {
                     String::new()
                 };
                 if is_encoded_special(&orig_segment) || encoding_layers > 1 {
-                    push(&mut tokens, PathTokenType::EncodingLayer, bytes, seg_start, i);
+                    push(
+                        &mut tokens,
+                        PathTokenType::EncodingLayer,
+                        bytes,
+                        seg_start,
+                        i,
+                    );
                 } else {
                     if has_extension(&segment) {
                         push(&mut tokens, PathTokenType::Extension, bytes, seg_start, i);
@@ -139,7 +145,13 @@ impl PathTokenizer {
                 continue;
             }
 
-            push(&mut tokens, PathTokenType::Unknown, bytes, seg_start, seg_start + 1);
+            push(
+                &mut tokens,
+                PathTokenType::Unknown,
+                bytes,
+                seg_start,
+                seg_start + 1,
+            );
             i += 1;
         }
 
@@ -157,7 +169,12 @@ fn has_extension(segment: &str) -> bool {
 
 fn extract_path_from_here(bytes: &[u8], start: usize) -> String {
     let mut end = start;
-    while end < bytes.len() && !matches!(bytes[end], b' ' | b'\t' | b'\r' | b'\n' | b'?' | b'#' | b'\0') {
+    while end < bytes.len()
+        && !matches!(
+            bytes[end],
+            b' ' | b'\t' | b'\r' | b'\n' | b'?' | b'#' | b'\0'
+        )
+    {
         end += 1;
     }
     let mut path = to_value(bytes, start, end);
@@ -263,7 +280,13 @@ fn is_sensitive_path(path: &str) -> bool {
         || p.starts_with("config/database.yml")
 }
 
-fn push(tokens: &mut Vec<Token<PathTokenType>>, ty: PathTokenType, bytes: &[u8], start: usize, end: usize) {
+fn push(
+    tokens: &mut Vec<Token<PathTokenType>>,
+    ty: PathTokenType,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) {
     tokens.push(Token {
         token_type: ty,
         value: to_value(bytes, start, end),

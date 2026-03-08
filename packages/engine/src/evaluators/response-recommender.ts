@@ -436,11 +436,11 @@ function computeBlastRadius(
     if (chains.some(c => c.completion >= 0.8)) {
         return 'CRITICAL — Active multi-stage attack near completion. Assume full compromise of targeted system.'
     }
-    if (effect?.impact.baseScore >= 9.0) {
-        return `HIGH — ${effect.impact.exposureEstimate}. Potential for full data breach.`
+    if (effect && effect.impact.baseScore !== undefined && effect.impact.baseScore >= 9.0) {
+        return `HIGH — ${(effect as any).impact.exposureEstimate}. Potential for full data breach.`
     }
-    if (effect?.impact.baseScore >= 7.0) {
-        return `MEDIUM — ${effect.impact.exposureEstimate}. Limited to targeted resource.`
+    if (effect && effect.impact.baseScore !== undefined && effect.impact.baseScore >= 7.0) {
+        return `MEDIUM — ${(effect as any).impact.exposureEstimate}. Limited to targeted resource.`
     }
     if (matches.some(m => m.severity === 'critical')) {
         return 'HIGH — Critical-severity vulnerability targeted. Exploitation may allow system-level access.'

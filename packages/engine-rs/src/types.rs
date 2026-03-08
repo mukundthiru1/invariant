@@ -154,15 +154,20 @@ impl InvariantClass {
     pub fn category(self) -> AttackCategory {
         use InvariantClass::*;
         match self {
-            SqlStringTermination | SqlTautology | SqlUnionExtraction
-            | SqlStackedExecution | SqlTimeOracle | SqlErrorOracle
-            | SqlCommentTruncation | JsonSqlBypass => AttackCategory::Sqli,
+            SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
+            | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => {
+                AttackCategory::Sqli
+            }
 
-            XssTagInjection | XssAttributeEscape | XssEventHandler
-            | XssProtocolHandler | XssTemplateExpression => AttackCategory::Xss,
+            XssTagInjection
+            | XssAttributeEscape
+            | XssEventHandler
+            | XssProtocolHandler
+            | XssTemplateExpression => AttackCategory::Xss,
 
-            PathDotdotEscape | PathNullTerminate | PathEncodingBypass
-            | PathNormalizationBypass => AttackCategory::PathTraversal,
+            PathDotdotEscape | PathNullTerminate | PathEncodingBypass | PathNormalizationBypass => {
+                AttackCategory::PathTraversal
+            }
 
             CmdSeparator | CmdSubstitution | CmdArgumentInjection => AttackCategory::Cmdi,
 
@@ -170,11 +175,11 @@ impl InvariantClass {
 
             DeserJavaGadget | DeserPhpObject | DeserPythonPickle => AttackCategory::Deser,
 
-            AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse
-            | JwtKidInjection | JwtJwkEmbedding | JwtConfusion => AttackCategory::Auth,
+            AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse | JwtKidInjection
+            | JwtJwkEmbedding | JwtConfusion => AttackCategory::Auth,
 
-            HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt
-            | HttpSmuggleZeroCl | HttpSmuggleExpect => AttackCategory::Smuggling,
+            HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl
+            | HttpSmuggleExpect => AttackCategory::Smuggling,
 
             _ => AttackCategory::Injection,
         }
@@ -185,36 +190,67 @@ impl InvariantClass {
         use InvariantClass::*;
         match self {
             // Critical: RCE, full data extraction, credential theft
-            SqlUnionExtraction | SqlStackedExecution | CmdSeparator
-            | CmdSubstitution | DeserJavaGadget | DeserPythonPickle
-            | LogJndiLookup | SstiJinjaTwig | SstiElExpression
-            | SsrfCloudMetadata | XxeEntityExpansion
-            | LlmDataExfiltration | ProtoPollutionGadget
-            | OastInteraction => Severity::Critical,
+            SqlUnionExtraction | SqlStackedExecution | CmdSeparator | CmdSubstitution
+            | DeserJavaGadget | DeserPythonPickle | LogJndiLookup | SstiJinjaTwig
+            | SstiElExpression | SsrfCloudMetadata | XxeEntityExpansion | LlmDataExfiltration
+            | ProtoPollutionGadget | OastInteraction => Severity::Critical,
 
             // High: significant data access or code execution potential
-            SqlStringTermination | SqlTautology | SqlTimeOracle
-            | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass
-            | XssTagInjection | XssEventHandler | XssProtocolHandler
-            | PathDotdotEscape | PathEncodingBypass
-            | SsrfInternalReach | SsrfProtocolSmuggle
-            | DeserPhpObject | AuthNoneAlgorithm | AuthHeaderSpoof
-            | ProtoPollution | NosqlOperatorInjection | NosqlJsInjection
-            | CrlfHeaderInjection | HttpSmuggleClTe | HttpSmuggleH2
-            | LlmPromptInjection | LlmJailbreak
-            | JwtKidInjection | JwtJwkEmbedding | JwtConfusion
-            | CachePoisoning | WsInjection | WsHijack
-            | DependencyConfusion | PostinstallInjection | EnvExfiltration
+            SqlStringTermination
+            | SqlTautology
+            | SqlTimeOracle
+            | SqlErrorOracle
+            | SqlCommentTruncation
+            | JsonSqlBypass
+            | XssTagInjection
+            | XssEventHandler
+            | XssProtocolHandler
+            | PathDotdotEscape
+            | PathEncodingBypass
+            | SsrfInternalReach
+            | SsrfProtocolSmuggle
+            | DeserPhpObject
+            | AuthNoneAlgorithm
+            | AuthHeaderSpoof
+            | ProtoPollution
+            | NosqlOperatorInjection
+            | NosqlJsInjection
+            | CrlfHeaderInjection
+            | HttpSmuggleClTe
+            | HttpSmuggleH2
+            | LlmPromptInjection
+            | LlmJailbreak
+            | JwtKidInjection
+            | JwtJwkEmbedding
+            | JwtConfusion
+            | CachePoisoning
+            | WsInjection
+            | WsHijack
+            | DependencyConfusion
+            | PostinstallInjection
+            | EnvExfiltration
             | CmdArgumentInjection => Severity::High,
 
             // Medium: information disclosure, limited impact
-            XssAttributeEscape | XssTemplateExpression
-            | PathNullTerminate | PathNormalizationBypass
-            | CorsOriginAbuse | LdapFilterInjection | XmlInjection
-            | CrlfLogInjection | GraphqlIntrospection | GraphqlBatchAbuse
-            | OpenRedirectBypass | MassAssignment | RegexDos
-            | HttpSmuggleChunkExt | HttpSmuggleZeroCl | HttpSmuggleExpect
-            | CacheDeception | BolaIdor | ApiMassEnum => Severity::Medium,
+            XssAttributeEscape
+            | XssTemplateExpression
+            | PathNullTerminate
+            | PathNormalizationBypass
+            | CorsOriginAbuse
+            | LdapFilterInjection
+            | XmlInjection
+            | CrlfLogInjection
+            | GraphqlIntrospection
+            | GraphqlBatchAbuse
+            | OpenRedirectBypass
+            | MassAssignment
+            | RegexDos
+            | HttpSmuggleChunkExt
+            | HttpSmuggleZeroCl
+            | HttpSmuggleExpect
+            | CacheDeception
+            | BolaIdor
+            | ApiMassEnum => Severity::Medium,
         }
     }
 
@@ -222,17 +258,20 @@ impl InvariantClass {
     pub fn proof_domain(self) -> &'static str {
         use InvariantClass::*;
         match self {
-            SqlStringTermination | SqlTautology | SqlUnionExtraction
-            | SqlStackedExecution | SqlTimeOracle | SqlErrorOracle
-            | SqlCommentTruncation | JsonSqlBypass => "sqli",
+            SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
+            | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => "sqli",
 
-            XssTagInjection | XssAttributeEscape | XssEventHandler
-            | XssProtocolHandler | XssTemplateExpression => "xss",
+            XssTagInjection
+            | XssAttributeEscape
+            | XssEventHandler
+            | XssProtocolHandler
+            | XssTemplateExpression => "xss",
 
             CmdSeparator | CmdSubstitution | CmdArgumentInjection => "cmdi",
 
-            PathDotdotEscape | PathNullTerminate | PathEncodingBypass
-            | PathNormalizationBypass => "path_traversal",
+            PathDotdotEscape | PathNullTerminate | PathEncodingBypass | PathNormalizationBypass => {
+                "path_traversal"
+            }
 
             SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle => "ssrf",
 
@@ -659,6 +698,106 @@ pub struct RequestMeta {
     pub content_type: Option<String>,
 }
 
+/// Exception rule used to suppress specific detections after they are generated.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExceptionRule {
+    /// Optional path glob pattern (for example: `/api/search/*`).
+    pub path_pattern: Option<String>,
+    /// Optional class scope. When omitted, applies to any class.
+    pub class: Option<InvariantClass>,
+    /// Optional source IP glob pattern.
+    pub source_ip_pattern: Option<String>,
+    /// Human-readable reason for the exception.
+    pub reason: String,
+    /// User or service that created the exception.
+    pub created_by: String,
+}
+
+impl ExceptionRule {
+    /// Return true when this rule matches all configured dimensions.
+    pub fn matches(&self, path: &str, class: InvariantClass, source_ip: &str) -> bool {
+        if let Some(pattern) = self.path_pattern.as_deref() {
+            if !glob_matches(pattern, path) {
+                return false;
+            }
+        }
+        if let Some(rule_class) = self.class {
+            if rule_class != class {
+                return false;
+            }
+        }
+        if let Some(pattern) = self.source_ip_pattern.as_deref() {
+            if !glob_matches(pattern, source_ip) {
+                return false;
+            }
+        }
+        true
+    }
+}
+
+/// Runtime exception config controlling post-detection suppression.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ExceptionConfig {
+    /// Ordered exception rules. First match wins for logging, but any match suppresses.
+    pub rules: Vec<ExceptionRule>,
+    /// Master toggle for exception processing.
+    pub enabled: bool,
+}
+
+impl ExceptionConfig {
+    /// Return true when a detection should be suppressed for this request context.
+    pub fn should_skip(&self, path: &str, class: InvariantClass, source_ip: &str) -> bool {
+        self.find_matching_rule(path, class, source_ip).is_some()
+    }
+
+    /// Return the first matching rule when exceptions are enabled.
+    pub fn find_matching_rule(
+        &self,
+        path: &str,
+        class: InvariantClass,
+        source_ip: &str,
+    ) -> Option<&ExceptionRule> {
+        if !self.enabled || self.rules.is_empty() {
+            return None;
+        }
+        self.rules
+            .iter()
+            .find(|rule| rule.matches(path, class, source_ip))
+    }
+}
+
+fn glob_matches(pattern: &str, value: &str) -> bool {
+    let p = pattern.as_bytes();
+    let v = value.as_bytes();
+    let mut pi = 0usize;
+    let mut vi = 0usize;
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx = 0usize;
+
+    while vi < v.len() {
+        if pi < p.len() && (p[pi] == b'?' || p[pi] == v[vi]) {
+            pi += 1;
+            vi += 1;
+        } else if pi < p.len() && p[pi] == b'*' {
+            star_idx = Some(pi);
+            match_idx = vi;
+            pi += 1;
+        } else if let Some(star) = star_idx {
+            pi = star + 1;
+            match_idx += 1;
+            vi = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while pi < p.len() && p[pi] == b'*' {
+        pi += 1;
+    }
+
+    pi == p.len()
+}
+
 /// Multi-domain interpretation output for polyglot payloads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PolyglotAnalysis {
@@ -886,3 +1025,89 @@ pub mod confidence {
 pub const MAX_TOKENIZER_INPUT: usize = 16_384;
 /// Maximum tokens any tokenizer will emit.
 pub const MAX_TOKEN_COUNT: usize = 4_096;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_rule() -> ExceptionRule {
+        ExceptionRule {
+            path_pattern: Some("/api/search/*".to_owned()),
+            class: Some(InvariantClass::SqlTautology),
+            source_ip_pattern: Some("10.0.*".to_owned()),
+            reason: "test".to_owned(),
+            created_by: "unit-test".to_owned(),
+        }
+    }
+
+    #[test]
+    fn exception_rule_matches_with_globs() {
+        let rule = sample_rule();
+        assert!(rule.matches("/api/search/foo", InvariantClass::SqlTautology, "10.0.1.42"));
+    }
+
+    #[test]
+    fn exception_rule_rejects_non_matching_class() {
+        let rule = sample_rule();
+        assert!(!rule.matches(
+            "/api/search/foo",
+            InvariantClass::XssTagInjection,
+            "10.0.1.42"
+        ));
+    }
+
+    #[test]
+    fn exception_config_disabled_never_skips() {
+        let cfg = ExceptionConfig {
+            rules: vec![sample_rule()],
+            enabled: false,
+        };
+        assert!(!cfg.should_skip("/api/search/foo", InvariantClass::SqlTautology, "10.0.1.42"));
+    }
+
+    #[test]
+    fn exception_config_empty_rules_never_skips() {
+        let cfg = ExceptionConfig {
+            rules: Vec::new(),
+            enabled: true,
+        };
+        assert!(!cfg.should_skip("/api/search/foo", InvariantClass::SqlTautology, "10.0.1.42"));
+    }
+
+    #[test]
+    fn exception_config_finds_first_matching_rule() {
+        let first = ExceptionRule {
+            path_pattern: Some("/api/search/*".to_owned()),
+            class: Some(InvariantClass::SqlTautology),
+            source_ip_pattern: None,
+            reason: "first".to_owned(),
+            created_by: "unit-test".to_owned(),
+        };
+        let second = ExceptionRule {
+            path_pattern: Some("/api/search/*".to_owned()),
+            class: Some(InvariantClass::SqlTautology),
+            source_ip_pattern: None,
+            reason: "second".to_owned(),
+            created_by: "unit-test".to_owned(),
+        };
+        let cfg = ExceptionConfig {
+            rules: vec![first, second],
+            enabled: true,
+        };
+        let matched =
+            cfg.find_matching_rule("/api/search/foo", InvariantClass::SqlTautology, "1.2.3.4");
+        assert_eq!(matched.map(|r| r.reason.as_str()), Some("first"));
+    }
+
+    #[test]
+    fn exception_rule_with_no_constraints_matches_any_context() {
+        let rule = ExceptionRule {
+            path_pattern: None,
+            class: None,
+            source_ip_pattern: None,
+            reason: "all".to_owned(),
+            created_by: "unit-test".to_owned(),
+        };
+        assert!(rule.matches("/any", InvariantClass::SqlTautology, "127.0.0.1"));
+    }
+}

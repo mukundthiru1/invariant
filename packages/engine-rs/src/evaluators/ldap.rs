@@ -16,7 +16,8 @@ static BLIND_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:\(\||\(\&)\s
 static PRIV_USER_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)password|admin|root").unwrap());
 static ATTR_ENUM_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\(\s*&\s*\(\s*objectClass\s*=\s*\*\s*\)\s*\(\s*attribute\s*=\s*\*\s*\)\s*\)").unwrap()
+    Regex::new(r"(?i)\(\s*&\s*\(\s*objectClass\s*=\s*\*\s*\)\s*\(\s*attribute\s*=\s*\*\s*\)\s*\)")
+        .unwrap()
 });
 static DN_INJECTION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\(\s*(?:ou|cn)\s*=[^)\r\n]*\)\s*[\(\|&]").unwrap());
@@ -27,12 +28,10 @@ static EXTENSIBLE_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static REFERRAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)\([^()]*\bldap://[^\s)"'<>]+"#).unwrap());
-static NESTED_PAREN_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?is)\(\s*[&|!]\s*(?:\([^()]{0,120}\)){3,}").unwrap()
-});
-static WILDCARD_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\(\s*[a-zA-Z][\w-]*\s*=\s*[^)]*\*[^)]*\)").unwrap()
-});
+static NESTED_PAREN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?is)\(\s*[&|!]\s*(?:\([^()]{0,120}\)){3,}").unwrap());
+static WILDCARD_VALUE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\(\s*[a-zA-Z][\w-]*\s*=\s*[^)]*\*[^)]*\)").unwrap());
 static DN_SEPARATOR_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:cn|ou|dc|uid)\s*=\s*[^)\r\n,;]+(?:\s*[,;]\s*(?:cn|ou|dc|uid)\s*=|\s*[,;]\s*[|&()])").unwrap()
 });
@@ -46,8 +45,12 @@ static LDAP_HOMOGLYPH_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 impl L2Evaluator for LdapEvaluator {
-    fn id(&self) -> &'static str { "ldap" }
-    fn prefix(&self) -> &'static str { "L2 LDAP" }
+    fn id(&self) -> &'static str {
+        "ldap"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 LDAP"
+    }
 
     #[inline]
 
@@ -86,7 +89,8 @@ impl L2Evaluator for LdapEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Wildcard match returns all LDAP entries".into(),
                     offset: m.start(),
-                    property: "LDAP queries must use exact matching, not wildcards from user input".into(),
+                    property: "LDAP queries must use exact matching, not wildcards from user input"
+                        .into(),
                 }],
             });
         }
@@ -120,9 +124,11 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Wildcard attribute selector attempts directory schema discovery".into(),
+                    interpretation:
+                        "Wildcard attribute selector attempts directory schema discovery".into(),
                     offset: m.start(),
-                    property: "LDAP filters from user input should restrict returned attributes".into(),
+                    property: "LDAP filters from user input should restrict returned attributes"
+                        .into(),
                 }],
             });
         }
@@ -137,7 +143,9 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Terminator/special characters in DN attributes can rewrite LDAP scope".into(),
+                    interpretation:
+                        "Terminator/special characters in DN attributes can rewrite LDAP scope"
+                            .into(),
                     offset: m.start(),
                     property: "DN components must be escaped/validated before LDAP binding".into(),
                 }],
@@ -154,7 +162,8 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded.clone(),
-                    interpretation: "Unscoped base DN search can enumerate root directory information".into(),
+                    interpretation:
+                        "Unscoped base DN search can enumerate root directory information".into(),
                     offset: 0,
                     property: "LDAP base DN must be fixed and not user-controlled".into(),
                 }],
@@ -189,7 +198,8 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Filter value includes external LDAP URI for referral chaining".into(),
+                    interpretation: "Filter value includes external LDAP URI for referral chaining"
+                        .into(),
                     offset: m.start(),
                     property: "LDAP search filters must reject external referral targets".into(),
                 }],
@@ -206,9 +216,12 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: m.as_str()[..m.as_str().len().min(100)].to_owned(),
-                    interpretation: "Deeply nested filter terms can rebind boolean logic and bypass constraints".into(),
+                    interpretation:
+                        "Deeply nested filter terms can rebind boolean logic and bypass constraints"
+                            .into(),
                     offset: m.start(),
-                    property: "User input must not control LDAP filter structure depth/operators".into(),
+                    property: "User input must not control LDAP filter structure depth/operators"
+                        .into(),
                 }],
             });
         }
@@ -224,9 +237,13 @@ impl L2Evaluator for LdapEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: "Wildcard in value broadens matching beyond exact identity checks".into(),
+                        interpretation:
+                            "Wildcard in value broadens matching beyond exact identity checks"
+                                .into(),
                         offset: m.start(),
-                        property: "LDAP attribute values from users should be escaped and exact-matched".into(),
+                        property:
+                            "LDAP attribute values from users should be escaped and exact-matched"
+                                .into(),
                     }],
                 });
             }
@@ -242,9 +259,12 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Injected DN separators can append/replace directory components".into(),
+                    interpretation:
+                        "Injected DN separators can append/replace directory components".into(),
                     offset: m.start(),
-                    property: "DN segments must be escaped and not directly composed from user input".into(),
+                    property:
+                        "DN segments must be escaped and not directly composed from user input"
+                            .into(),
                 }],
             });
         }
@@ -259,9 +279,13 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str()[..m.as_str().len().min(100)].to_owned(),
-                    interpretation: "Injected sensitive attribute can expose credentials/privilege metadata".into(),
+                    interpretation:
+                        "Injected sensitive attribute can expose credentials/privilege metadata"
+                            .into(),
                     offset: m.start(),
-                    property: "LDAP queries must enforce strict allow-lists for searchable attributes".into(),
+                    property:
+                        "LDAP queries must enforce strict allow-lists for searchable attributes"
+                            .into(),
                 }],
             });
         }
@@ -276,7 +300,9 @@ impl L2Evaluator for LdapEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "LDAP URL can redirect lookups to attacker-controlled directory endpoints".into(),
+                    interpretation:
+                        "LDAP URL can redirect lookups to attacker-controlled directory endpoints"
+                            .into(),
                     offset: m.start(),
                     property: "User input must not supply LDAP/LDAPS scheme endpoints".into(),
                 }],
@@ -285,7 +311,12 @@ impl L2Evaluator for LdapEvaluator {
 
         // Unicode homoglyph payloads to evade ASCII-centric LDAP sanitizers.
         if let Some(m) = LDAP_HOMOGLYPH_RE.find(&decoded) {
-            if decoded.contains('(') || decoded.contains(')') || decoded.contains('=') || decoded.contains("cn") || decoded.contains("uid") {
+            if decoded.contains('(')
+                || decoded.contains(')')
+                || decoded.contains('=')
+                || decoded.contains("cn")
+                || decoded.contains("uid")
+            {
                 dets.push(L2Detection {
                     detection_type: "ldap_unicode_homoglyph".into(),
                     confidence: 0.86,
@@ -307,13 +338,20 @@ impl L2Evaluator for LdapEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "ldap_filter" | "ldap_wildcard" | "ldap_blind"
-            | "ldap_attr_enum" | "ldap_dn_injection" | "ldap_null_base"
-            | "ldap_extensible_match" | "ldap_referral_injection"
-            | "ldap_nested_paren_abuse" | "ldap_wildcard_value"
-            | "ldap_dn_separator_injection" | "ldap_attribute_injection"
-            | "ldap_url_scheme_injection" | "ldap_unicode_homoglyph"
-                => Some(InvariantClass::LdapFilterInjection),
+            "ldap_filter"
+            | "ldap_wildcard"
+            | "ldap_blind"
+            | "ldap_attr_enum"
+            | "ldap_dn_injection"
+            | "ldap_null_base"
+            | "ldap_extensible_match"
+            | "ldap_referral_injection"
+            | "ldap_nested_paren_abuse"
+            | "ldap_wildcard_value"
+            | "ldap_dn_separator_injection"
+            | "ldap_attribute_injection"
+            | "ldap_url_scheme_injection"
+            | "ldap_unicode_homoglyph" => Some(InvariantClass::LdapFilterInjection),
             _ => None,
         }
     }
@@ -347,78 +385,114 @@ mod tests {
     fn detects_extensible_match() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(cn:dn:=admin)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_extensible_match"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_extensible_match")
+        );
         let dets = eval.detect("(cn:caseIgnoreMatch:=Admin)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_extensible_match"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_extensible_match")
+        );
     }
 
     #[test]
     fn detects_referral_injection() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(member=ldap://attacker.example.com/ou=users,dc=evil,dc=com)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_referral_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_referral_injection")
+        );
     }
 
     #[test]
     fn detects_nested_parentheses_abuse() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(|(uid=foo)(mail=foo@example.com)(userPassword=*)(cn=admin))");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_nested_paren_abuse"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_nested_paren_abuse")
+        );
     }
 
     #[test]
     fn detects_wildcard_value_injection_suffix() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(uid=adm*)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_wildcard_value"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_wildcard_value")
+        );
     }
 
     #[test]
     fn detects_wildcard_value_injection_infix() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(mail=*admin*@corp.local)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_wildcard_value"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_wildcard_value")
+        );
     }
 
     #[test]
     fn detects_dn_separator_injection_comma() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(cn=alice,ou=admins)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_dn_separator_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_dn_separator_injection")
+        );
     }
 
     #[test]
     fn detects_dn_separator_injection_semicolon() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(uid=bob;dc=evil)");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_dn_separator_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_dn_separator_injection")
+        );
     }
 
     #[test]
     fn detects_attribute_injection_for_sensitive_attr() {
         let eval = LdapEvaluator;
         let dets = eval.detect("(|(uid=alice)(userPassword=*))");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_attribute_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_attribute_injection")
+        );
     }
 
     #[test]
     fn detects_ldap_url_scheme_injection_ldap() {
         let eval = LdapEvaluator;
         let dets = eval.detect("cn=admin,dc=corp ldap://attacker.example.com/dc=evil,dc=com");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_url_scheme_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_url_scheme_injection")
+        );
     }
 
     #[test]
     fn detects_ldap_url_scheme_injection_ldaps() {
         let eval = LdapEvaluator;
         let dets = eval.detect("redirect=ldaps://evil.example.org/ou=ops,dc=evil,dc=org");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_url_scheme_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_url_scheme_injection")
+        );
     }
 
     #[test]
     fn detects_unicode_homoglyph_evasion() {
         let eval = LdapEvaluator;
         let dets = eval.detect("cn＝admin＊");
-        assert!(dets.iter().any(|d| d.detection_type == "ldap_unicode_homoglyph"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ldap_unicode_homoglyph")
+        );
     }
 }

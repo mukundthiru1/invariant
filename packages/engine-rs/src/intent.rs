@@ -80,112 +80,246 @@ fn matches_any_ci(input: &str, patterns: &[&str]) -> bool {
 }
 
 fn has_sql_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::SqlTautology | InvariantClass::SqlStringTermination |
-        InvariantClass::SqlUnionExtraction | InvariantClass::SqlStackedExecution |
-        InvariantClass::SqlTimeOracle | InvariantClass::SqlErrorOracle |
-        InvariantClass::SqlCommentTruncation | InvariantClass::JsonSqlBypass
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::SqlTautology
+                | InvariantClass::SqlStringTermination
+                | InvariantClass::SqlUnionExtraction
+                | InvariantClass::SqlStackedExecution
+                | InvariantClass::SqlTimeOracle
+                | InvariantClass::SqlErrorOracle
+                | InvariantClass::SqlCommentTruncation
+                | InvariantClass::JsonSqlBypass
+        )
+    })
 }
 
 fn has_cmd_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::CmdSeparator | InvariantClass::CmdSubstitution |
-        InvariantClass::CmdArgumentInjection
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::CmdSeparator
+                | InvariantClass::CmdSubstitution
+                | InvariantClass::CmdArgumentInjection
+        )
+    })
 }
 
 fn has_xss_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::XssTagInjection | InvariantClass::XssAttributeEscape |
-        InvariantClass::XssEventHandler | InvariantClass::XssProtocolHandler |
-        InvariantClass::XssTemplateExpression
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::XssTagInjection
+                | InvariantClass::XssAttributeEscape
+                | InvariantClass::XssEventHandler
+                | InvariantClass::XssProtocolHandler
+                | InvariantClass::XssTemplateExpression
+        )
+    })
 }
 
 fn has_path_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::PathDotdotEscape | InvariantClass::PathEncodingBypass |
-        InvariantClass::PathNullTerminate | InvariantClass::PathNormalizationBypass
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::PathDotdotEscape
+                | InvariantClass::PathEncodingBypass
+                | InvariantClass::PathNullTerminate
+                | InvariantClass::PathNormalizationBypass
+        )
+    })
 }
 
 fn has_ssti_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::SstiJinjaTwig | InvariantClass::SstiElExpression
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::SstiJinjaTwig | InvariantClass::SstiElExpression
+        )
+    })
 }
 
 fn has_deser_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::DeserJavaGadget | InvariantClass::DeserPhpObject |
-        InvariantClass::DeserPythonPickle
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::DeserJavaGadget
+                | InvariantClass::DeserPhpObject
+                | InvariantClass::DeserPythonPickle
+        )
+    })
 }
 
 fn has_auth_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::AuthNoneAlgorithm | InvariantClass::AuthHeaderSpoof |
-        InvariantClass::JwtKidInjection | InvariantClass::JwtJwkEmbedding |
-        InvariantClass::JwtConfusion
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::AuthNoneAlgorithm
+                | InvariantClass::AuthHeaderSpoof
+                | InvariantClass::JwtKidInjection
+                | InvariantClass::JwtJwkEmbedding
+                | InvariantClass::JwtConfusion
+        )
+    })
 }
 
 fn has_nosql_class(classes: &[InvariantClass]) -> bool {
-    classes.iter().any(|c| matches!(c,
-        InvariantClass::NosqlOperatorInjection | InvariantClass::NosqlJsInjection
-    ))
+    classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::NosqlOperatorInjection | InvariantClass::NosqlJsInjection
+        )
+    })
 }
 
 // ── SQL Intent Patterns ───────────────────────────────────────────
 
 const SQL_CRED_TARGETS: &[&str] = &[
-    "password", "passwd", "pwd", "secret", "token", "api_key", "apikey",
-    "credential", "hash", "salt", "private_key", "ssn", "credit_card", "cc_num",
+    "password",
+    "passwd",
+    "pwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "credential",
+    "hash",
+    "salt",
+    "private_key",
+    "ssn",
+    "credit_card",
+    "cc_num",
 ];
 
 const SQL_USER_TABLES: &[&str] = &[
-    "users", "user", "accounts", "account", "admins", "admin",
-    "members", "auth", "login", "credentials", "staff", "employees",
+    "users",
+    "user",
+    "accounts",
+    "account",
+    "admins",
+    "admin",
+    "members",
+    "auth",
+    "login",
+    "credentials",
+    "staff",
+    "employees",
 ];
 
-const SQL_DESTRUCTIVE: &[&str] = &["drop table", "drop database", "drop schema", "delete from", "truncate"];
+const SQL_DESTRUCTIVE: &[&str] = &[
+    "drop table",
+    "drop database",
+    "drop schema",
+    "delete from",
+    "truncate",
+];
 
-const SQL_PERSIST: &[&str] = &["insert into", "create user", "create login", "create role", "grant all", "into outfile", "into dumpfile"];
+const SQL_PERSIST: &[&str] = &[
+    "insert into",
+    "create user",
+    "create login",
+    "create role",
+    "grant all",
+    "into outfile",
+    "into dumpfile",
+];
 
 const SQL_ENUMERATE: &[&str] = &[
-    "information_schema", "pg_catalog", "sys.tables", "sys.columns",
-    "sqlite_master", "show tables", "show databases", "show columns",
-    "table_name", "column_name", "schema_name",
+    "information_schema",
+    "pg_catalog",
+    "sys.tables",
+    "sys.columns",
+    "sqlite_master",
+    "show tables",
+    "show databases",
+    "show columns",
+    "table_name",
+    "column_name",
+    "schema_name",
 ];
 
-const SQL_DOS: &[&str] = &["benchmark", "sleep", "waitfor delay", "pg_sleep", "randomblob", "generate_series"];
+const SQL_DOS: &[&str] = &[
+    "benchmark",
+    "sleep",
+    "waitfor delay",
+    "pg_sleep",
+    "randomblob",
+    "generate_series",
+];
 
-const SQL_RECON: &[&str] = &["@@version", "version()", "@@datadir", "current_user", "system_user", "session_user"];
+const SQL_RECON: &[&str] = &[
+    "@@version",
+    "version()",
+    "@@datadir",
+    "current_user",
+    "system_user",
+    "session_user",
+];
 
 // ── CMD Intent Patterns ───────────────────────────────────────────
 
 const CMD_CRED_TARGETS: &[&str] = &[
-    "/etc/passwd", "/etc/shadow", ".ssh/", "id_rsa", ".aws/credentials",
-    ".env", ".git/config", ".docker/config", ".kube/config", "web.config",
-    "wp-config.php", "appsettings.json", "database.yml",
+    "/etc/passwd",
+    "/etc/shadow",
+    ".ssh/",
+    "id_rsa",
+    ".aws/credentials",
+    ".env",
+    ".git/config",
+    ".docker/config",
+    ".kube/config",
+    "web.config",
+    "wp-config.php",
+    "appsettings.json",
+    "database.yml",
 ];
 
 const CMD_REVERSE_SHELL: &[&str] = &[
-    "/bin/sh", "/bin/bash", "nc -", "ncat ", "netcat ", "mkfifo", "/dev/tcp", "socat ",
+    "/bin/sh",
+    "/bin/bash",
+    "nc -",
+    "ncat ",
+    "netcat ",
+    "mkfifo",
+    "/dev/tcp",
+    "socat ",
 ];
 
-const CMD_PERSIST: &[&str] = &["crontab", "/etc/cron", ".bashrc", ".profile", ".bash_profile", "systemctl enable", "chmod +s"];
+const CMD_PERSIST: &[&str] = &[
+    "crontab",
+    "/etc/cron",
+    ".bashrc",
+    ".profile",
+    ".bash_profile",
+    "systemctl enable",
+    "chmod +s",
+];
 
 const CMD_DESTRUCTIVE: &[&str] = &["rm -rf", "mkfs.", "dd if=", "shred ", "wipe "];
 
 const CMD_LATERAL_MOVEMENT: &[&str] = &[
-    "psexec", "wmic /node:", "winrm", "ssh ", "smb://", "net use \\\\",
-    "kubectl exec", "docker exec", "ansible ", "mstsc ",
+    "psexec",
+    "wmic /node:",
+    "winrm",
+    "ssh ",
+    "smb://",
+    "net use \\\\",
+    "kubectl exec",
+    "docker exec",
+    "ansible ",
+    "mstsc ",
 ];
 
 const CMD_STAGE_DATA: &[&str] = &[
-    "tar -", "zip ", "7z ", "gzip ", "base64 ", "xxd -p", "/tmp/", "/var/tmp/",
+    "tar -",
+    "zip ",
+    "7z ",
+    "gzip ",
+    "base64 ",
+    "xxd -p",
+    "/tmp/",
+    "/var/tmp/",
 ];
 
 const CMD_EXFIL_CHANNELS: &[&str] = &[
@@ -193,21 +327,49 @@ const CMD_EXFIL_CHANNELS: &[&str] = &[
 ];
 
 const CMD_RECON: &[&str] = &[
-    "whoami", "id", "uname -a", "ifconfig", "ipconfig", "net user", "arp -a",
-    "route ", "tracert", "nslookup", "nmap ", "/proc/version",
+    "whoami",
+    "id",
+    "uname -a",
+    "ifconfig",
+    "ipconfig",
+    "net user",
+    "arp -a",
+    "route ",
+    "tracert",
+    "nslookup",
+    "nmap ",
+    "/proc/version",
 ];
 
 // ── XSS Intent Patterns ──────────────────────────────────────────
 
-const XSS_COOKIE_THEFT: &[&str] = &["document.cookie", "localstorage", "sessionstorage", ".getitem("];
+const XSS_COOKIE_THEFT: &[&str] = &[
+    "document.cookie",
+    "localstorage",
+    "sessionstorage",
+    ".getitem(",
+];
 
-const XSS_REDIRECT: &[&str] = &["location.href", "location.replace", "window.location", "document.location"];
+const XSS_REDIRECT: &[&str] = &[
+    "location.href",
+    "location.replace",
+    "window.location",
+    "document.location",
+];
 
 // ── Path Intent Patterns ─────────────────────────────────────────
 
 const PATH_CRED_TARGETS: &[&str] = &[
-    "/etc/passwd", "/etc/shadow", ".ssh/", "id_rsa", ".env", ".git/",
-    ".aws/", ".docker/", "web.config", ".htpasswd",
+    "/etc/passwd",
+    "/etc/shadow",
+    ".ssh/",
+    "id_rsa",
+    ".env",
+    ".git/",
+    ".aws/",
+    ".docker/",
+    "web.config",
+    ".htpasswd",
 ];
 
 // ── Classifier ────────────────────────────────────────────────────
@@ -227,14 +389,22 @@ pub fn classify_intent(
 
     // ── SQL injection intent ──
     if has_sql_class(detected_classes) {
-        if matches_any_ci(input, SQL_CRED_TARGETS) || (matches_any_ci(input, SQL_USER_TABLES) && contains_ci(input, "select")) {
+        if matches_any_ci(input, SQL_CRED_TARGETS)
+            || (matches_any_ci(input, SQL_USER_TABLES) && contains_ci(input, "select"))
+        {
             intents.push(AttackIntent::ExfiltrateCredentials);
             details.push("SQL credential extraction");
             for t in SQL_USER_TABLES {
-                if contains_ci(input, t) { targets.push(format!("table:{}", t)); break; }
+                if contains_ci(input, t) {
+                    targets.push(format!("table:{}", t));
+                    break;
+                }
             }
             for c in SQL_CRED_TARGETS {
-                if contains_ci(input, c) { targets.push(format!("column:{}", c)); break; }
+                if contains_ci(input, c) {
+                    targets.push(format!("column:{}", c));
+                    break;
+                }
             }
         }
         if matches_any_ci(input, SQL_DESTRUCTIVE) {
@@ -257,7 +427,10 @@ pub fn classify_intent(
             intents.push(AttackIntent::Reconnaissance);
             details.push("SQL version/environment fingerprinting");
         }
-        if contains_ci(input, "union") && contains_ci(input, "select") && !intents.contains(&AttackIntent::ExfiltrateCredentials) {
+        if contains_ci(input, "union")
+            && contains_ci(input, "select")
+            && !intents.contains(&AttackIntent::ExfiltrateCredentials)
+        {
             intents.push(AttackIntent::ExfiltrateData);
             details.push("SQL data extraction via UNION");
         }
@@ -273,7 +446,10 @@ pub fn classify_intent(
         if matches_any_ci(input, CMD_CRED_TARGETS) {
             intents.push(AttackIntent::ExfiltrateCredentials);
             for t in CMD_CRED_TARGETS {
-                if contains_ci(input, t) { targets.push(format!("file:{}", t)); break; }
+                if contains_ci(input, t) {
+                    targets.push(format!("file:{}", t));
+                    break;
+                }
             }
             details.push("Command injection targeting credentials");
         }
@@ -297,7 +473,14 @@ pub fn classify_intent(
             intents.push(AttackIntent::ExfiltrateData);
             details.push("Data staging followed by exfiltration channel");
         }
-        if !intents.iter().any(|i| matches!(i, AttackIntent::CodeExecution | AttackIntent::EstablishPersistence | AttackIntent::DestroyData)) {
+        if !intents.iter().any(|i| {
+            matches!(
+                i,
+                AttackIntent::CodeExecution
+                    | AttackIntent::EstablishPersistence
+                    | AttackIntent::DestroyData
+            )
+        }) {
             intents.push(AttackIntent::CodeExecution);
             details.push("Command execution");
         }
@@ -314,7 +497,12 @@ pub fn classify_intent(
             intents.push(AttackIntent::ExfiltrateData);
             details.push("XSS redirect/phishing");
         }
-        if !intents.iter().any(|i| matches!(i, AttackIntent::ExfiltrateCredentials | AttackIntent::ExfiltrateData)) {
+        if !intents.iter().any(|i| {
+            matches!(
+                i,
+                AttackIntent::ExfiltrateCredentials | AttackIntent::ExfiltrateData
+            )
+        }) {
             intents.push(AttackIntent::CodeExecution);
             details.push("XSS code execution in browser");
         }
@@ -325,7 +513,10 @@ pub fn classify_intent(
         if matches_any_ci(input, PATH_CRED_TARGETS) {
             intents.push(AttackIntent::ExfiltrateCredentials);
             for t in PATH_CRED_TARGETS {
-                if contains_ci(input, t) { targets.push(format!("file:{}", t)); break; }
+                if contains_ci(input, t) {
+                    targets.push(format!("file:{}", t));
+                    break;
+                }
             }
             details.push("Path traversal targeting credentials");
         } else {
@@ -339,7 +530,9 @@ pub fn classify_intent(
         intents.push(AttackIntent::ExfiltrateCredentials);
         targets.push("service:cloud_metadata".to_string());
         details.push("SSRF targeting cloud credentials (IMDS)");
-    } else if class_set.contains(&InvariantClass::SsrfInternalReach) || class_set.contains(&InvariantClass::SsrfProtocolSmuggle) {
+    } else if class_set.contains(&InvariantClass::SsrfInternalReach)
+        || class_set.contains(&InvariantClass::SsrfProtocolSmuggle)
+    {
         intents.push(AttackIntent::Reconnaissance);
         details.push("SSRF internal network probing");
     }
@@ -389,13 +582,17 @@ pub fn classify_intent(
         intents.push(AttackIntent::ExfiltrateData);
         details.push("LLM data exfiltration");
     }
-    if class_set.contains(&InvariantClass::LlmPromptInjection) || class_set.contains(&InvariantClass::LlmJailbreak) {
+    if class_set.contains(&InvariantClass::LlmPromptInjection)
+        || class_set.contains(&InvariantClass::LlmJailbreak)
+    {
         intents.push(AttackIntent::EscalatePrivilege);
         details.push("LLM instruction override");
     }
 
     // ── Supply chain ──
-    if class_set.contains(&InvariantClass::DependencyConfusion) || class_set.contains(&InvariantClass::PostinstallInjection) {
+    if class_set.contains(&InvariantClass::DependencyConfusion)
+        || class_set.contains(&InvariantClass::PostinstallInjection)
+    {
         intents.push(AttackIntent::CodeExecution);
         intents.push(AttackIntent::EstablishPersistence);
         details.push("Supply chain code execution");
@@ -433,7 +630,9 @@ pub fn classify_intent(
     }
 
     // ── Cross-domain behavioral signals ──
-    if (has_cmd_class(detected_classes) || has_ssti_class(detected_classes) || has_deser_class(detected_classes))
+    if (has_cmd_class(detected_classes)
+        || has_ssti_class(detected_classes)
+        || has_deser_class(detected_classes))
         && (lower.contains("authorized_keys")
             || lower.contains("registry run")
             || lower.contains("startup")
@@ -444,7 +643,8 @@ pub fn classify_intent(
         details.push("Persistence mechanism artifact");
     }
 
-    if (class_set.contains(&InvariantClass::SsrfInternalReach) || class_set.contains(&InvariantClass::SsrfProtocolSmuggle))
+    if (class_set.contains(&InvariantClass::SsrfInternalReach)
+        || class_set.contains(&InvariantClass::SsrfProtocolSmuggle))
         && (lower.contains("169.254.169.254")
             || lower.contains("127.0.0.1")
             || lower.contains("localhost")
@@ -460,8 +660,12 @@ pub fn classify_intent(
         || path_lower.contains("/actuator")
         || path_lower.contains("/internal")
         || path_lower.contains("/debug"))
-        && intents.iter().any(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate))
-        && intents.iter().any(|i| !matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate))
+        && intents
+            .iter()
+            .any(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate))
+        && intents
+            .iter()
+            .any(|i| !matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate))
     {
         intents.push(AttackIntent::EscalatePrivilege);
         details.push("Reconnaissance targeting privileged path");
@@ -482,29 +686,40 @@ pub fn classify_intent(
     }
 
     // Primary intent = highest severity
-    let primary_intent = *unique_intents.iter()
+    let primary_intent = *unique_intents
+        .iter()
         .max_by(|a, b| a.severity().partial_cmp(&b.severity()).unwrap())
         .unwrap();
 
     let confidence = if unique_intents.len() == 1 && unique_intents[0] == AttackIntent::Unknown {
         0.30
     } else {
-        let has_high_impact = unique_intents.iter().any(|i| matches!(
-            i,
-            AttackIntent::ExfiltrateCredentials
-                | AttackIntent::DestroyData
-                | AttackIntent::CodeExecution
-                | AttackIntent::EstablishPersistence
-                | AttackIntent::EscalatePrivilege
-        ));
-        let has_recon = unique_intents.iter().any(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate));
-        let recon_only = unique_intents.iter().all(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate));
+        let has_high_impact = unique_intents.iter().any(|i| {
+            matches!(
+                i,
+                AttackIntent::ExfiltrateCredentials
+                    | AttackIntent::DestroyData
+                    | AttackIntent::CodeExecution
+                    | AttackIntent::EstablishPersistence
+                    | AttackIntent::EscalatePrivilege
+            )
+        });
+        let has_recon = unique_intents
+            .iter()
+            .any(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate));
+        let recon_only = unique_intents
+            .iter()
+            .all(|i| matches!(i, AttackIntent::Reconnaissance | AttackIntent::Enumerate));
 
         let mut conf = 0.62_f64
             + if !targets.is_empty() { 0.12 } else { 0.0 }
             + if unique_intents.len() > 1 { 0.08 } else { 0.0 }
             + if has_high_impact { 0.10 } else { 0.0 }
-            + if has_high_impact && has_recon { 0.05 } else { 0.0 };
+            + if has_high_impact && has_recon {
+                0.05
+            } else {
+                0.0
+            };
         if recon_only {
             conf = 0.55;
         } else if has_recon {
@@ -636,7 +851,11 @@ mod tests {
             Some("/internal/health"),
         );
         assert!(r.intents.contains(&AttackIntent::Reconnaissance));
-        assert!(r.confidence < 0.75, "recon-only confidence should be moderated: {}", r.confidence);
+        assert!(
+            r.confidence < 0.75,
+            "recon-only confidence should be moderated: {}",
+            r.confidence
+        );
     }
 
     #[test]

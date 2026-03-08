@@ -52,8 +52,14 @@ pub fn validate_defense(input: &DefenseValidationInput) -> DefenseValidationRepo
     findings.extend(validate_csp(&headers));
     findings.extend(validate_cors(&headers, &req_headers));
     findings.extend(validate_x_frame_options(&headers));
-    findings.extend(validate_nosniff_bypass_risk(&headers, input.body.as_deref()));
-    findings.extend(validate_content_type_alignment(&headers, input.body.as_deref()));
+    findings.extend(validate_nosniff_bypass_risk(
+        &headers,
+        input.body.as_deref(),
+    ));
+    findings.extend(validate_content_type_alignment(
+        &headers,
+        input.body.as_deref(),
+    ));
 
     let missing_security_headers = findings
         .iter()
@@ -67,7 +73,9 @@ pub fn validate_defense(input: &DefenseValidationInput) -> DefenseValidationRepo
         .iter()
         .filter(|f| f.kind == FindingKind::HeaderBypassRisk)
         .count();
-    let content_type_matches = findings.iter().all(|f| f.kind != FindingKind::ContentTypeMismatch);
+    let content_type_matches = findings
+        .iter()
+        .all(|f| f.kind != FindingKind::ContentTypeMismatch);
 
     DefenseValidationReport {
         passed: findings.is_empty(),
@@ -234,7 +242,8 @@ fn validate_nosniff_bypass_risk(
             findings.push(DefenseFinding {
                 kind: FindingKind::HeaderBypassRisk,
                 severity: Severity::High,
-                message: "active content served without nosniff allows MIME sniffing bypass".to_owned(),
+                message: "active content served without nosniff allows MIME sniffing bypass"
+                    .to_owned(),
                 header: Some("x-content-type-options".to_owned()),
                 evidence: Some(snippet(body, 120)),
             });
@@ -312,7 +321,11 @@ fn content_type_matches(declared: &str, inferred: &str) -> bool {
         "json" => declared.contains("json"),
         "html" => declared.contains("html"),
         "xml" => declared.contains("xml"),
-        "javascript" => declared.contains("javascript") || declared.contains("ecmascript") || declared.contains("text/plain"),
+        "javascript" => {
+            declared.contains("javascript")
+                || declared.contains("ecmascript")
+                || declared.contains("text/plain")
+        }
         _ => declared.contains("text") || declared.contains("octet-stream"),
     }
 }
@@ -325,7 +338,8 @@ fn looks_like_active_content(body: &str) -> bool {
 }
 
 fn is_trusted_origin(origin: &str) -> bool {
-    origin.starts_with("https://") && (origin.ends_with(".example.com") || origin.contains("localhost"))
+    origin.starts_with("https://")
+        && (origin.ends_with(".example.com") || origin.contains("localhost"))
 }
 
 fn snippet(s: &str, max: usize) -> String {
@@ -340,10 +354,16 @@ mod tests {
         DefenseValidationInput {
             request_headers: vec![("Origin".into(), "https://evil.tld".into())],
             response_headers: vec![
-                ("Content-Security-Policy".into(), "default-src 'self'".into()),
+                (
+                    "Content-Security-Policy".into(),
+                    "default-src 'self'".into(),
+                ),
                 ("X-Frame-Options".into(), "DENY".into()),
                 ("X-Content-Type-Options".into(), "nosniff".into()),
-                ("Access-Control-Allow-Origin".into(), "https://app.example.com".into()),
+                (
+                    "Access-Control-Allow-Origin".into(),
+                    "https://app.example.com".into(),
+                ),
                 ("Content-Type".into(), "application/json".into()),
             ],
             body: Some("{\"ok\":true}".into()),
@@ -363,18 +383,31 @@ mod tests {
         input.response_headers.clear();
         let report = validate_defense(&input);
         assert!(report.missing_security_headers >= 4);
-        assert!(report.findings.iter().any(|f| f.message.contains("content-security-policy")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("content-security-policy"))
+        );
     }
 
     #[test]
     fn detects_weak_csp_unsafe_inline() {
         let mut input = base_input();
-        input.response_headers.retain(|(k, _)| !k.eq_ignore_ascii_case("Content-Security-Policy"));
         input
             .response_headers
-            .push(("Content-Security-Policy".into(), "default-src 'self'; script-src 'unsafe-inline'".into()));
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("Content-Security-Policy"));
+        input.response_headers.push((
+            "Content-Security-Policy".into(),
+            "default-src 'self'; script-src 'unsafe-inline'".into(),
+        ));
         let report = validate_defense(&input);
-        assert!(report.findings.iter().any(|f| f.message.contains("unsafe script execution")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("unsafe script execution"))
+        );
     }
 
     #[test]
@@ -390,7 +423,12 @@ mod tests {
             .response_headers
             .push(("Access-Control-Allow-Credentials".into(), "true".into()));
         let report = validate_defense(&input);
-        assert!(report.findings.iter().any(|f| f.message.contains("wildcard origin")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("wildcard origin"))
+        );
     }
 
     #[test]
@@ -399,18 +437,28 @@ mod tests {
         input
             .response_headers
             .retain(|(k, _)| !k.eq_ignore_ascii_case("Access-Control-Allow-Origin"));
-        input
-            .response_headers
-            .push(("Access-Control-Allow-Origin".into(), "https://evil.tld".into()));
+        input.response_headers.push((
+            "Access-Control-Allow-Origin".into(),
+            "https://evil.tld".into(),
+        ));
         let report = validate_defense(&input);
-        assert!(report.findings.iter().any(|f| f.kind == FindingKind::HeaderBypassRisk && f.message.contains("reflect")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::HeaderBypassRisk && f.message.contains("reflect"))
+        );
     }
 
     #[test]
     fn detects_invalid_x_frame_options() {
         let mut input = base_input();
-        input.response_headers.retain(|(k, _)| !k.eq_ignore_ascii_case("X-Frame-Options"));
-        input.response_headers.push(("X-Frame-Options".into(), "ALLOWALL".into()));
+        input
+            .response_headers
+            .retain(|(k, _)| !k.eq_ignore_ascii_case("X-Frame-Options"));
+        input
+            .response_headers
+            .push(("X-Frame-Options".into(), "ALLOWALL".into()));
         let report = validate_defense(&input);
         assert!(report.findings.iter().any(|f| f.message.contains("DENY")));
     }
@@ -422,7 +470,12 @@ mod tests {
             .response_headers
             .retain(|(k, _)| !k.eq_ignore_ascii_case("X-Content-Type-Options"));
         let report = validate_defense(&input);
-        assert!(report.findings.iter().any(|f| f.message.contains("nosniff")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("nosniff"))
+        );
         assert!(report.bypass_risks >= 1);
     }
 
@@ -436,12 +489,16 @@ mod tests {
         input
             .response_headers
             .retain(|(k, _)| !k.eq_ignore_ascii_case("Content-Type"));
-        input.response_headers.push(("Content-Type".into(), "text/html".into()));
+        input
+            .response_headers
+            .push(("Content-Type".into(), "text/html".into()));
         let report = validate_defense(&input);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.message.contains("MIME sniffing bypass")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.message.contains("MIME sniffing bypass"))
+        );
     }
 
     #[test]
@@ -456,7 +513,12 @@ mod tests {
             .push(("Content-Type".into(), "application/json".into()));
         let report = validate_defense(&input);
         assert!(!report.content_type_matches);
-        assert!(report.findings.iter().any(|f| f.kind == FindingKind::ContentTypeMismatch));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::ContentTypeMismatch)
+        );
     }
 
     #[test]
@@ -466,10 +528,13 @@ mod tests {
             .response_headers
             .retain(|(k, _)| !k.eq_ignore_ascii_case("Content-Type"));
         let report = validate_defense(&input);
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.kind == FindingKind::MissingHeader && f.header.as_deref() == Some("content-type")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::MissingHeader
+                    && f.header.as_deref() == Some("content-type"))
+        );
     }
 
     #[test]
@@ -480,6 +545,11 @@ mod tests {
             .response_headers
             .retain(|(k, _)| !k.eq_ignore_ascii_case("Content-Type"));
         let report = validate_defense(&input);
-        assert!(report.findings.iter().all(|f| f.kind != FindingKind::ContentTypeMismatch));
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.kind != FindingKind::ContentTypeMismatch)
+        );
     }
 }

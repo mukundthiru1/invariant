@@ -4,21 +4,39 @@ import { validateConfig, DEFAULT_CONFIG, type InvariantConfig } from '../../../e
 // @ts-ignore
 import type { NextRequest, NextResponse } from 'next/server'
 
-interface MiddlewareOptions {
-    mode?: 'monitor' | 'enforce'
-    configPath?: string
-    verbose?: boolean
-    onBlock?: (req: NextRequest, match: unknown) => void
-    onDetect?: (req: NextRequest, match: unknown) => void
+interface ExceptionRule {
+    path?: string | RegExp
+    method?: string | string[]
+    ip?: string | RegExp
+    surface?: Surface
+    key?: string | RegExp
+    class?: string | string[]
 }
 
-type Surface = 'query_param' | 'body_param' | 'header' | 'cookie' | 'path'
+interface MiddlewareOptions {
+    mode?: 'monitor' | 'sanitize' | 'defend' | 'lockdown'
+    configPath?: string
+    verbose?: boolean
+    exceptionRules?: ExceptionRule[]
+    onBlock?: (req: NextRequest, match: DetectionEvent) => void
+    onDetect?: (req: NextRequest, match: DetectionEvent) => void
+}
+
+type Surface = 'query_param' | 'body_param' | 'header' | 'cookie' | 'path' | 'ip'
 
 interface DetectionEvent {
     surface: Surface
     key: string
     value: string
     matches: InvariantMatch[]
+}
+
+const SECURITY_HEADERS: Readonly<Record<string, string>> = {
+    'x-invariant-protected': '1',
+    'x-content-type-options': 'nosniff',
+    'x-frame-options': 'DENY',
+    'referrer-policy': 'no-referrer',
+    'cross-origin-resource-policy': 'same-origin',
 }
 
 async function loadConfig(configPath?: string, verbose = false): Promise<InvariantConfig> {
@@ -43,8 +61,9 @@ async function loadConfig(configPath?: string, verbose = false): Promise<Invaria
     }
 }
 
-function resolveMode(config: InvariantConfig, explicitMode?: 'monitor' | 'enforce'): 'monitor' | 'enforce' {
-    return explicitMode ?? (config.mode === 'enforce' ? 'enforce' : 'monitor')
+function resolveMode(config: InvariantConfig, explicitMode?: MiddlewareOptions['mode']): NonNullable<MiddlewareOptions['mode']> {
+    if (explicitMode) return explicitMode
+    return config.mode === 'enforce' ? 'defend' : 'monitor'
 }
 
 function toStringValue(value: unknown): string {
@@ -58,6 +77,27 @@ function toStringValue(value: unknown): string {
     } catch {
         return String(value)
     }
+}
+
+function sanitizeString(value: string): string {
+    return value
+        .replace(/[\u0000-\u001F\u007F]/g, '')
+        .replace(/(\.\.\/|\.\.\\)/g, '')
+        .replace(/[<>"'`;]/g, '')
+}
+
+function sanitizeUnknown(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(sanitizeUnknown)
+    if (!value || typeof value !== 'object') {
+        return typeof value === 'string' ? sanitizeString(value) : value
+    }
+
+    const sanitized: Record<string, unknown> = {}
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+        if (key === '__proto__' || key === 'prototype' || key === 'constructor') continue
+        sanitized[key] = sanitizeUnknown(entry)
+    }
+    return sanitized
 }
 
 function collectInputs(
@@ -120,6 +160,20 @@ function toCookieRecord(values: Array<{ name: string; value: string }>): Record<
     return cookieMap
 }
 
+function toHeaders(input: Record<string, unknown>): Headers {
+    const headers = new Headers()
+    for (const [key, value] of Object.entries(input)) {
+        if (Array.isArray(value)) {
+            for (const item of value) {
+                headers.append(key, toStringValue(item))
+            }
+        } else {
+            headers.set(key, toStringValue(value))
+        }
+    }
+    return headers
+}
+
 function appendMapValue(input: Record<string, unknown>, key: string, value: string): void {
     const existing = input[key]
     if (existing === undefined) {
@@ -156,8 +210,82 @@ async function getNextResponseFactory(): Promise<{
     return nextResponseFactory
 }
 
-async function readBodyIfPost(request: NextRequest): Promise<unknown> {
-    if ((request.method ?? 'GET').toUpperCase() !== 'POST') return ''
+function contextForSurface(surface: Surface): string {
+    switch (surface) {
+        case 'body_param': return 'json'
+        case 'path': return 'url'
+        case 'query_param': return 'url'
+        case 'header': return 'http'
+        case 'cookie': return 'http'
+        case 'ip': return 'url'
+        default: return 'json'
+    }
+}
+
+function matchesPattern(pattern: string | RegExp | undefined, value: string): boolean {
+    if (pattern === undefined) return true
+    return typeof pattern === 'string' ? pattern === value : pattern.test(value)
+}
+
+function matchesMethod(pattern: string | string[] | undefined, value: string): boolean {
+    if (pattern === undefined) return true
+    if (Array.isArray(pattern)) return pattern.some(method => method.toUpperCase() === value.toUpperCase())
+    return pattern.toUpperCase() === value.toUpperCase()
+}
+
+function requestExceptionMatched(
+    rules: ExceptionRule[] | undefined,
+    method: string,
+    path: string,
+    ip: string,
+): boolean {
+    if (!rules || rules.length === 0) return false
+    return rules.some(rule =>
+        matchesMethod(rule.method, method)
+        && matchesPattern(rule.path, path)
+        && matchesPattern(rule.ip, ip)
+    )
+}
+
+function detectionExceptionMatched(
+    rules: ExceptionRule[] | undefined,
+    detection: DetectionEvent,
+): boolean {
+    if (!rules || rules.length === 0) return false
+    return rules.some((rule) => {
+        if (rule.surface && rule.surface !== detection.surface) return false
+        if (rule.key && !matchesPattern(rule.key, detection.key)) return false
+        if (rule.class) {
+            const expected = Array.isArray(rule.class) ? rule.class : [rule.class]
+            if (!detection.matches.some(match => expected.includes(match.class))) {
+                return false
+            }
+        }
+        return true
+    })
+}
+
+function shouldBlock(mode: NonNullable<MiddlewareOptions['mode']>, matches: InvariantMatch[]): boolean {
+    if (matches.length === 0) return false
+    if (mode === 'lockdown') return true
+
+    const hasCritical = matches.some(match => match.severity === 'critical')
+    const hasHigh = matches.some(match => match.severity === 'high')
+
+    if (mode === 'sanitize') return hasCritical
+    if (mode === 'defend') return hasCritical || hasHigh
+    return false
+}
+
+function logDetections(verbose: boolean | undefined, request: NextRequest, detections: DetectionEvent[]): void {
+    if (!verbose || detections.length === 0) return
+    console.warn(`[invariant] detected ${detections.length} signal(s) on ${request.method} ${request.nextUrl.pathname}`)
+}
+
+async function readBody(request: NextRequest): Promise<unknown> {
+    const method = (request.method ?? 'GET').toUpperCase()
+    if (method === 'GET' || method === 'HEAD') return ''
+
     try {
         const bodyText = await request.clone().text()
         const normalized = bodyText.trim()
@@ -175,84 +303,120 @@ async function readBodyIfPost(request: NextRequest): Promise<unknown> {
                 return normalized
             }
         }
+
         return normalized
     } catch {
         return ''
     }
 }
 
-async function collectNextInputs(request: NextRequest): Promise<Array<{ surface: Surface; key: string; value: string }>> {
-    const collected: Array<{ surface: Surface; key: string; value: string }> = []
-    const queryMap: Record<string, unknown> = {}
-
-    for (const [key, value] of request.nextUrl.searchParams.entries()) {
-        appendMapValue(queryMap, key, value)
+function applySecurityHeaders(response: Response): Response {
+    const headers = new Headers(response.headers)
+    for (const [key, value] of Object.entries(SECURITY_HEADERS)) {
+        headers.set(key, value)
     }
 
-    collectInputs(queryMap, '', 'query_param', collected)
-    collectInputs(await readBodyIfPost(request), '', 'body_param', collected)
-    collectInputs(request.nextUrl.pathname, 'path', 'path', collected)
-
-    const cookies = toCookieRecord(request.cookies.getAll ? request.cookies.getAll() : [])
-    collectInputs(cookies, '', 'cookie', collected)
-
-    collectInputs(toHeaderRecord(request.headers), '', 'header', collected)
-
-    return collected
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers,
+    })
 }
 
-export function invariantMiddleware(options: MiddlewareOptions = {}) {
+export function invariantNextjs(options: MiddlewareOptions = {}) {
     const engine = new InvariantEngine()
     const configPromise = loadConfig(options.configPath, options.verbose)
 
     return async (request: NextRequest): Promise<Response> => {
         const config = await configPromise
         const mode = resolveMode(config, options.mode)
-        const detections: DetectionEvent[] = []
-        const collected = await collectNextInputs(request)
 
-        for (const input of collected) {
-            const matches = engine.detect(input.value, [], input.surface)
-            if (matches.length > 0) {
-                const detection: DetectionEvent = {
-                    surface: input.surface,
-                    key: input.key,
-                    value: input.value,
-                    matches,
-                }
-                detections.push(detection)
-                options.onDetect?.(request, detection)
-            }
+        const ip = request.ip
+            ?? request.headers.get('x-forwarded-for')?.split(',')[0]?.trim()
+            ?? request.headers.get('x-real-ip')
+            ?? ''
+
+        if (requestExceptionMatched(options.exceptionRules, request.method, request.nextUrl.pathname, ip)) {
+            const nextFactory = await getNextResponseFactory()
+            const response = nextFactory ? nextFactory.next({ request }) : new Response(null, { status: 200 })
+            return applySecurityHeaders(response)
         }
 
-        const headerMatches = engine.detectHeaderInvariants(request.headers)
-        if (headerMatches.length > 0) {
+        const detections: DetectionEvent[] = []
+        const collected: Array<{ surface: Surface; key: string; value: string }> = []
+        const queryMap: Record<string, unknown> = {}
+
+        for (const [key, value] of request.nextUrl.searchParams.entries()) {
+            appendMapValue(queryMap, key, value)
+        }
+
+        const rawBody = await readBody(request)
+        const body = mode === 'sanitize' ? sanitizeUnknown(rawBody) : rawBody
+
+        collectInputs(queryMap, '', 'query_param', collected)
+        collectInputs(body, '', 'body_param', collected)
+        collectInputs(request.nextUrl.pathname, 'path', 'path', collected)
+        collectInputs(ip, 'ip', 'ip', collected)
+
+        const cookies = toCookieRecord(request.cookies.getAll ? request.cookies.getAll() : [])
+        collectInputs(cookies, '', 'cookie', collected)
+
+        const headerRecord = toHeaderRecord(request.headers)
+        collectInputs(headerRecord, '', 'header', collected)
+
+        for (const input of collected) {
+            const deep = engine.detectDeep(input.value, [], contextForSurface(input.surface))
+            if (deep.matches.length === 0) continue
+
             const detection: DetectionEvent = {
+                surface: input.surface,
+                key: input.key,
+                value: input.value,
+                matches: deep.matches,
+            }
+
+            if (detectionExceptionMatched(options.exceptionRules, detection)) {
+                continue
+            }
+
+            detections.push(detection)
+            options.onDetect?.(request, detection)
+        }
+
+        const headerMatches = engine.detectHeaderInvariants(toHeaders(headerRecord))
+        if (headerMatches.length > 0) {
+            const headerDetection: DetectionEvent = {
                 surface: 'header',
                 key: 'headers',
                 value: '[header-invariants]',
                 matches: headerMatches,
             }
-            detections.push(detection)
-            options.onDetect?.(request, detection)
-        }
 
-        const allMatches = detections.flatMap(d => d.matches)
-        const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
-        const nextResponse = await getNextResponseFactory()
-
-        if (shouldBlock && mode === 'enforce') {
-            options.onBlock?.(request, detections[0]!)
-            if (nextResponse) {
-                return nextResponse.json({ error: 'blocked' }, { status: 403 })
+            if (!detectionExceptionMatched(options.exceptionRules, headerDetection)) {
+                detections.push(headerDetection)
+                options.onDetect?.(request, headerDetection)
             }
-            return Response.json({ error: 'blocked' }, { status: 403 })
         }
 
-        if (nextResponse) {
-            return nextResponse.next({ request })
+        logDetections(options.verbose, request, detections)
+
+        const allMatches = detections.flatMap(detection => detection.matches)
+        const nextFactory = await getNextResponseFactory()
+
+        if (shouldBlock(mode, allMatches)) {
+            options.onBlock?.(request, detections[0]!)
+            const blocked = nextFactory
+                ? nextFactory.json({ error: 'blocked' }, { status: 403 })
+                : Response.json({ error: 'blocked' }, { status: 403 })
+            return applySecurityHeaders(blocked)
         }
 
-        return new Response(null, { status: 200 })
+        const allowResponse = nextFactory
+            ? nextFactory.next({ request })
+            : new Response(null, { status: 200 })
+
+        return applySecurityHeaders(allowResponse)
     }
 }
+
+export const invariantMiddleware = invariantNextjs

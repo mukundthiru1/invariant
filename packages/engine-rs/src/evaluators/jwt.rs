@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct JwtEvaluator;
 
 impl L2Evaluator for JwtEvaluator {
-    fn id(&self) -> &'static str { "jwt" }
-    fn prefix(&self) -> &'static str { "L2 JWT" }
+    fn id(&self) -> &'static str {
+        "jwt"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 JWT"
+    }
 
     #[inline]
 
@@ -38,7 +42,8 @@ impl L2Evaluator for JwtEvaluator {
             if let Some(header) = try_base64_decode_json(header_b64) {
                 let header_norm = header.replace("\\/", "/");
                 let header_lower = header.to_ascii_lowercase();
-                let mut has_asymmetric_hint = header_lower.contains("\"x5c\"") || header_lower.contains("\"x5u\"");
+                let mut has_asymmetric_hint =
+                    header_lower.contains("\"x5c\"") || header_lower.contains("\"x5u\"");
                 // Algorithm: none
                 static ALG_NONE_RE: std::sync::LazyLock<Regex> =
                     std::sync::LazyLock::new(|| Regex::new(r#"(?i)"alg"\s*:\s*"none""#).unwrap());
@@ -51,9 +56,11 @@ impl L2Evaluator for JwtEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::ContextEscape,
                             matched_input: "alg: none".into(),
-                            interpretation: "Algorithm 'none' bypasses all JWT signature verification".into(),
+                            interpretation:
+                                "Algorithm 'none' bypasses all JWT signature verification".into(),
                             offset: m.start(),
-                            property: "JWT algorithm must not be 'none' or user-controllable".into(),
+                            property: "JWT algorithm must not be 'none' or user-controllable"
+                                .into(),
                         }],
                     });
                 }
@@ -63,9 +70,15 @@ impl L2Evaluator for JwtEvaluator {
                     std::sync::LazyLock::new(|| Regex::new(r#"(?i)"alg"\s*:\s*"HS256""#).unwrap());
                 if ALG_HS256_RE.is_match(&header) {
                     let (confidence, detail) = if has_asymmetric_hint {
-                        (0.93, "JWT advertises HS256 while including asymmetric-key material".into())
+                        (
+                            0.93,
+                            "JWT advertises HS256 while including asymmetric-key material".into(),
+                        )
                     } else {
-                        (0.82, "JWT with HMAC algorithm — potential algorithm confusion attack".into())
+                        (
+                            0.82,
+                            "JWT with HMAC algorithm — potential algorithm confusion attack".into(),
+                        )
                     };
                     dets.push(L2Detection {
                         detection_type: "jwt_alg_confusion".into(),
@@ -75,7 +88,8 @@ impl L2Evaluator for JwtEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::TypeCoerce,
                             matched_input: "alg: HS256".into(),
-                            interpretation: "HMAC algorithm may sign with public RSA key as HMAC secret".into(),
+                            interpretation:
+                                "HMAC algorithm may sign with public RSA key as HMAC secret".into(),
                             offset: m.start(),
                             property: "JWT algorithm must match server-expected algorithm".into(),
                         }],
@@ -135,8 +149,9 @@ impl L2Evaluator for JwtEvaluator {
                 }
 
                 // kid parameter injection
-                static KID_RE: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r#"(?i)"kid"\s*:\s*"((?:[^"\\]|\\.)*)""#).unwrap());
+                static KID_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                    Regex::new(r#"(?i)"kid"\s*:\s*"((?:[^"\\]|\\.)*)""#).unwrap()
+                });
                 if let Some(cap) = KID_RE.captures(&header) {
                     let kid = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
                     let kid_lower = kid.to_ascii_lowercase();
@@ -146,7 +161,8 @@ impl L2Evaluator for JwtEvaluator {
                         || kid_lower.contains(" or ")
                         || kid_lower.contains("; drop")
                         || kid.contains("/dev/null")
-                        || kid.contains("/proc/self") {
+                        || kid.contains("/proc/self")
+                    {
                         dets.push(L2Detection {
                             detection_type: "jwt_kid_injection".into(),
                             confidence: 0.90,
@@ -189,16 +205,20 @@ impl L2Evaluator for JwtEvaluator {
                 }
 
                 // Embedded JWK declaration
-                static JWK_RE: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r#"(?s)"jwk"\s*:\s*\{([^}]*)\}"#).unwrap());
+                static JWK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                    Regex::new(r#"(?s)"jwk"\s*:\s*\{([^}]*)\}"#).unwrap()
+                });
                 if let Some(cap) = JWK_RE.captures(&header) {
                     let jwk_body = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
-                    static KTY_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"kty"\s*:\s*"[^"]+""#).unwrap());
-                    static N_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"n"\s*:\s*"[^"]+""#).unwrap());
-                    static E_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"e"\s*:\s*"[^"]+""#).unwrap());
+                    static KTY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"kty"\s*:\s*"[^"]+""#).unwrap()
+                    });
+                    static N_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"n"\s*:\s*"[^"]+""#).unwrap()
+                    });
+                    static E_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"e"\s*:\s*"[^"]+""#).unwrap()
+                    });
                     let has_kty = KTY_RE.is_match(jwk_body);
                     let has_n = N_RE.is_match(jwk_body);
                     let has_e = E_RE.is_match(jwk_body);
@@ -220,10 +240,12 @@ impl L2Evaluator for JwtEvaluator {
                         });
                     }
 
-                    static OCT_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"kty"\s*:\s*"oct""#).unwrap());
-                    static K_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"k"\s*:\s*"[^"]+""#).unwrap());
+                    static OCT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"kty"\s*:\s*"oct""#).unwrap()
+                    });
+                    static K_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"k"\s*:\s*"[^"]+""#).unwrap()
+                    });
                     let is_oct = OCT_RE.is_match(jwk_body);
                     let has_k = K_RE.is_match(jwk_body);
                     if is_oct && has_k {
@@ -244,20 +266,26 @@ impl L2Evaluator for JwtEvaluator {
                 }
 
                 // JKU/X5U header injection
-                static JKU_X5U_RE: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r#"(?i)"(?:jku|x5u)"\s*:\s*"https?://"#).unwrap());
-                static JKU_INJECTION_RE: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r#"(?i)"(?:jku|x5u)"\s*:\s*"(?:http://|https://|file://|gopher://|ftp://)"#).unwrap());
+                static JKU_X5U_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                    Regex::new(r#"(?i)"(?:jku|x5u)"\s*:\s*"https?://"#).unwrap()
+                });
+                static JKU_INJECTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+                    || {
+                        Regex::new(r#"(?i)"(?:jku|x5u)"\s*:\s*"(?:http://|https://|file://|gopher://|ftp://)"#).unwrap()
+                    },
+                );
                 if JKU_INJECTION_RE.is_match(&header_norm) {
                     dets.push(L2Detection {
                         detection_type: "jwt_jku_injection".into(),
                         confidence: 0.91,
-                        detail: "JWT JKU/X5U header points to attacker-controlled key endpoint".into(),
+                        detail: "JWT JKU/X5U header points to attacker-controlled key endpoint"
+                            .into(),
                         position: m.start(),
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: header[..header.len().min(90)].to_owned(),
-                            interpretation: "External key URL may alter verification trust chain".into(),
+                            interpretation: "External key URL may alter verification trust chain"
+                                .into(),
                             offset: m.start(),
                             property: "JWT key URLs must be validated against an allowlist".into(),
                         }],
@@ -272,7 +300,8 @@ impl L2Evaluator for JwtEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: header[..header.len().min(60)].to_owned(),
-                            interpretation: "JKU/X5U URL loads attacker-controlled signing keys".into(),
+                            interpretation: "JKU/X5U URL loads attacker-controlled signing keys"
+                                .into(),
                             offset: m.start(),
                             property: "JWT key URLs must be validated against allowlist".into(),
                         }],
@@ -298,10 +327,12 @@ impl L2Evaluator for JwtEvaluator {
 
                 // Claim manipulation checks: issuer/audience spoofing and expiry inflation
                 if let Some(payload_json) = try_base64_decode_json(payload_b64) {
-                    static EXP_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"exp"\s*:\s*(\d{5,})"#).unwrap());
-                    static CLAIM_RE: std::sync::LazyLock<Regex> =
-                        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"(iss|aud)"\s*:\s*"([^"]+)""#).unwrap());
+                    static EXP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"exp"\s*:\s*(\d{5,})"#).unwrap()
+                    });
+                    static CLAIM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"(iss|aud)"\s*:\s*"([^"]+)""#).unwrap()
+                    });
 
                     if let Some(cap) = EXP_RE.captures(&payload_json) {
                         if let Some(exp) = cap.get(1).and_then(|m| m.as_str().parse::<i64>().ok()) {
@@ -313,10 +344,17 @@ impl L2Evaluator for JwtEvaluator {
                                     position: m.start(),
                                     evidence: vec![ProofEvidence {
                                         operation: EvidenceOperation::SemanticEval,
-                                        matched_input: cap.get(0).map(|x| x.as_str().to_owned()).unwrap_or_default(),
-                                        interpretation: "Excessive expiry suggests token lifetime manipulation".into(),
+                                        matched_input: cap
+                                            .get(0)
+                                            .map(|x| x.as_str().to_owned())
+                                            .unwrap_or_default(),
+                                        interpretation:
+                                            "Excessive expiry suggests token lifetime manipulation"
+                                                .into(),
                                         offset: m.start(),
-                                        property: "JWT exp should be bounded and validated server-side".into(),
+                                        property:
+                                            "JWT exp should be bounded and validated server-side"
+                                                .into(),
                                     }],
                                 });
                             }
@@ -355,11 +393,19 @@ impl L2Evaluator for JwtEvaluator {
                 }
 
                 // Critical header confusion via unsupported crit claims
-                static CRIT_RE: std::sync::LazyLock<Regex> =
-                    std::sync::LazyLock::new(|| Regex::new(r#"(?is)"crit"\s*:\s*\[([^\]]+)\]"#).unwrap());
+                static CRIT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                    Regex::new(r#"(?is)"crit"\s*:\s*\[([^\]]+)\]"#).unwrap()
+                });
                 if let Some(cap) = CRIT_RE.captures(&header) {
-                    let crit_items = cap.get(1).map(|x| x.as_str()).unwrap_or_default().to_ascii_lowercase();
-                    if crit_items.contains("b64") || crit_items.contains("jwk") || crit_items.contains("jku") {
+                    let crit_items = cap
+                        .get(1)
+                        .map(|x| x.as_str())
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if crit_items.contains("b64")
+                        || crit_items.contains("jwk")
+                        || crit_items.contains("jku")
+                    {
                         dets.push(L2Detection {
                             detection_type: "jwt_crit_header_abuse".into(),
                             confidence: 0.88,
@@ -384,9 +430,17 @@ impl L2Evaluator for JwtEvaluator {
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
             "jwt_alg_none" => Some(InvariantClass::AuthNoneAlgorithm),
-            "jwt_alg_confusion" | "jwt_unencoded_payload" | "jwt_missing_signature" | "jwt_null_signature" | "jwt_crit_header_abuse" | "jwt_claim_manipulation" => Some(InvariantClass::JwtConfusion),
-            "jwt_key_injection" | "jwt_jku_injection" | "jwt_jwk_embedding" | "jwt_jwk_symmetric" | "jwt_jku_ssrf" => Some(InvariantClass::JwtJwkEmbedding),
-            "jwt_kid_injection" | "jwt_kid_command_or_ssrf" => Some(InvariantClass::JwtKidInjection),
+            "jwt_alg_confusion"
+            | "jwt_unencoded_payload"
+            | "jwt_missing_signature"
+            | "jwt_null_signature"
+            | "jwt_crit_header_abuse"
+            | "jwt_claim_manipulation" => Some(InvariantClass::JwtConfusion),
+            "jwt_key_injection" | "jwt_jku_injection" | "jwt_jwk_embedding"
+            | "jwt_jwk_symmetric" | "jwt_jku_ssrf" => Some(InvariantClass::JwtJwkEmbedding),
+            "jwt_kid_injection" | "jwt_kid_command_or_ssrf" => {
+                Some(InvariantClass::JwtKidInjection)
+            }
             _ => None,
         }
     }
@@ -397,11 +451,13 @@ mod tests {
     use super::*;
 
     const JWT_KID_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
-    const JWT_JWK_HEADER: &str = "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJrdHkiOiJSU0EiLCJuIjoiYSIsImUiOiJBIn19";
+    const JWT_JWK_HEADER: &str =
+        "eyJhbGciOiJSUzI1NiIsImp3ayI6eyJrdHkiOiJSU0EiLCJuIjoiYSIsImUiOiJBIn19";
     const JWT_HS256_RSA_JWK_HEADER: &str =
         "eyJhbGciOiJIUzI1NiIsImp3ayI6eyJrdHkiOiJSU0EiLCJuIjoiWVEiLCJlIjoiQVFBQiJ9fQ";
-const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
-    const JWT_JKU_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImprdSI6Imh0dHA6Ly9hdHRhY2tlci5sb2NhbC9qd2tzLmpzb24ifQ";
+    const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
+    const JWT_JKU_HEADER: &str =
+        "eyJhbGciOiJIUzI1NiIsImprdSI6Imh0dHA6Ly9hdHRhY2tlci5sb2NhbC9qd2tzLmpzb24ifQ";
     const JWT_FAR_FUTURE_CLAIMS: &str = "eyJleHAiOjk5OTk5OTk5OTksImlzcyI6ImF0dGFja2VyIiwiYXVkIjoiaHR0cHM6Ly9ldmlsLmV4YW1wbGUuY29tIn0";
     const JWT_PAYLOAD: &str = "eyJmb28iOiJiYXIifQ";
 
@@ -412,7 +468,10 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let dets = eval.detect(&token);
         assert!(dets.iter().any(|d| d.detection_type == "jwt_kid_injection"));
         assert!(dets.iter().any(|d| !d.evidence.is_empty()));
-        assert_eq!(eval.map_class("jwt_kid_injection"), Some(InvariantClass::JwtKidInjection));
+        assert_eq!(
+            eval.map_class("jwt_kid_injection"),
+            Some(InvariantClass::JwtKidInjection)
+        );
     }
 
     #[test]
@@ -422,7 +481,10 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let dets = eval.detect(&token);
         assert!(dets.iter().any(|d| d.detection_type == "jwt_jwk_embedding"));
         assert!(dets.iter().any(|d| !d.evidence.is_empty()));
-        assert_eq!(eval.map_class("jwt_jwk_embedding"), Some(InvariantClass::JwtJwkEmbedding));
+        assert_eq!(
+            eval.map_class("jwt_jwk_embedding"),
+            Some(InvariantClass::JwtJwkEmbedding)
+        );
     }
 
     #[test]
@@ -455,15 +517,24 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let header = "eyJhbGciOiJIUzI1NiJ9";
         let token = format!("{}.{}.c2ln", header, JWT_FAR_FUTURE_CLAIMS);
         let dets = eval.detect(&token);
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_claim_manipulation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_claim_manipulation")
+        );
     }
 
     #[test]
     fn detects_jwt_iss_aud_spoof_claims() {
         let eval = JwtEvaluator;
-        let token = format!("{}.{}.c2ln", JWT_HS256_RSA_JWK_HEADER, JWT_FAR_FUTURE_CLAIMS);
+        let token = format!(
+            "{}.{}.c2ln",
+            JWT_HS256_RSA_JWK_HEADER, JWT_FAR_FUTURE_CLAIMS
+        );
         let dets = eval.detect(&token);
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_claim_manipulation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_claim_manipulation")
+        );
     }
 
     #[test]
@@ -472,25 +543,37 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let header = "eyJhbGciOiJIUzI1NiJ9";
         let token = format!("{}.{}", header, JWT_PAYLOAD);
         let dets = eval.detect(&token);
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_null_signature"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_null_signature")
+        );
     }
 
     #[test]
     fn maps_jku_injection_to_jwk_embedding_class() {
         let eval = JwtEvaluator;
-        assert_eq!(eval.map_class("jwt_jku_injection"), Some(InvariantClass::JwtJwkEmbedding));
+        assert_eq!(
+            eval.map_class("jwt_jku_injection"),
+            Some(InvariantClass::JwtJwkEmbedding)
+        );
     }
 
     #[test]
     fn maps_alg_none_to_auth_none() {
         let eval = JwtEvaluator;
-        assert_eq!(eval.map_class("jwt_alg_none"), Some(InvariantClass::AuthNoneAlgorithm));
+        assert_eq!(
+            eval.map_class("jwt_alg_none"),
+            Some(InvariantClass::AuthNoneAlgorithm)
+        );
     }
 
     #[test]
     fn maps_key_injection_to_jwk_embedding_class() {
         let eval = JwtEvaluator;
-        assert_eq!(eval.map_class("jwt_key_injection"), Some(InvariantClass::JwtJwkEmbedding));
+        assert_eq!(
+            eval.map_class("jwt_key_injection"),
+            Some(InvariantClass::JwtJwkEmbedding)
+        );
     }
 
     #[test]
@@ -499,8 +582,14 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let header = "eyJhbGciOiJIUzI1NiIsImI2NCI6ZmFsc2V9";
         let token = format!("{}.{}.", header, JWT_PAYLOAD);
         let dets = eval.detect(&token);
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_unencoded_payload"));
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_missing_signature"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_unencoded_payload")
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_missing_signature")
+        );
     }
 
     #[test]
@@ -509,14 +598,19 @@ const JWT_KID_PATH_HEADER: &str = "eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLyJ9";
         let header = "eyJhbGciOiJIUzI1NiIsImtpZCI6IiQoY2F0IC9ldGMvcGFzc3dkKSJ9";
         let token = format!("{}.{}.c2ln", header, JWT_PAYLOAD);
         let dets = eval.detect(&token);
-        assert!(dets.iter().any(|d| d.detection_type == "jwt_kid_command_or_ssrf"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jwt_kid_command_or_ssrf")
+        );
     }
 
     #[test]
     fn detects_jku_ssrf_and_jwk_symmetric() {
         let eval = JwtEvaluator;
-        let jku_header = "eyJhbGciOiJSUzI1NiIsImprdSI6Imh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQva2V5cy5qc29uIn0";
-        let jwk_oct_header = "eyJhbGciOiJIUzI1NiIsImp3ayI6eyJrdHkiOiJvY3QiLCJrIjoiYXR0YWNrZXJzZWNyZXQifX0";
+        let jku_header =
+            "eyJhbGciOiJSUzI1NiIsImprdSI6Imh0dHA6Ly8xNjkuMjU0LjE2OS4yNTQva2V5cy5qc29uIn0";
+        let jwk_oct_header =
+            "eyJhbGciOiJIUzI1NiIsImp3ayI6eyJrdHkiOiJvY3QiLCJrIjoiYXR0YWNrZXJzZWNyZXQifX0";
         let jku = eval.detect(&format!("{}.{}.c2ln", jku_header, JWT_PAYLOAD));
         let jwk = eval.detect(&format!("{}.{}.c2ln", jwk_oct_header, JWT_PAYLOAD));
         assert!(jku.iter().any(|d| d.detection_type == "jwt_jku_ssrf"));
@@ -534,11 +628,14 @@ fn try_base64_decode_json(input: &str) -> Option<String> {
     }
 
     // URL-safe base64 to standard
-    let standard: String = input.chars().map(|c| match c {
-        '-' => '+',
-        '_' => '/',
-        x => x,
-    }).collect();
+    let standard: String = input
+        .chars()
+        .map(|c| match c {
+            '-' => '+',
+            '_' => '/',
+            x => x,
+        })
+        .collect();
 
     // Add padding
     let padded = match standard.len() % 4 {
@@ -564,7 +661,9 @@ fn decode_base64_urlsafe(input: &str) -> Option<Vec<u8>> {
     let mut bits: u8 = 0;
 
     for ch in input.chars() {
-        if ch == '=' { break; }
+        if ch == '=' {
+            break;
+        }
         let val = match ch {
             'A'..='Z' => ch as u8 - b'A',
             'a'..='z' => ch as u8 - b'a' + 26,

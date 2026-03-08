@@ -246,6 +246,10 @@ export class BehavioralAnalyzer {
     private pruneWindow(window: SourceWindow, now: number): void {
         const cutoff = now - this.windowMs
         window.requests = window.requests.filter(r => r.timestamp >= cutoff)
+        // Keep uniquePaths aligned to the active window only.
+        window.uniquePaths = new Set(window.requests.map(r => r.path))
+        window.authFailures = window.requests.filter(r => r.statusCode === 401).length
+        window.errorCount = window.requests.filter(r => (r.statusCode ?? 0) >= 500).length
     }
 }
 

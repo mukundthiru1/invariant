@@ -94,13 +94,21 @@ struct SqlMechanism {
 fn identify_sql_mechanism(payload: &str) -> SqlMechanism {
     let lower = payload.to_lowercase();
 
-    if payload.starts_with('\'') || payload.starts_with('"')
-        || (payload.contains('\'') && (lower.contains(" or ") || lower.contains(" and ") || lower.contains("union") || payload.contains(';')))
+    if payload.starts_with('\'')
+        || payload.starts_with('"')
+        || (payload.contains('\'')
+            && (lower.contains(" or ")
+                || lower.contains(" and ")
+                || lower.contains("union")
+                || payload.contains(';')))
     {
         return SqlMechanism {
             mtype: SqlMechanismType::StringEscape,
             detail: "Terminates string literal to inject SQL".into(),
-            evidence: format!("String delimiter found at position {}", payload.find(|c: char| c == '\'' || c == '"').unwrap_or(0)),
+            evidence: format!(
+                "String delimiter found at position {}",
+                payload.find(|c: char| c == '\'' || c == '"').unwrap_or(0)
+            ),
         };
     }
     if lower.contains("union") && lower.contains("select") {
@@ -110,21 +118,36 @@ fn identify_sql_mechanism(payload: &str) -> SqlMechanism {
             evidence: "UNION SELECT clause detected".into(),
         };
     }
-    if payload.contains(';') && (lower.contains("select") || lower.contains("insert") || lower.contains("update") || lower.contains("delete") || lower.contains("drop") || lower.contains("exec")) {
+    if payload.contains(';')
+        && (lower.contains("select")
+            || lower.contains("insert")
+            || lower.contains("update")
+            || lower.contains("delete")
+            || lower.contains("drop")
+            || lower.contains("exec"))
+    {
         return SqlMechanism {
             mtype: SqlMechanismType::StackedQuery,
             detail: "Terminates original query and executes new statement".into(),
             evidence: "Semicolon followed by SQL keyword".into(),
         };
     }
-    if lower.contains("sleep") || lower.contains("waitfor delay") || lower.contains("pg_sleep") || lower.contains("benchmark") {
+    if lower.contains("sleep")
+        || lower.contains("waitfor delay")
+        || lower.contains("pg_sleep")
+        || lower.contains("benchmark")
+    {
         return SqlMechanism {
             mtype: SqlMechanismType::TimeBlind,
             detail: "Uses time delay to extract data bit-by-bit".into(),
             evidence: "Time function detected".into(),
         };
     }
-    if lower.contains("extractvalue") || lower.contains("xmltype") || lower.contains("updatexml") || lower.contains("convert(") {
+    if lower.contains("extractvalue")
+        || lower.contains("xmltype")
+        || lower.contains("updatexml")
+        || lower.contains("convert(")
+    {
         return SqlMechanism {
             mtype: SqlMechanismType::ErrorBased,
             detail: "Forces database error to leak data in error message".into(),
@@ -150,75 +173,144 @@ fn determine_sql_effect(payload: &str, mechanism: &SqlMechanism) -> (ExploitOper
     let lower = payload.to_lowercase();
 
     if lower.contains("into outfile") || lower.contains("into dumpfile") {
-        return (ExploitOperation::WriteFile, "Writes file to disk — may establish webshell".into());
+        return (
+            ExploitOperation::WriteFile,
+            "Writes file to disk — may establish webshell".into(),
+        );
     }
     if lower.contains("xp_cmdshell") || lower.contains("load_file") {
-        return (ExploitOperation::ExecuteSystemCommand, "Executes OS command via SQL server stored procedure".into());
+        return (
+            ExploitOperation::ExecuteSystemCommand,
+            "Executes OS command via SQL server stored procedure".into(),
+        );
     }
     if lower.contains("union") && lower.contains("select") {
-        let has_cred_cols = ["password", "passwd", "pwd", "hash", "token", "secret", "key", "ssn"]
-            .iter().any(|c| lower.contains(c));
+        let has_cred_cols = [
+            "password", "passwd", "pwd", "hash", "token", "secret", "key", "ssn",
+        ]
+        .iter()
+        .any(|c| lower.contains(c));
         if has_cred_cols {
-            return (ExploitOperation::StealCredentials, "Extracts credential columns via UNION injection".into());
+            return (
+                ExploitOperation::StealCredentials,
+                "Extracts credential columns via UNION injection".into(),
+            );
         }
-        return (ExploitOperation::ExtractSpecificColumns, "Extracts columns via UNION injection".into());
+        return (
+            ExploitOperation::ExtractSpecificColumns,
+            "Extracts columns via UNION injection".into(),
+        );
     }
     if lower.contains("drop table") || lower.contains("delete from") || lower.contains("truncate") {
-        return (ExploitOperation::DeleteData, "Destroys table data — irrecoverable without backup".into());
+        return (
+            ExploitOperation::DeleteData,
+            "Destroys table data — irrecoverable without backup".into(),
+        );
     }
     if lower.contains("update") && lower.contains("set") {
-        return (ExploitOperation::ModifyData, "Modifies data in target table".into());
+        return (
+            ExploitOperation::ModifyData,
+            "Modifies data in target table".into(),
+        );
     }
-    if lower.contains("sleep") || lower.contains("benchmark") || lower.contains("waitfor") || lower.contains("pg_sleep") {
-        return (ExploitOperation::CauseDenialOfService, "Time-based blind injection — delays response per row".into());
+    if lower.contains("sleep")
+        || lower.contains("benchmark")
+        || lower.contains("waitfor")
+        || lower.contains("pg_sleep")
+    {
+        return (
+            ExploitOperation::CauseDenialOfService,
+            "Time-based blind injection — delays response per row".into(),
+        );
     }
-    if lower.contains("information_schema") || lower.contains("pg_catalog") || lower.contains("sqlite_master") {
-        return (ExploitOperation::ExtractSpecificColumns, "Enumerates database schema".into());
+    if lower.contains("information_schema")
+        || lower.contains("pg_catalog")
+        || lower.contains("sqlite_master")
+    {
+        return (
+            ExploitOperation::ExtractSpecificColumns,
+            "Enumerates database schema".into(),
+        );
     }
     if lower.contains(" or ") {
-        return (ExploitOperation::BypassAuthentication, "Tautological condition bypasses WHERE clause — returns ALL rows".into());
+        return (
+            ExploitOperation::BypassAuthentication,
+            "Tautological condition bypasses WHERE clause — returns ALL rows".into(),
+        );
     }
 
-    (ExploitOperation::UnknownEffect, format!("SQL injection via {:?}", mechanism.mtype))
+    (
+        ExploitOperation::UnknownEffect,
+        format!("SQL injection via {:?}", mechanism.mtype),
+    )
 }
 
 fn compute_sql_impact(operation: ExploitOperation) -> ImpactAssessment {
     match operation {
-        ExploitOperation::BypassAuthentication | ExploitOperation::ExtractAllRows => ImpactAssessment {
-            confidentiality: 0.9, integrity: 0.1, availability: 0.0,
-            exposure_estimate: "Full table contents (all rows)".into(), base_score: 8.6,
-        },
+        ExploitOperation::BypassAuthentication | ExploitOperation::ExtractAllRows => {
+            ImpactAssessment {
+                confidentiality: 0.9,
+                integrity: 0.1,
+                availability: 0.0,
+                exposure_estimate: "Full table contents (all rows)".into(),
+                base_score: 8.6,
+            }
+        }
         ExploitOperation::StealCredentials => ImpactAssessment {
-            confidentiality: 1.0, integrity: 0.3, availability: 0.1,
-            exposure_estimate: "Credential columns (passwords, tokens, keys)".into(), base_score: 9.8,
+            confidentiality: 1.0,
+            integrity: 0.3,
+            availability: 0.1,
+            exposure_estimate: "Credential columns (passwords, tokens, keys)".into(),
+            base_score: 9.8,
         },
         ExploitOperation::ExtractSpecificColumns => ImpactAssessment {
-            confidentiality: 0.7, integrity: 0.0, availability: 0.0,
-            exposure_estimate: "Selected columns from targeted table".into(), base_score: 7.5,
+            confidentiality: 0.7,
+            integrity: 0.0,
+            availability: 0.0,
+            exposure_estimate: "Selected columns from targeted table".into(),
+            base_score: 7.5,
         },
         ExploitOperation::DeleteData => ImpactAssessment {
-            confidentiality: 0.0, integrity: 0.9, availability: 0.9,
-            exposure_estimate: "Table destruction — data loss unless backup exists".into(), base_score: 9.1,
+            confidentiality: 0.0,
+            integrity: 0.9,
+            availability: 0.9,
+            exposure_estimate: "Table destruction — data loss unless backup exists".into(),
+            base_score: 9.1,
         },
         ExploitOperation::ModifyData => ImpactAssessment {
-            confidentiality: 0.0, integrity: 0.8, availability: 0.2,
-            exposure_estimate: "Data modification in target table".into(), base_score: 7.0,
+            confidentiality: 0.0,
+            integrity: 0.8,
+            availability: 0.2,
+            exposure_estimate: "Data modification in target table".into(),
+            base_score: 7.0,
         },
         ExploitOperation::WriteFile => ImpactAssessment {
-            confidentiality: 0.2, integrity: 0.9, availability: 0.3,
-            exposure_estimate: "Arbitrary file write — potential webshell".into(), base_score: 9.0,
+            confidentiality: 0.2,
+            integrity: 0.9,
+            availability: 0.3,
+            exposure_estimate: "Arbitrary file write — potential webshell".into(),
+            base_score: 9.0,
         },
         ExploitOperation::ExecuteSystemCommand => ImpactAssessment {
-            confidentiality: 1.0, integrity: 1.0, availability: 1.0,
-            exposure_estimate: "Full system compromise — OS command execution".into(), base_score: 10.0,
+            confidentiality: 1.0,
+            integrity: 1.0,
+            availability: 1.0,
+            exposure_estimate: "Full system compromise — OS command execution".into(),
+            base_score: 10.0,
         },
         ExploitOperation::CauseDenialOfService => ImpactAssessment {
-            confidentiality: 0.0, integrity: 0.0, availability: 0.7,
-            exposure_estimate: "Time-based delay per row evaluation".into(), base_score: 5.3,
+            confidentiality: 0.0,
+            integrity: 0.0,
+            availability: 0.7,
+            exposure_estimate: "Time-based delay per row evaluation".into(),
+            base_score: 5.3,
         },
         _ => ImpactAssessment {
-            confidentiality: 0.5, integrity: 0.3, availability: 0.1,
-            exposure_estimate: "Impact depends on application context".into(), base_score: 5.0,
+            confidentiality: 0.5,
+            integrity: 0.3,
+            availability: 0.1,
+            exposure_estimate: "Impact depends on application context".into(),
+            base_score: 5.0,
         },
     }
 }
@@ -230,11 +322,22 @@ pub fn simulate_sql_effect(payload: &str, query_template: Option<&str>) -> Explo
     let mut derivation = Vec::new();
 
     let mechanism = identify_sql_mechanism(payload);
-    chain.push(ExploitStep { step: 1, description: format!("Injection mechanism: {:?}", mechanism.mtype), output: mechanism.detail.clone() });
-    derivation.push(format!("Input contains {:?}: {}", mechanism.mtype, mechanism.evidence));
+    chain.push(ExploitStep {
+        step: 1,
+        description: format!("Injection mechanism: {:?}", mechanism.mtype),
+        output: mechanism.detail.clone(),
+    });
+    derivation.push(format!(
+        "Input contains {:?}: {}",
+        mechanism.mtype, mechanism.evidence
+    ));
 
     let (operation, detail) = determine_sql_effect(payload, &mechanism);
-    chain.push(ExploitStep { step: 2, description: format!("Payload effect: {:?}", operation), output: detail.clone() });
+    chain.push(ExploitStep {
+        step: 2,
+        description: format!("Payload effect: {:?}", operation),
+        output: detail.clone(),
+    });
 
     if let Some(template) = query_template {
         preconditions.push("Input reaches SQL query without parameterization".into());
@@ -248,10 +351,19 @@ pub fn simulate_sql_effect(payload: &str, query_template: Option<&str>) -> Explo
 
     // Tautology proof
     let lower = payload.to_lowercase();
-    let has_tautology = lower.contains(" or 1=1") || lower.contains(" or '1'='1'") || lower.contains(" or 'a'='a'") || lower.contains(" or true");
+    let has_tautology = lower.contains(" or 1=1")
+        || lower.contains(" or '1'='1'")
+        || lower.contains(" or 'a'='a'")
+        || lower.contains(" or true");
     let (certainty, is_complete) = if has_tautology {
-        derivation.push("Tautological condition proven: expression evaluates to TRUE for all rows".into());
-        chain.push(ExploitStep { step: chain.len() + 1, description: "Tautology proven".into(), output: "∀ row: eval(condition) = TRUE".into() });
+        derivation.push(
+            "Tautological condition proven: expression evaluates to TRUE for all rows".into(),
+        );
+        chain.push(ExploitStep {
+            step: chain.len() + 1,
+            description: "Tautology proven".into(),
+            output: "∀ row: eval(condition) = TRUE".into(),
+        });
         (0.99, true)
     } else {
         (0.85, false)
@@ -262,7 +374,10 @@ pub fn simulate_sql_effect(payload: &str, query_template: Option<&str>) -> Explo
     ExploitEffect {
         operation,
         proof: ExploitProof {
-            statement: format!("Effect: {}. {:?} confirmed by structural analysis.", detail, mechanism.mtype),
+            statement: format!(
+                "Effect: {}. {:?} confirmed by structural analysis.",
+                detail, mechanism.mtype
+            ),
             derivation,
             is_complete,
             certainty,
@@ -286,34 +401,52 @@ fn split_shell_commands(payload: &str) -> Vec<String> {
 
     while i < len {
         let ch = chars[i];
-        if ch == '\'' && !in_double { in_single = !in_single; current.push(ch); i += 1; continue; }
-        if ch == '"' && !in_single { in_double = !in_double; current.push(ch); i += 1; continue; }
+        if ch == '\'' && !in_double {
+            in_single = !in_single;
+            current.push(ch);
+            i += 1;
+            continue;
+        }
+        if ch == '"' && !in_single {
+            in_double = !in_double;
+            current.push(ch);
+            i += 1;
+            continue;
+        }
 
         if !in_single && !in_double {
             if ch == ';' || ch == '\n' {
                 let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() { commands.push(trimmed); }
+                if !trimmed.is_empty() {
+                    commands.push(trimmed);
+                }
                 current.clear();
                 i += 1;
                 continue;
             }
             if ch == '|' && i + 1 < len && chars[i + 1] == '|' {
                 let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() { commands.push(trimmed); }
+                if !trimmed.is_empty() {
+                    commands.push(trimmed);
+                }
                 current.clear();
                 i += 2;
                 continue;
             }
             if ch == '&' && i + 1 < len && chars[i + 1] == '&' {
                 let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() { commands.push(trimmed); }
+                if !trimmed.is_empty() {
+                    commands.push(trimmed);
+                }
                 current.clear();
                 i += 2;
                 continue;
             }
             if ch == '|' && (i + 1 >= len || chars[i + 1] != '|') {
                 let trimmed = current.trim().to_string();
-                if !trimmed.is_empty() { commands.push(trimmed); }
+                if !trimmed.is_empty() {
+                    commands.push(trimmed);
+                }
                 current.clear();
                 i += 1;
                 continue;
@@ -323,62 +456,137 @@ fn split_shell_commands(payload: &str) -> Vec<String> {
         i += 1;
     }
     let trimmed = current.trim().to_string();
-    if !trimmed.is_empty() { commands.push(trimmed); }
+    if !trimmed.is_empty() {
+        commands.push(trimmed);
+    }
     commands
 }
 
 fn analyze_shell_command(cmd: &str) -> (ExploitOperation, String, String, u8) {
     let lower = cmd.to_lowercase();
     let parts: Vec<&str> = lower.split_whitespace().collect();
-    let binary = parts.first().map(|p| p.rsplit('/').next().unwrap_or(p)).unwrap_or("");
+    let binary = parts
+        .first()
+        .map(|p| p.rsplit('/').next().unwrap_or(p))
+        .unwrap_or("");
 
     // Reverse shell
-    if lower.contains("/dev/tcp") || lower.contains("nc -") || lower.contains("ncat ") || lower.contains("netcat ") || lower.contains("socat ") || lower.contains("mkfifo") {
-        return (ExploitOperation::EstablishOutboundConnection, "Reverse shell establishment".into(), "Persistent remote shell access".into(), 10);
+    if lower.contains("/dev/tcp")
+        || lower.contains("nc -")
+        || lower.contains("ncat ")
+        || lower.contains("netcat ")
+        || lower.contains("socat ")
+        || lower.contains("mkfifo")
+    {
+        return (
+            ExploitOperation::EstablishOutboundConnection,
+            "Reverse shell establishment".into(),
+            "Persistent remote shell access".into(),
+            10,
+        );
     }
 
     // File read
-    if ["cat", "head", "tail", "less", "more", "tac", "strings", "xxd"].contains(&binary) {
+    if [
+        "cat", "head", "tail", "less", "more", "tac", "strings", "xxd",
+    ]
+    .contains(&binary)
+    {
         let target = parts[1..].join(" ");
-        let is_cred = ["passwd", "shadow", ".ssh", "id_rsa", ".env", ".aws", ".docker", "config", "token", "key", "secret"]
-            .iter().any(|p| target.contains(p));
+        let is_cred = [
+            "passwd", "shadow", ".ssh", "id_rsa", ".env", ".aws", ".docker", "config", "token",
+            "key", "secret",
+        ]
+        .iter()
+        .any(|p| target.contains(p));
         if is_cred {
-            return (ExploitOperation::StealCredentials, format!("Read credential file: {}", target), format!("Credential file exposure: {}", target), 9);
+            return (
+                ExploitOperation::StealCredentials,
+                format!("Read credential file: {}", target),
+                format!("Credential file exposure: {}", target),
+                9,
+            );
         }
-        return (ExploitOperation::ReadFile, format!("Read file: {}", target), format!("File contents disclosed: {}", target), 6);
+        return (
+            ExploitOperation::ReadFile,
+            format!("Read file: {}", target),
+            format!("File contents disclosed: {}", target),
+            6,
+        );
     }
 
     // Destructive
     if ["rm", "shred", "wipe"].contains(&binary) || binary.starts_with("mkfs") {
-        return (ExploitOperation::DeleteData, format!("Destructive operation: {}", cmd), "Data destruction".into(), 8);
+        return (
+            ExploitOperation::DeleteData,
+            format!("Destructive operation: {}", cmd),
+            "Data destruction".into(),
+            8,
+        );
     }
 
     // Privilege escalation
     if ["sudo", "su", "chmod", "chown", "passwd", "usermod"].contains(&binary) {
-        return (ExploitOperation::ElevatePrivileges, format!("Privilege escalation: {}", cmd), "May grant elevated permissions".into(), 9);
+        return (
+            ExploitOperation::ElevatePrivileges,
+            format!("Privilege escalation: {}", cmd),
+            "May grant elevated permissions".into(),
+            9,
+        );
     }
 
     // Exfiltration
-    if (binary == "curl" || binary == "wget") && (lower.contains(" -d") || lower.contains("--post") || lower.contains("--data")) {
-        return (ExploitOperation::StealCredentials, format!("Data exfiltration via {}", binary), "Sends stolen data to attacker".into(), 8);
+    if (binary == "curl" || binary == "wget")
+        && (lower.contains(" -d") || lower.contains("--post") || lower.contains("--data"))
+    {
+        return (
+            ExploitOperation::StealCredentials,
+            format!("Data exfiltration via {}", binary),
+            "Sends stolen data to attacker".into(),
+            8,
+        );
     }
 
     // File write
     if binary == "echo" && cmd.contains('>') {
-        return (ExploitOperation::WriteFile, format!("File write: {}", cmd), "Creates or modifies file".into(), 7);
+        return (
+            ExploitOperation::WriteFile,
+            format!("File write: {}", cmd),
+            "Creates or modifies file".into(),
+            7,
+        );
     }
 
     // Persistence
     if ["crontab", "at", "systemctl"].contains(&binary) || lower.contains("/etc/cron") {
-        return (ExploitOperation::WriteFile, format!("Persistence: {}", cmd), "Recurring execution — survives reboot".into(), 8);
+        return (
+            ExploitOperation::WriteFile,
+            format!("Persistence: {}", cmd),
+            "Recurring execution — survives reboot".into(),
+            8,
+        );
     }
 
     // System info
-    if ["whoami", "id", "uname", "hostname", "ifconfig", "ip", "ps", "env"].contains(&binary) {
-        return (ExploitOperation::ReadFile, format!("System enumeration: {}", cmd), "Discovers system configuration".into(), 4);
+    if [
+        "whoami", "id", "uname", "hostname", "ifconfig", "ip", "ps", "env",
+    ]
+    .contains(&binary)
+    {
+        return (
+            ExploitOperation::ReadFile,
+            format!("System enumeration: {}", cmd),
+            "Discovers system configuration".into(),
+            4,
+        );
     }
 
-    (ExploitOperation::ExecuteSystemCommand, format!("Execute: {}", cmd), "Arbitrary command execution".into(), 5)
+    (
+        ExploitOperation::ExecuteSystemCommand,
+        format!("Execute: {}", cmd),
+        "Arbitrary command execution".into(),
+        5,
+    )
 }
 
 /// Simulate the effect of a command injection payload.
@@ -392,7 +600,11 @@ pub fn simulate_cmd_effect(payload: &str) -> ExploitEffect {
 
     for (i, cmd) in commands.iter().enumerate() {
         let (op, desc, effect, severity) = analyze_shell_command(cmd);
-        chain.push(ExploitStep { step: i + 1, description: desc.clone(), output: effect });
+        chain.push(ExploitStep {
+            step: i + 1,
+            description: desc.clone(),
+            output: effect,
+        });
         if severity > max_severity {
             max_severity = severity;
             primary_op = op;
@@ -406,31 +618,50 @@ pub fn simulate_cmd_effect(payload: &str) -> ExploitEffect {
 
     let impact = match primary_op {
         ExploitOperation::EstablishOutboundConnection => ImpactAssessment {
-            confidentiality: 1.0, integrity: 1.0, availability: 0.5,
-            exposure_estimate: "Full system compromise via reverse shell".into(), base_score: 10.0,
+            confidentiality: 1.0,
+            integrity: 1.0,
+            availability: 0.5,
+            exposure_estimate: "Full system compromise via reverse shell".into(),
+            base_score: 10.0,
         },
         ExploitOperation::StealCredentials => ImpactAssessment {
-            confidentiality: 1.0, integrity: 0.2, availability: 0.0,
-            exposure_estimate: "Credential files read and potentially exfiltrated".into(), base_score: 9.1,
+            confidentiality: 1.0,
+            integrity: 0.2,
+            availability: 0.0,
+            exposure_estimate: "Credential files read and potentially exfiltrated".into(),
+            base_score: 9.1,
         },
         ExploitOperation::DeleteData => ImpactAssessment {
-            confidentiality: 0.0, integrity: 1.0, availability: 1.0,
-            exposure_estimate: "Data destruction on target system".into(), base_score: 9.1,
+            confidentiality: 0.0,
+            integrity: 1.0,
+            availability: 1.0,
+            exposure_estimate: "Data destruction on target system".into(),
+            base_score: 9.1,
         },
         ExploitOperation::ElevatePrivileges => ImpactAssessment {
-            confidentiality: 0.8, integrity: 0.9, availability: 0.5,
-            exposure_estimate: "Elevated from application user to system admin".into(), base_score: 8.8,
+            confidentiality: 0.8,
+            integrity: 0.9,
+            availability: 0.5,
+            exposure_estimate: "Elevated from application user to system admin".into(),
+            base_score: 8.8,
         },
         _ => ImpactAssessment {
-            confidentiality: 0.7, integrity: 0.7, availability: 0.3,
-            exposure_estimate: "Arbitrary command execution with application privileges".into(), base_score: 7.5,
+            confidentiality: 0.7,
+            integrity: 0.7,
+            availability: 0.3,
+            exposure_estimate: "Arbitrary command execution with application privileges".into(),
+            base_score: 7.5,
         },
     };
 
     ExploitEffect {
         operation: primary_op,
         proof: ExploitProof {
-            statement: format!("Shell injection: {} command(s). Primary: {}", commands.len(), primary_detail),
+            statement: format!(
+                "Shell injection: {} command(s). Primary: {}",
+                commands.len(),
+                primary_detail
+            ),
             derivation,
             is_complete: true,
             certainty: 0.95,
@@ -466,36 +697,73 @@ pub fn simulate_xss_effect(payload: &str) -> ExploitEffect {
         "html_tag_injection"
     };
 
-    chain.push(ExploitStep { step: 1, description: format!("XSS mechanism: {}", mechanism), output: derivation[0].clone() });
+    chain.push(ExploitStep {
+        step: 1,
+        description: format!("XSS mechanism: {}", mechanism),
+        output: derivation[0].clone(),
+    });
 
     // Determine effect
     let (operation, detail) = if lower.contains("document.cookie") || lower.contains(".cookie") {
         preconditions.push("HttpOnly flag not set on session cookies".into());
-        (ExploitOperation::StealCredentials, "Exfiltrates session cookies — enables session hijacking")
+        (
+            ExploitOperation::StealCredentials,
+            "Exfiltrates session cookies — enables session hijacking",
+        )
     } else if lower.contains("localstorage") || lower.contains("sessionstorage") {
-        (ExploitOperation::StealCredentials, "Exfiltrates browser storage — may contain tokens, PII")
-    } else if lower.contains("location") && (lower.contains("href") || lower.contains("replace") || lower.contains("=")) {
-        (ExploitOperation::RedirectUser, "Redirects victim to attacker-controlled page")
-    } else if lower.contains("fetch(") || lower.contains("xmlhttprequest") || lower.contains("sendbeacon") {
-        (ExploitOperation::EstablishOutboundConnection, "Cross-origin requests from victim browser context")
+        (
+            ExploitOperation::StealCredentials,
+            "Exfiltrates browser storage — may contain tokens, PII",
+        )
+    } else if lower.contains("location")
+        && (lower.contains("href") || lower.contains("replace") || lower.contains("="))
+    {
+        (
+            ExploitOperation::RedirectUser,
+            "Redirects victim to attacker-controlled page",
+        )
+    } else if lower.contains("fetch(")
+        || lower.contains("xmlhttprequest")
+        || lower.contains("sendbeacon")
+    {
+        (
+            ExploitOperation::EstablishOutboundConnection,
+            "Cross-origin requests from victim browser context",
+        )
     } else {
-        (ExploitOperation::ExecuteJavascript, "Arbitrary JavaScript execution in victim browser")
+        (
+            ExploitOperation::ExecuteJavascript,
+            "Arbitrary JavaScript execution in victim browser",
+        )
     };
 
-    chain.push(ExploitStep { step: 2, description: format!("XSS effect: {:?}", operation), output: detail.to_string() });
+    chain.push(ExploitStep {
+        step: 2,
+        description: format!("XSS effect: {:?}", operation),
+        output: detail.to_string(),
+    });
 
     let impact = match operation {
         ExploitOperation::StealCredentials => ImpactAssessment {
-            confidentiality: 0.9, integrity: 0.3, availability: 0.0,
-            exposure_estimate: "Session tokens/credentials exfiltrated from every victim".into(), base_score: 8.1,
+            confidentiality: 0.9,
+            integrity: 0.3,
+            availability: 0.0,
+            exposure_estimate: "Session tokens/credentials exfiltrated from every victim".into(),
+            base_score: 8.1,
         },
         ExploitOperation::RedirectUser => ImpactAssessment {
-            confidentiality: 0.5, integrity: 0.5, availability: 0.3,
-            exposure_estimate: "Victims redirected to phishing page".into(), base_score: 6.5,
+            confidentiality: 0.5,
+            integrity: 0.5,
+            availability: 0.3,
+            exposure_estimate: "Victims redirected to phishing page".into(),
+            base_score: 6.5,
         },
         _ => ImpactAssessment {
-            confidentiality: 0.5, integrity: 0.5, availability: 0.2,
-            exposure_estimate: "Arbitrary JavaScript execution in victim browser".into(), base_score: 6.1,
+            confidentiality: 0.5,
+            integrity: 0.5,
+            availability: 0.2,
+            exposure_estimate: "Arbitrary JavaScript execution in victim browser".into(),
+            base_score: 6.1,
         },
     };
 
@@ -521,27 +789,79 @@ pub fn simulate_path_effect(payload: &str) -> ExploitEffect {
     let mut preconditions = vec!["User input used in file path without sanitization".to_string()];
     let mut derivation = Vec::new();
 
-    let dotdot_count = payload.matches("../").count() + payload.to_lowercase().matches("%2e%2e%2f").count();
-    chain.push(ExploitStep { step: 1, description: format!("Traversal depth: {} directories up", dotdot_count), output: format!("Escapes {} directory levels", dotdot_count) });
+    let dotdot_count =
+        payload.matches("../").count() + payload.to_lowercase().matches("%2e%2e%2f").count();
+    chain.push(ExploitStep {
+        step: 1,
+        description: format!("Traversal depth: {} directories up", dotdot_count),
+        output: format!("Escapes {} directory levels", dotdot_count),
+    });
     derivation.push(format!("Path contains {} '../' sequences", dotdot_count));
 
     // Target file
     let target = payload
-        .replace("../", "").replace("..\\", "")
-        .replace("%2e%2e%2f", "").replace("%2e%2e/", "")
-        .replace('\0', "").replace("%00", "");
-    chain.push(ExploitStep { step: 2, description: format!("Target file: {}", &target), output: format!("Resolves to /{}", &target) });
+        .replace("../", "")
+        .replace("..\\", "")
+        .replace("%2e%2e%2f", "")
+        .replace("%2e%2e/", "")
+        .replace('\0', "")
+        .replace("%00", "");
+    chain.push(ExploitStep {
+        step: 2,
+        description: format!("Target file: {}", &target),
+        output: format!("Resolves to /{}", &target),
+    });
     derivation.push(format!("Target path resolves to: /{}", &target));
 
     let sensitive_files: &[(&str, ExploitOperation, &str, f64)] = &[
-        ("etc/passwd", ExploitOperation::StealCredentials, "System user enumeration", 7.5),
-        ("etc/shadow", ExploitOperation::StealCredentials, "Password hash extraction", 9.8),
-        (".env", ExploitOperation::StealCredentials, "Environment secrets — API keys, DB passwords", 9.5),
-        (".git/config", ExploitOperation::StealCredentials, "Git credentials", 7.0),
-        (".ssh/id_rsa", ExploitOperation::StealCredentials, "Private SSH key — lateral movement", 9.8),
-        (".aws/credentials", ExploitOperation::StealCredentials, "AWS access keys — full cloud compromise", 10.0),
-        ("wp-config.php", ExploitOperation::StealCredentials, "WordPress DB credentials + salts", 9.0),
-        ("proc/self/environ", ExploitOperation::StealCredentials, "Process environment — runtime secrets", 8.5),
+        (
+            "etc/passwd",
+            ExploitOperation::StealCredentials,
+            "System user enumeration",
+            7.5,
+        ),
+        (
+            "etc/shadow",
+            ExploitOperation::StealCredentials,
+            "Password hash extraction",
+            9.8,
+        ),
+        (
+            ".env",
+            ExploitOperation::StealCredentials,
+            "Environment secrets — API keys, DB passwords",
+            9.5,
+        ),
+        (
+            ".git/config",
+            ExploitOperation::StealCredentials,
+            "Git credentials",
+            7.0,
+        ),
+        (
+            ".ssh/id_rsa",
+            ExploitOperation::StealCredentials,
+            "Private SSH key — lateral movement",
+            9.8,
+        ),
+        (
+            ".aws/credentials",
+            ExploitOperation::StealCredentials,
+            "AWS access keys — full cloud compromise",
+            10.0,
+        ),
+        (
+            "wp-config.php",
+            ExploitOperation::StealCredentials,
+            "WordPress DB credentials + salts",
+            9.0,
+        ),
+        (
+            "proc/self/environ",
+            ExploitOperation::StealCredentials,
+            "Process environment — runtime secrets",
+            8.5,
+        ),
     ];
 
     let target_lower = target.to_lowercase().replace('\\', "/");
@@ -554,7 +874,11 @@ pub fn simulate_path_effect(payload: &str) -> ExploitEffect {
             operation = *op;
             detail = desc.to_string();
             base_score = *score;
-            chain.push(ExploitStep { step: 3, description: format!("Sensitive file: {}", path), output: desc.to_string() });
+            chain.push(ExploitStep {
+                step: 3,
+                description: format!("Sensitive file: {}", path),
+                output: desc.to_string(),
+            });
             derivation.push(format!("Target matches sensitive file: {}", path));
             break;
         }
@@ -566,7 +890,11 @@ pub fn simulate_path_effect(payload: &str) -> ExploitEffect {
         base_score = (base_score + 0.5).min(10.0);
     }
 
-    let confidentiality = if operation == ExploitOperation::StealCredentials { 1.0 } else { 0.6 };
+    let confidentiality = if operation == ExploitOperation::StealCredentials {
+        1.0
+    } else {
+        0.6
+    };
 
     ExploitEffect {
         operation,
@@ -577,8 +905,11 @@ pub fn simulate_path_effect(payload: &str) -> ExploitEffect {
             certainty: if dotdot_count > 0 { 0.85 } else { 0.50 },
         },
         impact: ImpactAssessment {
-            confidentiality, integrity: 0.0, availability: 0.0,
-            exposure_estimate: detail, base_score,
+            confidentiality,
+            integrity: 0.0,
+            availability: 0.0,
+            exposure_estimate: detail,
+            base_score,
         },
         preconditions,
         chain,
@@ -600,34 +931,86 @@ pub fn simulate_ssrf_effect(payload: &str) -> ExploitEffect {
     let target_host = normalize_host(&target_host_raw);
     chain.push(ExploitStep {
         step: 1,
-        description: format!("Target: {}{}{}", target_host, if target_port.is_empty() { "".to_string() } else { format!(":{}", target_port) }, target_path),
+        description: format!(
+            "Target: {}{}{}",
+            target_host,
+            if target_port.is_empty() {
+                "".to_string()
+            } else {
+                format!(":{}", target_port)
+            },
+            target_path
+        ),
         output: "SSRF target resolved".into(),
     });
     derivation.push(format!("Target host: {}", target_host));
 
-    let (operation, detail, base_score) = if is_cloud_metadata_host(&target_host) || lower.contains("/latest/meta-data") || lower.contains("/computemetadata") {
+    let (operation, detail, base_score) = if is_cloud_metadata_host(&target_host)
+        || lower.contains("/latest/meta-data")
+        || lower.contains("/computemetadata")
+    {
         derivation.push("Target is cloud metadata endpoint — exposes IAM credentials".into());
-        chain.push(ExploitStep { step: 2, description: "Cloud metadata access".into(), output: "IAM credentials, instance metadata exposed".into() });
-        (ExploitOperation::StealCredentials, "Cloud metadata service — extracts IAM credentials".to_string(), 9.5)
+        chain.push(ExploitStep {
+            step: 2,
+            description: "Cloud metadata access".into(),
+            output: "IAM credentials, instance metadata exposed".into(),
+        });
+        (
+            ExploitOperation::StealCredentials,
+            "Cloud metadata service — extracts IAM credentials".to_string(),
+            9.5,
+        )
     } else if is_internal_ip(&target_host) {
-        let db_ports = [("6379", "Redis"), ("27017", "MongoDB"), ("5432", "PostgreSQL"), ("3306", "MySQL"), ("11211", "Memcached")];
+        let db_ports = [
+            ("6379", "Redis"),
+            ("27017", "MongoDB"),
+            ("5432", "PostgreSQL"),
+            ("3306", "MySQL"),
+            ("11211", "Memcached"),
+        ];
         let db = db_ports.iter().find(|(p, _)| *p == target_port);
         if let Some((_, name)) = db {
-            derivation.push(format!("Internal {} at {}:{}", name, target_host, target_port));
-            (ExploitOperation::AccessInternalService, format!("Accesses internal {} at {}:{}", name, target_host, target_port), 8.8)
+            derivation.push(format!(
+                "Internal {} at {}:{}",
+                name, target_host, target_port
+            ));
+            (
+                ExploitOperation::AccessInternalService,
+                format!(
+                    "Accesses internal {} at {}:{}",
+                    name, target_host, target_port
+                ),
+                8.8,
+            )
         } else {
             derivation.push(format!("Internal network target: {}", target_host));
-            (ExploitOperation::AccessInternalService, format!("Internal network access: {}", target_host), 6.5)
+            (
+                ExploitOperation::AccessInternalService,
+                format!("Internal network access: {}", target_host),
+                6.5,
+            )
         }
     } else if lower.starts_with("file://") {
         let file_path = &payload[7..];
         derivation.push(format!("File protocol access: {}", file_path));
-        (ExploitOperation::ReadFile, format!("Reads local file via file:// protocol: {}", file_path), 8.0)
+        (
+            ExploitOperation::ReadFile,
+            format!("Reads local file via file:// protocol: {}", file_path),
+            8.0,
+        )
     } else {
-        (ExploitOperation::AccessInternalService, format!("Accesses service at {}", target_host), 7.0)
+        (
+            ExploitOperation::AccessInternalService,
+            format!("Accesses service at {}", target_host),
+            7.0,
+        )
     };
 
-    let confidentiality = if operation == ExploitOperation::StealCredentials { 1.0 } else { 0.7 };
+    let confidentiality = if operation == ExploitOperation::StealCredentials {
+        1.0
+    } else {
+        0.7
+    };
 
     ExploitEffect {
         operation,
@@ -638,8 +1021,11 @@ pub fn simulate_ssrf_effect(payload: &str) -> ExploitEffect {
             certainty: if target_host != "unknown" { 0.85 } else { 0.50 },
         },
         impact: ImpactAssessment {
-            confidentiality, integrity: 0.2, availability: 0.1,
-            exposure_estimate: detail, base_score,
+            confidentiality,
+            integrity: 0.2,
+            availability: 0.1,
+            exposure_estimate: detail,
+            base_score,
         },
         preconditions,
         chain,
@@ -652,7 +1038,10 @@ fn parse_url_target(payload: &str) -> (String, String, String) {
     } else {
         payload
     };
-    let (authority, path) = s.split_once('/').map(|(a, p)| (a, format!("/{}", p))).unwrap_or((s, "/".to_string()));
+    let (authority, path) = s
+        .split_once('/')
+        .map(|(a, p)| (a, format!("/{}", p)))
+        .unwrap_or((s, "/".to_string()));
     let authority = authority.rsplit('@').next().unwrap_or(authority);
 
     if authority.starts_with('[') {
@@ -776,7 +1165,10 @@ pub struct AdversaryFingerprint {
 }
 
 /// Identify the likely tool or technique used to generate a payload.
-pub fn fingerprint_adversary(payload: &str, detected_classes: &[crate::types::InvariantClass]) -> AdversaryFingerprint {
+pub fn fingerprint_adversary(
+    payload: &str,
+    detected_classes: &[crate::types::InvariantClass],
+) -> AdversaryFingerprint {
     let mut indicators = Vec::new();
     let mut tool = "manual".to_string();
     let mut confidence = 0.3_f64;
@@ -816,7 +1208,10 @@ pub fn fingerprint_adversary(payload: &str, detected_classes: &[crate::types::In
     // XSS tool fingerprints
     if lower.contains("<svg") && lower.contains("onload") {
         indicators.push("SVG onload — common in XSS tool payloads".into());
-        if tool == "manual" { tool = "xss_tool".into(); confidence += 0.15; }
+        if tool == "manual" {
+            tool = "xss_tool".into();
+            confidence += 0.15;
+        }
         automated = true;
     }
 
@@ -841,7 +1236,10 @@ pub fn fingerprint_adversary(payload: &str, detected_classes: &[crate::types::In
         confidence += 0.15;
     }
     if detected_classes.len() >= 4 {
-        indicators.push(format!("High class diversity ({} classes) — automated scanning", detected_classes.len()));
+        indicators.push(format!(
+            "High class diversity ({} classes) — automated scanning",
+            detected_classes.len()
+        ));
         automated = true;
         confidence += 0.10;
     }
@@ -860,7 +1258,10 @@ pub fn fingerprint_adversary(payload: &str, detected_classes: &[crate::types::In
             domains.insert(crate::polyglot::class_to_domain(cls));
         }
         if domains.len() >= 3 {
-            indicators.push(format!("Triple-context polyglot ({}) — expert-level crafting", domains.into_iter().collect::<Vec<_>>().join("+")));
+            indicators.push(format!(
+                "Triple-context polyglot ({}) — expert-level crafting",
+                domains.into_iter().collect::<Vec<_>>().join("+")
+            ));
             skill_level = SkillLevel::Expert;
             confidence += 0.15;
         }
@@ -1001,14 +1402,18 @@ mod tests {
 
     #[test]
     fn adversary_sqlmap() {
-        let fp = fingerprint_adversary("' AND 5678=5678 UNION ALL SELECT NULL,password FROM users--+", &[crate::types::InvariantClass::SqlUnionExtraction]);
+        let fp = fingerprint_adversary(
+            "' AND 5678=5678 UNION ALL SELECT NULL,password FROM users--+",
+            &[crate::types::InvariantClass::SqlUnionExtraction],
+        );
         assert_eq!(fp.tool, "sqlmap");
         assert!(fp.automated);
     }
 
     #[test]
     fn adversary_script_kiddie() {
-        let fp = fingerprint_adversary("' OR 1=1 --", &[crate::types::InvariantClass::SqlTautology]);
+        let fp =
+            fingerprint_adversary("' OR 1=1 --", &[crate::types::InvariantClass::SqlTautology]);
         assert_eq!(fp.skill_level, SkillLevel::ScriptKiddie);
         assert!(!fp.automated);
     }

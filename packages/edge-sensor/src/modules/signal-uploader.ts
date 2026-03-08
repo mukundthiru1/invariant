@@ -64,7 +64,7 @@ export class SignalBuffer {
 export async function generateAnonToken(sensorId: string): Promise<string> {
     const day = new Date().toISOString().slice(0, 10) // YYYY-MM-DD
     const data = new TextEncoder().encode(sensorId + ':' + day)
-    const hash = await globalThis.crypto.subtle.digest('SHA-256', data)
+    const hash = await crypto.subtle.digest('SHA-256', data)
     const bytes = new Uint8Array(hash)
     // Take first 16 bytes → 22-char base64url (enough for dedup, not reversible)
     let b64 = ''

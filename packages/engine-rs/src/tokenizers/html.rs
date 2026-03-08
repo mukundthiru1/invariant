@@ -78,15 +78,18 @@ impl HtmlTokenizer {
                         continue;
                     }
 
-                    if i + 9 <= bytes.len() && starts_with_ignore_ascii_case(bytes, i, b"<!DOCTYPE") {
-                        let end_idx = find_byte(bytes, i + 9, b'>').map_or(bytes.len(), |idx| idx + 1);
+                    if i + 9 <= bytes.len() && starts_with_ignore_ascii_case(bytes, i, b"<!DOCTYPE")
+                    {
+                        let end_idx =
+                            find_byte(bytes, i + 9, b'>').map_or(bytes.len(), |idx| idx + 1);
                         push(&mut tokens, HtmlTokenType::Doctype, bytes, i, end_idx);
                         i = end_idx;
                         continue;
                     }
 
                     if i + 9 <= bytes.len() && &bytes[i..i + 9] == b"<![CDATA[" {
-                        let end_idx = find_subsequence(bytes, i + 9, b"]]>").map_or(bytes.len(), |idx| idx + 3);
+                        let end_idx = find_subsequence(bytes, i + 9, b"]]>")
+                            .map_or(bytes.len(), |idx| idx + 3);
                         push(&mut tokens, HtmlTokenType::Cdata, bytes, i, end_idx);
                         i = end_idx;
                         continue;
@@ -132,7 +135,13 @@ impl HtmlTokenizer {
                         push(&mut tokens, HtmlTokenType::TagName, bytes, start, i);
                         state = HtmlState::TagBody;
                     } else {
-                        push(&mut tokens, HtmlTokenType::Unknown, bytes, i, i.saturating_add(1));
+                        push(
+                            &mut tokens,
+                            HtmlTokenType::Unknown,
+                            bytes,
+                            i,
+                            i.saturating_add(1),
+                        );
                         i = i.saturating_add(1);
                         state = HtmlState::Text;
                     }
@@ -255,7 +264,13 @@ impl HtmlTokenizer {
                             state = HtmlState::TagOpen;
                         }
                     } else {
-                        push(&mut tokens, HtmlTokenType::ScriptContent, bytes, start, bytes.len());
+                        push(
+                            &mut tokens,
+                            HtmlTokenType::ScriptContent,
+                            bytes,
+                            start,
+                            bytes.len(),
+                        );
                         i = bytes.len();
                     }
                 }
@@ -273,7 +288,13 @@ impl HtmlTokenizer {
                             state = HtmlState::TagOpen;
                         }
                     } else {
-                        push(&mut tokens, HtmlTokenType::StyleContent, bytes, start, bytes.len());
+                        push(
+                            &mut tokens,
+                            HtmlTokenType::StyleContent,
+                            bytes,
+                            start,
+                            bytes.len(),
+                        );
                         i = bytes.len();
                     }
                 }
@@ -284,7 +305,13 @@ impl HtmlTokenizer {
     }
 }
 
-fn push(tokens: &mut Vec<Token<HtmlTokenType>>, ty: HtmlTokenType, bytes: &[u8], start: usize, end: usize) {
+fn push(
+    tokens: &mut Vec<Token<HtmlTokenType>>,
+    ty: HtmlTokenType,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) {
     tokens.push(Token {
         token_type: ty,
         value: to_value(bytes, start, end),

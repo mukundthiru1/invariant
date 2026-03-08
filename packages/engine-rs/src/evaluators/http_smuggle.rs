@@ -25,8 +25,9 @@ static CHUNK_EXT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^[0-9A-Fa-f]+\s*;[^\r\n]+\r?\n").unwrap());
 static CL_ZERO_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^Content-Length\s*:\s*0").unwrap());
-static EMBEDDED_REQ_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?m)^(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+/[^\s]*\s+HTTP/").unwrap());
+static EMBEDDED_REQ_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?m)^(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+/[^\s]*\s+HTTP/").unwrap()
+});
 static CL_VALUE_CAPTURE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^Content-Length\s*:\s*(\d+)\s*$").unwrap());
 static TE_XCHUNKED_RE: LazyLock<Regex> =
@@ -73,9 +74,8 @@ static NEGATIVE_CHUNK_SIZE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^-\s*[0-9A-Fa-f]+\s*(?:;[^\r\n]*)?\r?$").unwrap());
 static WEBSOCKET_UPGRADE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?im)^Upgrade\s*:\s*websocket\b").unwrap());
-static CONNECTION_WS_UPGRADE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?im)^Connection\s*:\s*[^\r\n]*\bupgrade\b[^\r\n]*$").unwrap()
-});
+static CONNECTION_WS_UPGRADE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?im)^Connection\s*:\s*[^\r\n]*\bupgrade\b[^\r\n]*$").unwrap());
 static REQUEST_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?im)^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS|TRACE|CONNECT)\s+(\S+)\s+HTTP/(1\.[01]|2(?:\.0)?)\s*$").unwrap()
 });
@@ -186,8 +186,14 @@ fn detect_te_cl_order_desync(decoded: &str) -> Vec<L2Detection> {
 
 fn detect_obfuscated_te_variants(decoded: &str) -> Option<L2Detection> {
     let patterns = [
-        (&*TE_XCHUNKED_RE, "Transfer-Encoding value obfuscated as xchunked"),
-        (&*TE_SPACE_COLON_RE, "Transfer-Encoding header uses colon-spacing obfuscation"),
+        (
+            &*TE_XCHUNKED_RE,
+            "Transfer-Encoding value obfuscated as xchunked",
+        ),
+        (
+            &*TE_SPACE_COLON_RE,
+            "Transfer-Encoding header uses colon-spacing obfuscation",
+        ),
         (
             &*TE_TRAILING_WS_RE,
             "Transfer-Encoding: chunked contains trailing whitespace",
@@ -256,10 +262,10 @@ fn detect_http2_downgrade_smuggle(decoded: &str) -> Option<L2Detection> {
                 operation: EvidenceOperation::ContextEscape,
                 matched_input: pseudo.as_str().to_owned(),
                 interpretation:
-                    "Pseudo-headers interpreted during downgrade can create parser state confusion".into(),
+                    "Pseudo-headers interpreted during downgrade can create parser state confusion"
+                        .into(),
                 offset: pseudo.start(),
-                property:
-                    "HTTP/2 pseudo-headers must not appear as regular HTTP/1 headers".into(),
+                property: "HTTP/2 pseudo-headers must not appear as regular HTTP/1 headers".into(),
             }],
         });
     }
@@ -290,7 +296,11 @@ fn detect_request_line_injection(decoded: &str) -> Option<L2Detection> {
     let mut req_lines = decoded.split('\n');
     let line1 = req_lines.next().unwrap_or("").trim_end_matches('\r');
     let line2 = req_lines.next().unwrap_or("").trim_end_matches('\r');
-    if METHOD_RE.is_match(line1) && !line1.contains("HTTP/") && METHOD_RE.is_match(line2) && line2.contains("HTTP/") {
+    if METHOD_RE.is_match(line1)
+        && !line1.contains("HTTP/")
+        && METHOD_RE.is_match(line2)
+        && line2.contains("HTTP/")
+    {
         return Some(L2Detection {
             detection_type: "request_line_injection".into(),
             confidence: 0.89,
@@ -435,12 +445,10 @@ fn detect_h2_cl_smuggle(decoded: &str) -> Option<L2Detection> {
     }
 
     let has_multi_cl = raw_values.len() > 1;
-    let has_non_numeric = raw_values.iter().any(|v| !v.chars().all(|c| c.is_ascii_digit()));
-    let has_mismatch = has_multi_cl
-        && raw_values
-            .iter()
-            .skip(1)
-            .any(|v| v != &raw_values[0]);
+    let has_non_numeric = raw_values
+        .iter()
+        .any(|v| !v.chars().all(|c| c.is_ascii_digit()));
+    let has_mismatch = has_multi_cl && raw_values.iter().skip(1).any(|v| v != &raw_values[0]);
     let has_zero_with_body = raw_values.iter().any(|v| v == "0") && body_has_non_ws;
     let has_ws_abuse = CL_INTERNAL_WS_RE.is_match(decoded);
 
@@ -810,8 +818,12 @@ fn detect_websocket_upgrade_smuggle(decoded: &str) -> Option<L2Detection> {
 }
 
 impl L2Evaluator for HttpSmuggleEvaluator {
-    fn id(&self) -> &'static str { "http_smuggle" }
-    fn prefix(&self) -> &'static str { "L2 HTTPSmuggle" }
+    fn id(&self) -> &'static str {
+        "http_smuggle"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 HTTPSmuggle"
+    }
 
     #[inline]
 
@@ -826,14 +838,18 @@ impl L2Evaluator for HttpSmuggleEvaluator {
             dets.push(L2Detection {
                 detection_type: "cl_te_conflict".into(),
                 confidence: 0.92,
-                detail: "Both Content-Length and Transfer-Encoding present — HTTP request smuggling".into(),
+                detail:
+                    "Both Content-Length and Transfer-Encoding present — HTTP request smuggling"
+                        .into(),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: "Content-Length + Transfer-Encoding".into(),
                     interpretation: "Conflicting headers cause front-end/back-end desync".into(),
                     offset: 0,
-                    property: "HTTP requests must not contain both Content-Length and Transfer-Encoding".into(),
+                    property:
+                        "HTTP requests must not contain both Content-Length and Transfer-Encoding"
+                            .into(),
                 }],
             });
         }
@@ -864,9 +880,12 @@ impl L2Evaluator for HttpSmuggleEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::ContextEscape,
                     matched_input: pseudo_match.as_str().to_owned(),
-                    interpretation: "Invalid HTTP/1 proxying of HTTP/2 pseudo headers can cause request desync".into(),
+                    interpretation:
+                        "Invalid HTTP/1 proxying of HTTP/2 pseudo headers can cause request desync"
+                            .into(),
                     offset: pseudo_match.start(),
-                    property: "HTTP/1 parsers must not process HTTP/2 pseudo headers directly".into(),
+                    property: "HTTP/1 parsers must not process HTTP/2 pseudo headers directly"
+                        .into(),
                 }],
             });
         }
@@ -883,7 +902,8 @@ impl L2Evaluator for HttpSmuggleEvaluator {
                     matched_input: m.as_str().to_owned(),
                     interpretation: "Multiple/obfuscated TE headers cause parsing ambiguity".into(),
                     offset: m.start(),
-                    property: "Transfer-Encoding header must not be duplicated or obfuscated".into(),
+                    property: "Transfer-Encoding header must not be duplicated or obfuscated"
+                        .into(),
                 }],
             });
         }
@@ -901,9 +921,13 @@ impl L2Evaluator for HttpSmuggleEvaluator {
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: m.as_str().to_owned(),
-                        interpretation: "Chunk extensions alter parsing behavior in chunked transfer bodies".into(),
+                        interpretation:
+                            "Chunk extensions alter parsing behavior in chunked transfer bodies"
+                                .into(),
                         offset: m.start(),
-                        property: "Servers should reject chunk-extensions in untrusted request bodies".into(),
+                        property:
+                            "Servers should reject chunk-extensions in untrusted request bodies"
+                                .into(),
                     }],
                 });
             }
@@ -946,7 +970,10 @@ impl L2Evaluator for HttpSmuggleEvaluator {
             dets.push(L2Detection {
                 detection_type: "embedded_request".into(),
                 confidence: 0.88,
-                detail: format!("Multiple HTTP requests in single body ({} found)", matches.len()),
+                detail: format!(
+                    "Multiple HTTP requests in single body ({} found)",
+                    matches.len()
+                ),
                 position: matches[1].start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -1019,28 +1046,36 @@ impl L2Evaluator for HttpSmuggleEvaluator {
         if let Some(det) = detect_websocket_upgrade_smuggle(&decoded) {
             dets.push(det);
         }
-	
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "cl_te_conflict" | "te_obfuscation" | "embedded_request"
-                => Some(InvariantClass::HttpSmuggleClTe),
-            "cl_cl_desync" | "te_cl_desync" | "cl_te_desync" | "te_obfuscation_advanced"
-                | "request_line_injection" => Some(InvariantClass::HttpSmuggleClTe),
+            "cl_te_conflict" | "te_obfuscation" | "embedded_request" => {
+                Some(InvariantClass::HttpSmuggleClTe)
+            }
+            "cl_cl_desync"
+            | "te_cl_desync"
+            | "cl_te_desync"
+            | "te_obfuscation_advanced"
+            | "request_line_injection" => Some(InvariantClass::HttpSmuggleClTe),
             "http2_smuggle" => Some(InvariantClass::HttpSmuggleH2),
             "http2_downgrade_smuggle" => Some(InvariantClass::HttpSmuggleH2),
             "http_chunk_ext" => Some(InvariantClass::HttpSmuggleChunkExt),
             "chunk_size_overflow" | "chunk_ext_abuse" => Some(InvariantClass::HttpSmuggleChunkExt),
             "http_zero_cl" => Some(InvariantClass::HttpSmuggleZeroCl),
-            "h2_cl_smuggle" | "h2_te_smuggle" | "h2_pseudo_crlf_injection"
-                => Some(InvariantClass::HttpSmuggleH2),
+            "h2_cl_smuggle" | "h2_te_smuggle" | "h2_pseudo_crlf_injection" => {
+                Some(InvariantClass::HttpSmuggleH2)
+            }
             "cl_0_smuggle" => Some(InvariantClass::HttpSmuggleZeroCl),
             "chunked_edge_case" => Some(InvariantClass::HttpSmuggleChunkExt),
-            "double_content_length" | "cl_whitespace_desync" | "te_list_obfuscation"
-                | "request_line_space_uri" | "request_line_version_downgrade"
-                | "websocket_upgrade_smuggle" => Some(InvariantClass::HttpSmuggleClTe),
+            "double_content_length"
+            | "cl_whitespace_desync"
+            | "te_list_obfuscation"
+            | "request_line_space_uri"
+            | "request_line_version_downgrade"
+            | "websocket_upgrade_smuggle" => Some(InvariantClass::HttpSmuggleClTe),
             _ => None,
         }
     }
@@ -1056,7 +1091,10 @@ mod tests {
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 5\r\nContent-Length: 0\r\n\r\nabcde";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "http2_smuggle"));
-        assert_eq!(eval.map_class("http2_smuggle"), Some(InvariantClass::HttpSmuggleH2));
+        assert_eq!(
+            eval.map_class("http2_smuggle"),
+            Some(InvariantClass::HttpSmuggleH2)
+        );
     }
 
     #[test]
@@ -1073,7 +1111,10 @@ mod tests {
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n4;ext=1\r\nWiki\r\n0\r\n\r\n";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "http_chunk_ext"));
-        assert_eq!(eval.map_class("http_chunk_ext"), Some(InvariantClass::HttpSmuggleChunkExt));
+        assert_eq!(
+            eval.map_class("http_chunk_ext"),
+            Some(InvariantClass::HttpSmuggleChunkExt)
+        );
     }
 
     #[test]
@@ -1082,7 +1123,10 @@ mod tests {
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0\r\n\r\nBODY";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "http_zero_cl"));
-        assert_eq!(eval.map_class("http_zero_cl"), Some(InvariantClass::HttpSmuggleZeroCl));
+        assert_eq!(
+            eval.map_class("http_zero_cl"),
+            Some(InvariantClass::HttpSmuggleZeroCl)
+        );
     }
 
     #[test]
@@ -1091,7 +1135,10 @@ mod tests {
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 4\r\nContent-Length: 9\r\n\r\nabcd";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "cl_cl_desync"));
-        assert_eq!(eval.map_class("cl_cl_desync"), Some(InvariantClass::HttpSmuggleClTe));
+        assert_eq!(
+            eval.map_class("cl_cl_desync"),
+            Some(InvariantClass::HttpSmuggleClTe)
+        );
     }
 
     #[test]
@@ -1115,9 +1162,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: xchunked\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "te_obfuscation_advanced"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "te_obfuscation_advanced")
+        );
     }
 
     #[test]
@@ -1125,9 +1173,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nX-Forwarded-For: 127.0.0.1\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "te_obfuscation_advanced"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "te_obfuscation_advanced")
+        );
     }
 
     #[test]
@@ -1135,9 +1184,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "PRI * HTTP/2.0\r\nHost: example.com\r\nConnection: Upgrade, HTTP2-Settings\r\nUpgrade: h2c\r\nHTTP2-Settings: AAMAAABkAAQAAP__\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "http2_downgrade_smuggle"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "http2_downgrade_smuggle")
+        );
         assert_eq!(
             eval.map_class("http2_downgrade_smuggle"),
             Some(InvariantClass::HttpSmuggleH2)
@@ -1149,9 +1199,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "GET /search%0d%0aGET /admin HTTP/1.1\r\nHost: example.com\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "request_line_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "request_line_injection")
+        );
     }
 
     #[test]
@@ -1159,9 +1210,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST /upload HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n80000000\r\nA\r\n0\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "chunk_size_overflow"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "chunk_size_overflow")
+        );
     }
 
     #[test]
@@ -1191,7 +1243,8 @@ mod tests {
     #[test]
     fn detects_h2_te_smuggle_in_prior_knowledge_request() {
         let eval = HttpSmuggleEvaluator;
-        let input = "PRI * HTTP/2.0\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
+        let input =
+            "PRI * HTTP/2.0\r\nHost: example.com\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "h2_te_smuggle"));
     }
@@ -1225,9 +1278,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = ":method: GET\r\n:path: /api%0d%0aX-Smuggled: 1\r\nHost: example.com\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "h2_pseudo_crlf_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "h2_pseudo_crlf_injection")
+        );
     }
 
     #[test]
@@ -1235,9 +1289,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = ":method: GE\\r\\nT\r\n:path: /\r\nHost: example.com\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "h2_pseudo_crlf_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "h2_pseudo_crlf_injection")
+        );
     }
 
     #[test]
@@ -1261,20 +1316,21 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\nContent-Length: 9\r\n\r\nabcdefghi";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "double_content_length"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "double_content_length")
+        );
     }
 
     #[test]
     fn detects_double_content_length_mismatch_with_spacing() {
         let eval = HttpSmuggleEvaluator;
-        let input =
-            "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0005\r\nContent-Length: 5  \r\n\r\nabcde";
+        let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 0005\r\nContent-Length: 5  \r\n\r\nabcde";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "double_content_length"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "double_content_length")
+        );
     }
 
     #[test]
@@ -1282,29 +1338,34 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1 0\r\n\r\nabcdefghij";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cl_whitespace_desync"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cl_whitespace_desync")
+        );
     }
 
     #[test]
     fn detects_content_length_whitespace_desync_with_tab() {
         let eval = HttpSmuggleEvaluator;
-        let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1\t0\r\n\r\nabcdefghij";
+        let input =
+            "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 1\t0\r\n\r\nabcdefghij";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "cl_whitespace_desync"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cl_whitespace_desync")
+        );
     }
 
     #[test]
     fn detects_transfer_encoding_list_obfuscation_trailing_comma() {
         let eval = HttpSmuggleEvaluator;
-        let input = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked ,\r\n\r\n0\r\n\r\n";
+        let input =
+            "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: chunked ,\r\n\r\n0\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "te_list_obfuscation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "te_list_obfuscation")
+        );
     }
 
     #[test]
@@ -1312,9 +1373,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nTransfer-Encoding: x, chunked\r\n\r\n0\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "te_list_obfuscation"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "te_list_obfuscation")
+        );
     }
 
     #[test]
@@ -1322,9 +1384,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "GET /admin panel HTTP/1.1\r\nHost: example.com\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "request_line_space_uri"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "request_line_space_uri")
+        );
     }
 
     #[test]
@@ -1332,9 +1395,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "POST / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 28\r\n\r\nGET /safe HTTP/1.0\r\nHost: b\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "request_line_version_downgrade"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "request_line_version_downgrade")
+        );
     }
 
     #[test]
@@ -1342,9 +1406,10 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "GET /chat HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nContent-Length: 4\r\n\r\nPING";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "websocket_upgrade_smuggle"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "websocket_upgrade_smuggle")
+        );
     }
 
     #[test]
@@ -1352,16 +1417,23 @@ mod tests {
         let eval = HttpSmuggleEvaluator;
         let input = "GET /chat HTTP/1.1\r\nHost: example.com\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\n";
         let dets = eval.detect(input);
-        assert!(dets
-            .iter()
-            .any(|d| d.detection_type == "websocket_upgrade_smuggle"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "websocket_upgrade_smuggle")
+        );
     }
 
     #[test]
     fn maps_new_h2_detectors_to_h2_class() {
         let eval = HttpSmuggleEvaluator;
-        assert_eq!(eval.map_class("h2_cl_smuggle"), Some(InvariantClass::HttpSmuggleH2));
-        assert_eq!(eval.map_class("h2_te_smuggle"), Some(InvariantClass::HttpSmuggleH2));
+        assert_eq!(
+            eval.map_class("h2_cl_smuggle"),
+            Some(InvariantClass::HttpSmuggleH2)
+        );
+        assert_eq!(
+            eval.map_class("h2_te_smuggle"),
+            Some(InvariantClass::HttpSmuggleH2)
+        );
         assert_eq!(
             eval.map_class("h2_pseudo_crlf_injection"),
             Some(InvariantClass::HttpSmuggleH2)

@@ -54,7 +54,10 @@ pub struct BotSignals {
 }
 
 pub const LEGITIMATE_BOTS: &[(&str, &[&str])] = &[
-    ("Googlebot", &["googlebot", "google-inspectiontool", "googleother"]),
+    (
+        "Googlebot",
+        &["googlebot", "google-inspectiontool", "googleother"],
+    ),
     ("Bingbot", &["bingbot", "adidxbot"]),
     ("Slurp", &["slurp"]),
     ("DuckDuckBot", &["duckduckbot"]),
@@ -109,30 +112,142 @@ pub const SCANNER_BOTS: &[(&str, &[&str])] = &[
 ];
 
 const BOT_USER_AGENT_PATTERNS: &[&str] = &[
-    "bot", "crawler", "spider", "scrapy", "headless", "phantomjs", "selenium", "webdriver",
-    "playwright", "puppeteer", "curl/", "wget/", "python-requests", "python-urllib", "httpclient",
-    "okhttp", "go-http-client", "libwww-perl", "aiohttp", "http.rb", "mechanize", "axios/", "restsharp",
-    "java/", "apache-httpclient", "node-fetch", "feedfetcher", "slurp", "baiduspider", "duckduckbot",
-    "yandex", "semrush", "ahrefs", "mj12bot", "dotbot", "petalbot", "facebookexternalhit", "facebot",
-    "twitterbot", "linkedinbot", "slackbot", "discordbot", "telegrambot", "bingbot", "googlebot",
-    "nmap", "nikto", "sqlmap", "dirbuster", "gobuster", "wfuzz", "ffuf", "nuclei", "zaproxy",
-    "burp", "acunetix", "arachni", "masscan", "wpscan", "whatweb", "nessus", "openvas",
+    "bot",
+    "crawler",
+    "spider",
+    "scrapy",
+    "headless",
+    "phantomjs",
+    "selenium",
+    "webdriver",
+    "playwright",
+    "puppeteer",
+    "curl/",
+    "wget/",
+    "python-requests",
+    "python-urllib",
+    "httpclient",
+    "okhttp",
+    "go-http-client",
+    "libwww-perl",
+    "aiohttp",
+    "http.rb",
+    "mechanize",
+    "axios/",
+    "restsharp",
+    "java/",
+    "apache-httpclient",
+    "node-fetch",
+    "feedfetcher",
+    "slurp",
+    "baiduspider",
+    "duckduckbot",
+    "yandex",
+    "semrush",
+    "ahrefs",
+    "mj12bot",
+    "dotbot",
+    "petalbot",
+    "facebookexternalhit",
+    "facebot",
+    "twitterbot",
+    "linkedinbot",
+    "slackbot",
+    "discordbot",
+    "telegrambot",
+    "bingbot",
+    "googlebot",
+    "nmap",
+    "nikto",
+    "sqlmap",
+    "dirbuster",
+    "gobuster",
+    "wfuzz",
+    "ffuf",
+    "nuclei",
+    "zaproxy",
+    "burp",
+    "acunetix",
+    "arachni",
+    "masscan",
+    "wpscan",
+    "whatweb",
+    "nessus",
+    "openvas",
 ];
 
 const KNOWN_BOT_JA3: &[(&str, &[&str])] = &[
-    ("curl", &["771,4865-4866-4867-49195", "771,4865-4866-4867-49196", "771,49195-49199"]),
-    ("python-requests", &["771,49195-49199-49196-49200", "771,49195-49196-49200-159-52393"]),
-    ("go-http-client", &["771,4865-4866-4867-49195-49199", "771,49195-49199-49196-49200-52393"]),
-    ("scrapy/twisted", &["771,4865-4866-4867-49196-49195", "771,49195-49196-49199-49200"]),
-    ("java-http", &["771,49195-49199-49196-49200-47-53", "771,49195-49199-49196"]),
-    ("ruby", &["771,49195-49199-49196-49200-158-159", "771,49195-49196-49200-159-52392"]),
+    (
+        "curl",
+        &[
+            "771,4865-4866-4867-49195",
+            "771,4865-4866-4867-49196",
+            "771,49195-49199",
+        ],
+    ),
+    (
+        "python-requests",
+        &[
+            "771,49195-49199-49196-49200",
+            "771,49195-49196-49200-159-52393",
+        ],
+    ),
+    (
+        "go-http-client",
+        &[
+            "771,4865-4866-4867-49195-49199",
+            "771,49195-49199-49196-49200-52393",
+        ],
+    ),
+    (
+        "scrapy/twisted",
+        &[
+            "771,4865-4866-4867-49196-49195",
+            "771,49195-49196-49199-49200",
+        ],
+    ),
+    (
+        "java-http",
+        &["771,49195-49199-49196-49200-47-53", "771,49195-49199-49196"],
+    ),
+    (
+        "ruby",
+        &[
+            "771,49195-49199-49196-49200-158-159",
+            "771,49195-49196-49200-159-52392",
+        ],
+    ),
 ];
 
 const KNOWN_BROWSER_JA3: &[(&str, &[&str])] = &[
-    ("Chrome", &["771,4865-4866-4867-49195-49199-52393", "771,4865-4866-4867,0-23-65281-10-11-35"]),
-    ("Firefox", &["771,4865-4867-4866-49195-49199", "771,4865-4867-4866,0-11-10-35-16-5-13"]),
-    ("Safari", &["771,4865-4866-4867-49196-49195", "771,4865-4866-4867,0-23-65281-10-11-16-5-13"]),
-    ("Edge", &["771,4865-4866-4867-49195-49199-52393", "771,4865-4866-4867,0-43-45-51-13-16-5"]),
+    (
+        "Chrome",
+        &[
+            "771,4865-4866-4867-49195-49199-52393",
+            "771,4865-4866-4867,0-23-65281-10-11-35",
+        ],
+    ),
+    (
+        "Firefox",
+        &[
+            "771,4865-4867-4866-49195-49199",
+            "771,4865-4867-4866,0-11-10-35-16-5-13",
+        ],
+    ),
+    (
+        "Safari",
+        &[
+            "771,4865-4866-4867-49196-49195",
+            "771,4865-4866-4867,0-23-65281-10-11-16-5-13",
+        ],
+    ),
+    (
+        "Edge",
+        &[
+            "771,4865-4866-4867-49195-49199-52393",
+            "771,4865-4866-4867,0-43-45-51-13-16-5",
+        ],
+    ),
 ];
 
 pub fn parse_ja3(raw: &str) -> Ja3Fingerprint {
@@ -165,8 +280,8 @@ pub fn analyze_headers(headers: &[(String, String)]) -> HeaderProfile {
     let user_agent = extract_user_agent(headers).unwrap_or_default();
     let suspicious_user_agent = is_suspicious_user_agent(&user_agent);
 
-    let known_bot_user_agent = identify_known_bot_user_agent(&user_agent)
-        .or_else(|| is_known_scanner(&user_agent));
+    let known_bot_user_agent =
+        identify_known_bot_user_agent(&user_agent).or_else(|| is_known_scanner(&user_agent));
 
     let connection_anomaly = headers.iter().any(|(name, value)| {
         if !name.eq_ignore_ascii_case("connection") {
@@ -242,7 +357,8 @@ pub fn is_credential_stuffing(paths: &[String], intervals: &[u64]) -> bool {
         return true;
     }
 
-    let fast_ratio = intervals.iter().filter(|ms| **ms <= 1500).count() as f64 / intervals.len() as f64;
+    let fast_ratio =
+        intervals.iter().filter(|ms| **ms <= 1500).count() as f64 / intervals.len() as f64;
     fast_ratio >= 0.7 || is_automated_timing(intervals)
 }
 
@@ -355,7 +471,13 @@ pub fn classify_bot_with_confidence(signals: &BotSignals) -> BotClassificationRe
         };
     }
 
-    if signals.credential_stuffing || signals.timing.as_ref().map(|t| t.automated).unwrap_or(false) {
+    if signals.credential_stuffing
+        || signals
+            .timing
+            .as_ref()
+            .map(|t| t.automated)
+            .unwrap_or(false)
+    {
         return BotClassificationResult {
             classification: BotClassification::Automated,
             confidence: score.max(0.7),
@@ -363,7 +485,8 @@ pub fn classify_bot_with_confidence(signals: &BotSignals) -> BotClassificationRe
     }
 
     if signals.header_profile.suspicious_user_agent
-        && (signals.header_profile.order_anomaly || signals.header_profile.missing_expected_headers.len() >= 2)
+        && (signals.header_profile.order_anomaly
+            || signals.header_profile.missing_expected_headers.len() >= 2)
     {
         return BotClassificationResult {
             classification: BotClassification::ScriptKiddie,
@@ -401,7 +524,13 @@ fn fnv1a_hex(s: &str) -> String {
 }
 
 fn detect_order_anomaly(seen: &std::collections::HashMap<String, usize>) -> bool {
-    let canonical = ["host", "user-agent", "accept", "accept-encoding", "accept-language"];
+    let canonical = [
+        "host",
+        "user-agent",
+        "accept",
+        "accept-encoding",
+        "accept-language",
+    ];
     let mut last_idx = None;
     let mut observed = 0usize;
 
@@ -417,7 +546,10 @@ fn detect_order_anomaly(seen: &std::collections::HashMap<String, usize>) -> bool
         }
     }
 
-    observed >= 3 && seen.len() >= 4 && !seen.contains_key("sec-fetch-site") && !seen.contains_key("sec-ch-ua")
+    observed >= 3
+        && seen.len() >= 4
+        && !seen.contains_key("sec-fetch-site")
+        && !seen.contains_key("sec-ch-ua")
 }
 
 fn extract_user_agent(headers: &[(String, String)]) -> Option<String> {
@@ -452,7 +584,9 @@ fn is_suspicious_user_agent(user_agent: &str) -> bool {
         return true;
     }
 
-    let suspicious = ["sqlmap", "nikto", "nmap", "masscan", "acunetix", "zaproxy", "burp"];
+    let suspicious = [
+        "sqlmap", "nikto", "nmap", "masscan", "acunetix", "zaproxy", "burp",
+    ];
     suspicious.iter().any(|p| lower.contains(p))
 }
 
@@ -487,7 +621,9 @@ mod tests {
     #[test]
     fn legitimate_bot_is_identified() {
         assert_eq!(
-            identify_legitimate_bot("Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"),
+            identify_legitimate_bot(
+                "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)"
+            ),
             Some("Googlebot".to_string())
         );
     }
@@ -527,11 +663,21 @@ mod tests {
 
     #[test]
     fn credential_stuffing_detected() {
-        let paths = vec!["/login", "/auth/login", "/signin", "/api/token", "/session", "/login"]
-            .into_iter()
-            .map(|s| s.to_string())
-            .collect::<Vec<_>>();
-        assert!(is_credential_stuffing(&paths, &[700, 900, 800, 850, 700, 880]));
+        let paths = vec![
+            "/login",
+            "/auth/login",
+            "/signin",
+            "/api/token",
+            "/session",
+            "/login",
+        ]
+        .into_iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+        assert!(is_credential_stuffing(
+            &paths,
+            &[700, 900, 800, 850, 700, 880]
+        ));
     }
 
     #[test]
@@ -567,7 +713,10 @@ mod tests {
             known_scanner: Some("sqlmap".into()),
             known_bot_ja3: None,
             known_browser_ja3: None,
-            timing: Some(RequestTiming { intervals_ms: vec![500, 500, 500, 500], automated: true }),
+            timing: Some(RequestTiming {
+                intervals_ms: vec![500, 500, 500, 500],
+                automated: true,
+            }),
             credential_stuffing: true,
             source_reputation: Some(0.95),
         };
@@ -616,7 +765,10 @@ mod tests {
             known_scanner: None,
             known_bot_ja3: None,
             known_browser_ja3: identify_browser_ja3(&ja3),
-            timing: Some(RequestTiming { intervals_ms: vec![950, 1500, 2100, 3000], automated: false }),
+            timing: Some(RequestTiming {
+                intervals_ms: vec![950, 1500, 2100, 3000],
+                automated: false,
+            }),
             credential_stuffing: false,
             source_reputation: None,
         };
@@ -630,7 +782,11 @@ mod tests {
         let signals = BotSignals {
             user_agent: "sqlmap".into(),
             header_profile: HeaderProfile {
-                missing_expected_headers: vec!["accept".into(), "accept-language".into(), "accept-encoding".into()],
+                missing_expected_headers: vec![
+                    "accept".into(),
+                    "accept-language".into(),
+                    "accept-encoding".into(),
+                ],
                 order_anomaly: true,
                 known_bot_user_agent: Some("sqlmap".into()),
                 suspicious_user_agent: true,
@@ -642,7 +798,10 @@ mod tests {
             known_scanner: Some("sqlmap".into()),
             known_bot_ja3: Some("python-requests".into()),
             known_browser_ja3: None,
-            timing: Some(RequestTiming { intervals_ms: vec![1, 1, 1, 1], automated: true }),
+            timing: Some(RequestTiming {
+                intervals_ms: vec![1, 1, 1, 1],
+                automated: true,
+            }),
             credential_stuffing: true,
             source_reputation: Some(1.0),
         };

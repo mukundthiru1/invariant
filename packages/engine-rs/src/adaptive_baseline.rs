@@ -248,7 +248,8 @@ impl AdaptiveBaselineEngine {
             }
 
             if baseline.timing.last_seen > 0 {
-                let interval_minutes = (now.saturating_sub(baseline.timing.last_seen) as f64) / 60_000.0;
+                let interval_minutes =
+                    (now.saturating_sub(baseline.timing.last_seen) as f64) / 60_000.0;
                 if interval_minutes > 0.0 && interval_minutes < 60.0 {
                     rate_to_update = Some(1.0 / interval_minutes);
                 }
@@ -266,13 +267,16 @@ impl AdaptiveBaselineEngine {
             }
 
             if let Some(auth) = is_authenticated {
-                let old_weight = baseline.observations as f64 / (baseline.observations as f64 + 1.0);
-                baseline.auth_ratio = baseline.auth_ratio * old_weight + if auth { 1.0 } else { 0.0 } * (1.0 - old_weight);
+                let old_weight =
+                    baseline.observations as f64 / (baseline.observations as f64 + 1.0);
+                baseline.auth_ratio = baseline.auth_ratio * old_weight
+                    + if auth { 1.0 } else { 0.0 } * (1.0 - old_weight);
             }
 
             baseline.observations += 1;
             baseline.last_seen = now;
-            baseline.baseline_confidence = (baseline.observations as f64 / MIN_OBSERVATIONS as f64).min(1.0);
+            baseline.baseline_confidence =
+                (baseline.observations as f64 / MIN_OBSERVATIONS as f64).min(1.0);
         }
 
         if let Some(rate) = rate_to_update {
@@ -282,7 +286,12 @@ impl AdaptiveBaselineEngine {
         }
     }
 
-    pub fn assess_anomaly(&self, method: &str, path: &str, surfaces: &[Surface]) -> AnomalyAssessment {
+    pub fn assess_anomaly(
+        &self,
+        method: &str,
+        path: &str,
+        surfaces: &[Surface],
+    ) -> AnomalyAssessment {
         let key = self.normalize_endpoint_key(method, path);
         let Some(baseline) = self.baselines.get(&key) else {
             return AnomalyAssessment {
@@ -340,7 +349,8 @@ impl AdaptiveBaselineEngine {
             }
 
             if surface.has_metachars && profile.normal_metachar_rate < 0.05 {
-                let denom = (profile.metachar_stats.mean + profile.metachar_stats.variance * 2.0).max(0.001);
+                let denom = (profile.metachar_stats.mean + profile.metachar_stats.variance * 2.0)
+                    .max(0.001);
                 let intensity = surface.metachar_density / denom;
                 anomalies.push(ParameterAnomaly {
                     name: surface.name.clone(),
@@ -372,7 +382,8 @@ impl AdaptiveBaselineEngine {
     }
 
     pub fn get_baseline(&self, method: &str, path: &str) -> Option<&EndpointBaseline> {
-        self.baselines.get(&self.normalize_endpoint_key(method, path))
+        self.baselines
+            .get(&self.normalize_endpoint_key(method, path))
     }
 
     pub fn endpoint_count(&self) -> usize {
@@ -541,18 +552,26 @@ fn classify_value_type(value: &str) -> ValueType {
     }
 }
 
-fn update_parameter_profile(baseline: &mut EndpointBaseline, surface: &Surface, rng_state: &mut u64) {
+fn update_parameter_profile(
+    baseline: &mut EndpointBaseline,
+    surface: &Surface,
+    rng_state: &mut u64,
+) {
     let profile_key = format!("{}:{}", surface.location.as_str(), surface.name);
     if !baseline.parameter_profiles.contains_key(&profile_key) {
         if baseline.parameter_profiles.len() >= MAX_PARAMS_PER_ENDPOINT {
             return;
         }
-        baseline
-            .parameter_profiles
-            .insert(profile_key.clone(), create_parameter_profile(&surface.name, surface.location.as_str()));
+        baseline.parameter_profiles.insert(
+            profile_key.clone(),
+            create_parameter_profile(&surface.name, surface.location.as_str()),
+        );
     }
 
-    let profile = baseline.parameter_profiles.get_mut(&profile_key).expect("profile exists");
+    let profile = baseline
+        .parameter_profiles
+        .get_mut(&profile_key)
+        .expect("profile exists");
 
     let value_type = classify_value_type(&surface.normalized);
     let type_weight = 1.0 / (profile.observations as f64 + 1.0);
@@ -573,10 +592,11 @@ fn update_parameter_profile(baseline: &mut EndpointBaseline, surface: &Surface, 
     if surface.has_metachars {
         profile.has_ever_had_metachars = true;
     }
-    profile.normal_metachar_rate =
-        profile.normal_metachar_rate * (1.0 - EMA_ALPHA) + if surface.has_metachars { 1.0 } else { 0.0 } * EMA_ALPHA;
+    profile.normal_metachar_rate = profile.normal_metachar_rate * (1.0 - EMA_ALPHA)
+        + if surface.has_metachars { 1.0 } else { 0.0 } * EMA_ALPHA;
 
-    profile.cardinality_estimate = (profile.cardinality_estimate + 1.0).min(profile.observations as f64 * 0.8);
+    profile.cardinality_estimate =
+        (profile.cardinality_estimate + 1.0).min(profile.observations as f64 * 0.8);
 
     if profile.value_sample.len() < RESERVOIR_SIZE {
         profile.value_sample.push(surface.raw.clone());
@@ -678,14 +698,25 @@ mod tests {
     fn train_baseline(engine: &mut AdaptiveBaselineEngine, n: usize) {
         for _ in 0..n {
             let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "12345")];
-            engine.record_observation("GET", "/api/users/123", &surfaces, Some(100.0), Some(300.0), Some(1024.0), Some(true));
+            engine.record_observation(
+                "GET",
+                "/api/users/123",
+                &surfaces,
+                Some(100.0),
+                Some(300.0),
+                Some(1024.0),
+                Some(true),
+            );
         }
     }
 
     #[test]
     fn normalizes_numeric_path_segments_to_id() {
         let engine = AdaptiveBaselineEngine::new();
-        assert_eq!(engine.normalize_endpoint_key("get", "/api/users/123"), "GET:/api/users/{id}");
+        assert_eq!(
+            engine.normalize_endpoint_key("get", "/api/users/123"),
+            "GET:/api/users/{id}"
+        );
     }
 
     #[test]
@@ -738,16 +769,30 @@ mod tests {
         train_baseline(&mut engine, (MIN_OBSERVATIONS * 2) as usize);
         let surfaces = vec![s(SurfaceLocation::QueryValue, "new_param", "abc")];
         let assessment = engine.assess_anomaly("GET", "/api/users/1", &surfaces);
-        assert!(assessment.parameter_anomalies.iter().any(|a| a.reason == "unknown_parameter"));
+        assert!(
+            assessment
+                .parameter_anomalies
+                .iter()
+                .any(|a| a.reason == "unknown_parameter")
+        );
     }
 
     #[test]
     fn detects_length_anomaly_with_high_sigma() {
         let mut engine = AdaptiveBaselineEngine::new();
         train_baseline(&mut engine, 80);
-        let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "1234567890123456789012345678901234567890")];
+        let surfaces = vec![s(
+            SurfaceLocation::QueryValue,
+            "id",
+            "1234567890123456789012345678901234567890",
+        )];
         let assessment = engine.assess_anomaly("GET", "/api/users/55", &surfaces);
-        assert!(assessment.parameter_anomalies.iter().any(|a| a.reason.starts_with("length_anomaly:")));
+        assert!(
+            assessment
+                .parameter_anomalies
+                .iter()
+                .any(|a| a.reason.starts_with("length_anomaly:"))
+        );
     }
 
     #[test]
@@ -757,9 +802,18 @@ mod tests {
             let surfaces = vec![s(SurfaceLocation::QueryValue, "token", "aaaaaa")];
             engine.record_observation("GET", "/api/token", &surfaces, None, None, None, None);
         }
-        let surfaces = vec![s(SurfaceLocation::QueryValue, "token", "a1b2c3d4e5f6g7h8i9j0")];
+        let surfaces = vec![s(
+            SurfaceLocation::QueryValue,
+            "token",
+            "a1b2c3d4e5f6g7h8i9j0",
+        )];
         let assessment = engine.assess_anomaly("GET", "/api/token", &surfaces);
-        assert!(assessment.parameter_anomalies.iter().any(|a| a.reason.starts_with("entropy_anomaly:")));
+        assert!(
+            assessment
+                .parameter_anomalies
+                .iter()
+                .any(|a| a.reason.starts_with("entropy_anomaly:"))
+        );
     }
 
     #[test]
@@ -771,7 +825,12 @@ mod tests {
         }
         let surfaces = vec![s(SurfaceLocation::QueryValue, "name", "alice';--")];
         let assessment = engine.assess_anomaly("GET", "/api/profile", &surfaces);
-        assert!(assessment.parameter_anomalies.iter().any(|a| a.reason.starts_with("metachar_anomaly:")));
+        assert!(
+            assessment
+                .parameter_anomalies
+                .iter()
+                .any(|a| a.reason.starts_with("metachar_anomaly:"))
+        );
     }
 
     #[test]
@@ -783,7 +842,12 @@ mod tests {
         }
         let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "foo@bar.com")];
         let assessment = engine.assess_anomaly("GET", "/api/items", &surfaces);
-        assert!(assessment.parameter_anomalies.iter().any(|a| a.reason.starts_with("type_anomaly:")));
+        assert!(
+            assessment
+                .parameter_anomalies
+                .iter()
+                .any(|a| a.reason.starts_with("type_anomaly:"))
+        );
     }
 
     #[test]
@@ -812,7 +876,15 @@ mod tests {
     fn updates_timing_and_size_stats() {
         let mut engine = AdaptiveBaselineEngine::new();
         let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "1")];
-        engine.record_observation("GET", "/api/timing", &surfaces, Some(120.0), Some(512.0), Some(2048.0), Some(true));
+        engine.record_observation(
+            "GET",
+            "/api/timing",
+            &surfaces,
+            Some(120.0),
+            Some(512.0),
+            Some(2048.0),
+            Some(true),
+        );
         let baseline = engine.get_baseline("GET", "/api/timing").unwrap();
         assert_eq!(baseline.timing.response_time_ms.count, 1);
         assert_eq!(baseline.body_size_stats.count, 1);
@@ -824,7 +896,11 @@ mod tests {
     fn overall_score_is_weighted_by_baseline_confidence() {
         let mut engine = AdaptiveBaselineEngine::new();
         train_baseline(&mut engine, MIN_OBSERVATIONS as usize);
-        let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "999999999999999999999")];
+        let surfaces = vec![s(
+            SurfaceLocation::QueryValue,
+            "id",
+            "999999999999999999999",
+        )];
         let assessment = engine.assess_anomaly("GET", "/api/users/4", &surfaces);
         assert!(assessment.overall_score > 0.0);
         assert!(assessment.overall_score <= 1.0);
@@ -835,7 +911,15 @@ mod tests {
         let mut engine = AdaptiveBaselineEngine::new();
         let surfaces = vec![s(SurfaceLocation::QueryValue, "id", "1")];
         for i in 0..(MAX_ENDPOINTS + 1) {
-            engine.record_observation("GET", &format!("/e/k{i}"), &surfaces, None, None, None, None);
+            engine.record_observation(
+                "GET",
+                &format!("/e/k{i}"),
+                &surfaces,
+                None,
+                None,
+                None,
+                None,
+            );
         }
         assert_eq!(engine.endpoint_count(), MAX_ENDPOINTS);
     }

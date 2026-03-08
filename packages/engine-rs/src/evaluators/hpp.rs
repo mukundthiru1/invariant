@@ -261,7 +261,10 @@ fn detect_boundary_manipulation(headers: &HashMap<String, String>, body: &str) -
 fn find_conflicts(entries: &[ParamEntry]) -> (usize, usize, bool, bool, bool, bool) {
     let mut by_key: HashMap<&str, Vec<&ParamEntry>> = HashMap::new();
     for entry in entries {
-        by_key.entry(entry.canonical_key.as_str()).or_default().push(entry);
+        by_key
+            .entry(entry.canonical_key.as_str())
+            .or_default()
+            .push(entry);
     }
 
     let mut duplicate_conflicts = 0usize;
@@ -370,7 +373,11 @@ pub fn evaluate_hpp(input: &str) -> Option<L2EvalResult> {
         0.90
     } else if encoded_duplicate {
         0.85
-    } else if duplicate_conflicts > 1 || array_injection || precedence_collision || boundary_manipulation {
+    } else if duplicate_conflicts > 1
+        || array_injection
+        || precedence_collision
+        || boundary_manipulation
+    {
         0.75
     } else {
         0.65
@@ -378,7 +385,10 @@ pub fn evaluate_hpp(input: &str) -> Option<L2EvalResult> {
 
     let mut patterns = Vec::new();
     if duplicate_conflicts > 0 {
-        patterns.push(format!("{} conflicting duplicate key(s)", duplicate_conflicts));
+        patterns.push(format!(
+            "{} conflicting duplicate key(s)",
+            duplicate_conflicts
+        ));
     }
     if array_injection {
         patterns.push("array-style key[] duplication".to_string());
@@ -402,7 +412,15 @@ pub fn evaluate_hpp(input: &str) -> Option<L2EvalResult> {
     let matched = entries
         .iter()
         .take(6)
-        .map(|e| format!("{}={} [{}:{}]", e.raw_key, e.value, e.source.as_str(), e.canonical_key))
+        .map(|e| {
+            format!(
+                "{}={} [{}:{}]",
+                e.raw_key,
+                e.value,
+                e.source.as_str(),
+                e.canonical_key
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ");
 
@@ -428,8 +446,12 @@ pub fn evaluate_hpp(input: &str) -> Option<L2EvalResult> {
 pub struct HppEvaluator;
 
 impl L2Evaluator for HppEvaluator {
-    fn id(&self) -> &'static str { "hpp" }
-    fn prefix(&self) -> &'static str { "L2 HPP" }
+    fn id(&self) -> &'static str {
+        "hpp"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 HPP"
+    }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
         evaluate_hpp(input).into_iter().collect()
@@ -468,10 +490,14 @@ mod tests {
 
     #[test]
     fn parse_http_sections_extracts_query_headers_and_body() {
-        let raw = "POST /a?x=1 HTTP/1.1\r\nHost: e\r\nContent-Type: application/json\r\n\r\n{\"x\":2}";
+        let raw =
+            "POST /a?x=1 HTTP/1.1\r\nHost: e\r\nContent-Type: application/json\r\n\r\n{\"x\":2}";
         let (query, headers, body) = parse_http_sections(raw);
         assert_eq!(query, "x=1");
-        assert_eq!(headers.get("content-type").map(|s| s.as_str()), Some("application/json"));
+        assert_eq!(
+            headers.get("content-type").map(|s| s.as_str()),
+            Some("application/json")
+        );
         assert_eq!(body, "{\"x\":2}");
     }
 
@@ -597,6 +623,9 @@ mod tests {
     #[test]
     fn evaluator_maps_class() {
         let eval = HppEvaluator;
-        assert_eq!(eval.map_class("http_parameter_pollution"), Some(InvariantClass::ApiMassEnum));
+        assert_eq!(
+            eval.map_class("http_parameter_pollution"),
+            Some(InvariantClass::ApiMassEnum)
+        );
     }
 }

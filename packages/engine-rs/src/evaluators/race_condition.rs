@@ -2,8 +2,8 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
-use std::sync::LazyLock;
 use regex::Regex;
+use std::sync::LazyLock;
 
 pub type L2EvalResult = L2Detection;
 
@@ -16,9 +16,8 @@ fn preview(input: &str) -> String {
 
 #[inline]
 fn collect_x_request_ids(decoded: &str) -> Vec<u64> {
-    static X_REQUEST_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?im)x-request-id\s*[:=]\s*([a-zA-Z0-9_-]+)").unwrap()
-    });
+    static X_REQUEST_ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?im)x-request-id\s*[:=]\s*([a-zA-Z0-9_-]+)").unwrap());
 
     let mut ids = Vec::new();
     for cap in X_REQUEST_ID_RE.captures_iter(decoded) {
@@ -45,7 +44,10 @@ fn has_file_system_toctou(decoded: &str) -> Option<(usize, &'static str)> {
         "file exists",
         "check exists",
     ];
-    let actions = ["open(", "read(", "write(", "rename(", "delete(", "unlink(", "fopen(", "fopen ", "chmod(", "chown("];
+    let actions = [
+        "open(", "read(", "write(", "rename(", "delete(", "unlink(", "fopen(", "fopen ", "chmod(",
+        "chown(",
+    ];
 
     let mut first_check = None;
     let mut check_pos = 0usize;
@@ -94,22 +96,19 @@ fn has_db_select_update_gap(decoded: &str) -> Option<(usize, &'static str)> {
 
 #[inline]
 fn has_upload_access_before_validation(decoded: &str) -> Option<(usize, &'static str)> {
-    static UPLOAD_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)(upload|multipart/form-data|/upload)\b").unwrap()
-    });
+    static UPLOAD_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)(upload|multipart/form-data|/upload)\b").unwrap());
     let upload_pos = UPLOAD_RE.find(decoded).map(|m| m.start())?;
 
-    static ACCESS_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(open|read|access)\b").unwrap()
-    });
+    static ACCESS_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(open|read|access)\b").unwrap());
     let access_pos = ACCESS_RE.find(decoded).map(|m| m.start())?;
     if access_pos <= upload_pos {
         return None;
     }
 
-    static VALIDATE_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)\b(validate|sanitize|scan|verify)\b").unwrap()
-    });
+    static VALIDATE_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(validate|sanitize|scan|verify)\b").unwrap());
     match VALIDATE_RE.find(decoded) {
         Some(validate_match) if validate_match.start() > access_pos => {}
         Some(_) => return None,
@@ -138,11 +137,16 @@ pub fn evaluate_race_condition(input: &str) -> Option<L2EvalResult> {
     }
 
     if lower.contains("if-match:") {
-        let lacks_lock = !lower.contains("if-unmodified-since") && !lower.contains("if-none-match")
-            && !lower.contains("etag") && !lower.contains("lock")
+        let lacks_lock = !lower.contains("if-unmodified-since")
+            && !lower.contains("if-none-match")
+            && !lower.contains("etag")
+            && !lower.contains("lock")
             && !lower.contains("for update");
         if lacks_lock {
-            signals.push(("If-Match without lock/if-unmodified guard", lower.find("if-match:").unwrap_or(0)));
+            signals.push((
+                "If-Match without lock/if-unmodified guard",
+                lower.find("if-match:").unwrap_or(0),
+            ));
         }
     }
 
@@ -161,19 +165,38 @@ pub fn evaluate_race_condition(input: &str) -> Option<L2EvalResult> {
     let has_amount = lower.contains("amount");
     let has_rate_marker = rapid_markers.iter().any(|m| lower.contains(m));
     if has_transfer_or_withdraw && has_amount && has_rate_marker {
-        signals.push(("double-spend transfer/withdraw pattern", lower.find("transfer").or_else(|| lower.find("withdraw")).unwrap_or(0)));
+        signals.push((
+            "double-spend transfer/withdraw pattern",
+            lower
+                .find("transfer")
+                .or_else(|| lower.find("withdraw"))
+                .unwrap_or(0),
+        ));
     }
 
-    let has_limit_bypass_target = lower.contains("coupon") || lower.contains("voucher") || lower.contains("discount");
+    let has_limit_bypass_target =
+        lower.contains("coupon") || lower.contains("voucher") || lower.contains("discount");
     if has_limit_bypass_target && has_rate_marker {
-        signals.push(("coupon/voucher/discount parallel abuse", lower.find("coupon").or_else(|| lower.find("voucher")).or_else(|| lower.find("discount")).unwrap_or(0)));
+        signals.push((
+            "coupon/voucher/discount parallel abuse",
+            lower
+                .find("coupon")
+                .or_else(|| lower.find("voucher"))
+                .or_else(|| lower.find("discount"))
+                .unwrap_or(0),
+        ));
     }
 
     let has_session_terms = lower.contains("session");
-    let has_login = lower.contains("login") || lower.contains("sign-in") || lower.contains("signin");
-    let has_logout = lower.contains("logout") || lower.contains("sign-out") || lower.contains("signout");
+    let has_login =
+        lower.contains("login") || lower.contains("sign-in") || lower.contains("signin");
+    let has_logout =
+        lower.contains("logout") || lower.contains("sign-out") || lower.contains("signout");
     if has_session_terms && has_login && has_logout && has_rate_marker {
-        signals.push(("session race between login/logout/session-create", lower.find("session").unwrap_or(0)));
+        signals.push((
+            "session race between login/logout/session-create",
+            lower.find("session").unwrap_or(0),
+        ));
     }
 
     if let Some((pos, detail)) = has_db_select_update_gap(&lower) {
@@ -210,7 +233,11 @@ pub fn evaluate_race_condition(input: &str) -> Option<L2EvalResult> {
     let position = signals.first().map(|(_, pos)| *pos).unwrap_or(0);
     let detail = format!(
         "Race condition indicators: {}",
-        signals.iter().map(|(label, _)| *label).collect::<Vec<_>>().join(", ")
+        signals
+            .iter()
+            .map(|(label, _)| *label)
+            .collect::<Vec<_>>()
+            .join(", ")
     );
     let evidence = vec![ProofEvidence {
         operation: EvidenceOperation::SemanticEval,
@@ -275,7 +302,10 @@ mod tests {
         let det = evaluate_race_condition(input).expect("expected race condition detection");
         assert_eq!(det.detection_type, "race_condition");
         assert_eq!(det.confidence, 0.55);
-        assert!(det.detail.contains("If-Match without lock/if-unmodified guard"));
+        assert!(
+            det.detail
+                .contains("If-Match without lock/if-unmodified guard")
+        );
     }
 
     #[test]
@@ -283,12 +313,16 @@ mod tests {
         let input = "POST /wallet/withdraw amount=500 parallel=true transfer=token";
         let det = evaluate_race_condition(input).expect("expected double-spend detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(det.detail.contains("double-spend transfer/withdraw pattern"));
+        assert!(
+            det.detail
+                .contains("double-spend transfer/withdraw pattern")
+        );
     }
 
     #[test]
     fn detects_file_system_toctou() {
-        let input = "if (stat('/tmp/session')) { open('/tmp/session'); write('/tmp/session', payload); }";
+        let input =
+            "if (stat('/tmp/session')) { open('/tmp/session'); write('/tmp/session', payload); }";
         let det = evaluate_race_condition(input).expect("expected TOCTOU detection");
         assert_eq!(det.detection_type, "race_condition_toctou");
         assert_eq!(det.confidence, 0.85);
@@ -300,7 +334,10 @@ mod tests {
         let input = "POST /checkout coupon=SPRING2026 concurrent=true\r\nX-Request-Id: 10\r\nX-Request-Id: 11\r\n";
         let det = evaluate_race_condition(input).expect("expected limit bypass race detection");
         assert_eq!(det.confidence, 0.75);
-        assert!(det.detail.contains("coupon/voucher/discount parallel abuse"));
+        assert!(
+            det.detail
+                .contains("coupon/voucher/discount parallel abuse")
+        );
     }
 
     #[test]
@@ -308,7 +345,10 @@ mod tests {
         let input = "POST /auth simultaneous=true login session-id=abc logout session-id=abc";
         let det = evaluate_race_condition(input).expect("expected session race detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(det.detail.contains("session race between login/logout/session-create"));
+        assert!(
+            det.detail
+                .contains("session race between login/logout/session-create")
+        );
     }
 
     #[test]
@@ -324,7 +364,10 @@ mod tests {
         let input = "POST /upload multipart/form-data upload=file.jpg access('/tmp/file.jpg'); scan later()";
         let det = evaluate_race_condition(input).expect("expected upload race detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(det.detail.contains("file upload accessed before validation"));
+        assert!(
+            det.detail
+                .contains("file upload accessed before validation")
+        );
     }
 
     #[test]
@@ -333,7 +376,10 @@ mod tests {
         let det = evaluate_race_condition(input).expect("expected correlated race detection");
         assert_eq!(det.confidence, 0.75);
         assert!(det.detail.contains("sequential X-Request-Id values"));
-        assert!(det.detail.contains("double-spend transfer/withdraw pattern"));
+        assert!(
+            det.detail
+                .contains("double-spend transfer/withdraw pattern")
+        );
     }
 
     #[test]
@@ -369,8 +415,14 @@ mod tests {
     #[test]
     fn evaluator_maps_to_api_mass_enum() {
         let eval = RaceConditionEvaluator;
-        assert_eq!(eval.map_class("race_condition"), Some(InvariantClass::ApiMassEnum));
-        assert_eq!(eval.map_class("race_condition_toctou"), Some(InvariantClass::ApiMassEnum));
+        assert_eq!(
+            eval.map_class("race_condition"),
+            Some(InvariantClass::ApiMassEnum)
+        );
+        assert_eq!(
+            eval.map_class("race_condition_toctou"),
+            Some(InvariantClass::ApiMassEnum)
+        );
         assert_eq!(eval.map_class("unknown_race"), None);
     }
 }

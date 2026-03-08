@@ -143,6 +143,333 @@ function isFiniteRecord(value: unknown): value is Record<string, number> {
     return Object.values(value).every(v => typeof v === 'number' && Number.isFinite(v))
 }
 
+type DefenseMode = 'monitor' | 'enforce' | 'off'
+type PathRule = { skip_classes?: string[]; mode?: DefenseMode }
+type PathRuleConfig = Record<string, PathRule>
+type IpRuleConfig = { allow?: string[]; block?: string[]; challenge?: string[] }
+type GeoRuleConfig = { allow?: string[]; block?: string[]; challenge?: string[] }
+type RateLimitConfig = { requests_per_minute: number; burst: number }
+type HeaderConfig = Record<string, string>
+
+const CONFIG_CACHE_TTL_MS = 60_000
+const KV_KEY_PATH_RULES = 'path_rules'
+const KV_KEY_IP_RULES = 'ip_rules'
+const KV_KEY_GEO_RULES = 'geo_rules'
+const KV_KEY_RATE_LIMITS = 'rate_limits'
+const KV_KEY_RESPONSE_HEADERS = 'response_headers'
+
+const DEFAULT_RATE_LIMITS: RateLimitConfig = { requests_per_minute: 100, burst: 20 }
+const DEFAULT_SECURITY_HEADERS: HeaderConfig = {
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'strict-origin-when-cross-origin',
+    'Permissions-Policy': 'geolocation=(), microphone=(), camera=()',
+    'X-DNS-Prefetch-Control': 'off',
+}
+
+const pathRulesCache: { value: PathRuleConfig; expiresAt: number } = { value: {}, expiresAt: 0 }
+const ipRulesCache: { value: IpRuleConfig; expiresAt: number } = { value: {}, expiresAt: 0 }
+const geoRulesCache: { value: GeoRuleConfig; expiresAt: number } = { value: {}, expiresAt: 0 }
+const rateLimitsCache: { value: RateLimitConfig; expiresAt: number } = { value: DEFAULT_RATE_LIMITS, expiresAt: 0 }
+const responseHeadersCache: { value: HeaderConfig; expiresAt: number } = { value: DEFAULT_SECURITY_HEADERS, expiresAt: 0 }
+const pathPatternRegexCache = new Map<string, RegExp>()
+
+async function getPathRulesConfig(env: Env): Promise<PathRuleConfig> {
+    if (Date.now() < pathRulesCache.expiresAt) return pathRulesCache.value
+    let normalized: PathRuleConfig = {}
+    try {
+        const raw = await env.SENSOR_STATE.get(KV_KEY_PATH_RULES)
+        const parsed = safeJson(raw)
+        normalized = normalizePathRules(parsed)
+    } catch {
+        normalized = {}
+    }
+    pathRulesCache.value = normalized
+    pathRulesCache.expiresAt = Date.now() + CONFIG_CACHE_TTL_MS
+    return normalized
+}
+
+async function getIpRulesConfig(env: Env): Promise<IpRuleConfig> {
+    if (Date.now() < ipRulesCache.expiresAt) return ipRulesCache.value
+    let normalized: IpRuleConfig = {}
+    try {
+        const raw = await env.SENSOR_STATE.get(KV_KEY_IP_RULES)
+        const parsed = safeJson(raw)
+        normalized = normalizeIpRules(parsed)
+    } catch {
+        normalized = {}
+    }
+    ipRulesCache.value = normalized
+    ipRulesCache.expiresAt = Date.now() + CONFIG_CACHE_TTL_MS
+    return normalized
+}
+
+async function getGeoRulesConfig(env: Env): Promise<GeoRuleConfig> {
+    if (Date.now() < geoRulesCache.expiresAt) return geoRulesCache.value
+    let normalized: GeoRuleConfig = {}
+    try {
+        const raw = await env.SENSOR_STATE.get(KV_KEY_GEO_RULES)
+        const parsed = safeJson(raw)
+        normalized = normalizeGeoRules(parsed)
+    } catch {
+        normalized = {}
+    }
+    geoRulesCache.value = normalized
+    geoRulesCache.expiresAt = Date.now() + CONFIG_CACHE_TTL_MS
+    return normalized
+}
+
+async function getRateLimitsConfig(env: Env): Promise<RateLimitConfig> {
+    if (Date.now() < rateLimitsCache.expiresAt) return rateLimitsCache.value
+    let normalized: RateLimitConfig = DEFAULT_RATE_LIMITS
+    try {
+        const raw = await env.SENSOR_STATE.get(KV_KEY_RATE_LIMITS)
+        const parsed = safeJson(raw)
+        normalized = normalizeRateLimits(parsed)
+    } catch {
+        normalized = DEFAULT_RATE_LIMITS
+    }
+    rateLimitsCache.value = normalized
+    rateLimitsCache.expiresAt = Date.now() + CONFIG_CACHE_TTL_MS
+    return normalized
+}
+
+async function getResponseHeadersConfig(env: Env): Promise<HeaderConfig> {
+    if (Date.now() < responseHeadersCache.expiresAt) return responseHeadersCache.value
+    let normalized: HeaderConfig = DEFAULT_SECURITY_HEADERS
+    try {
+        const raw = await env.SENSOR_STATE.get(KV_KEY_RESPONSE_HEADERS)
+        const parsed = safeJson(raw)
+        normalized = normalizeHeaders(parsed)
+    } catch {
+        normalized = DEFAULT_SECURITY_HEADERS
+    }
+    responseHeadersCache.value = normalized
+    responseHeadersCache.expiresAt = Date.now() + CONFIG_CACHE_TTL_MS
+    return normalized
+}
+
+function safeJson(raw: string | null): unknown {
+    if (!raw) return null
+    try {
+        return JSON.parse(raw)
+    } catch {
+        return null
+    }
+}
+
+function normalizePathRules(raw: unknown): PathRuleConfig {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const out: PathRuleConfig = {}
+    const source = raw as Record<string, unknown>
+    for (const [pattern, value] of Object.entries(source)) {
+        if (typeof pattern !== 'string' || pattern.length === 0) continue
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue
+        const rule = value as Record<string, unknown>
+        const mode = (rule.mode === 'monitor' || rule.mode === 'enforce' || rule.mode === 'off')
+            ? rule.mode
+            : undefined
+        const skipClasses = Array.isArray(rule.skip_classes)
+            ? rule.skip_classes.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+            : undefined
+        if (!mode && !skipClasses) continue
+        out[pattern] = {
+            ...(mode ? { mode } : {}),
+            ...(skipClasses ? { skip_classes: skipClasses } : {}),
+        }
+    }
+    return out
+}
+
+function normalizeIpRules(raw: unknown): IpRuleConfig {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const candidate = raw as Record<string, unknown>
+    return {
+        allow: normalizeIpList(candidate.allow),
+        block: normalizeIpList(candidate.block),
+        challenge: normalizeIpList(candidate.challenge),
+    }
+}
+
+function normalizeGeoRules(raw: unknown): GeoRuleConfig {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+    const candidate = raw as Record<string, unknown>
+    return {
+        allow: normalizeCountryCodeList(candidate.allow),
+        block: normalizeCountryCodeList(candidate.block),
+        challenge: normalizeCountryCodeList(candidate.challenge),
+    }
+}
+
+function normalizeIpList(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    return value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+}
+
+function normalizeCountryCodeList(value: unknown): string[] {
+    if (!Array.isArray(value)) return []
+    return value
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map(code => code.trim().toUpperCase())
+        .filter(code => /^[A-Z]{2}$/.test(code))
+}
+
+function normalizeRateLimits(raw: unknown): RateLimitConfig {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return DEFAULT_RATE_LIMITS
+    const candidate = raw as Record<string, unknown>
+    const requestsPerMinute = typeof candidate.requests_per_minute === 'number'
+        && Number.isFinite(candidate.requests_per_minute)
+        && candidate.requests_per_minute >= 1
+        && candidate.requests_per_minute <= 1_000_000
+        ? Math.floor(candidate.requests_per_minute)
+        : DEFAULT_RATE_LIMITS.requests_per_minute
+    const burst = typeof candidate.burst === 'number'
+        && Number.isFinite(candidate.burst)
+        && candidate.burst >= 0
+        && candidate.burst <= 1_000_000
+        ? Math.floor(candidate.burst)
+        : DEFAULT_RATE_LIMITS.burst
+    return { requests_per_minute: requestsPerMinute, burst }
+}
+
+function normalizeHeaders(raw: unknown): HeaderConfig {
+    const merged: HeaderConfig = { ...DEFAULT_SECURITY_HEADERS }
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return merged
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+        if (!isSafeHeaderName(k)) continue
+        if (typeof v !== 'string') continue
+        merged[k] = v
+    }
+    return merged
+}
+
+function isSafeHeaderName(name: string): boolean {
+    return /^[A-Za-z0-9-]+$/.test(name)
+}
+
+function applySecurityHeaders(response: Response, headers: HeaderConfig): Response {
+    const outHeaders = new Headers(response.headers)
+    for (const [name, value] of Object.entries(headers)) {
+        outHeaders.set(name, value)
+    }
+    return new Response(response.body, {
+        status: response.status,
+        statusText: response.statusText,
+        headers: outHeaders,
+    })
+}
+
+function matchPathRule(path: string, rules: PathRuleConfig): PathRule | null {
+    const candidates: Array<{ score: number; rule: PathRule }> = []
+    for (const [pattern, rule] of Object.entries(rules)) {
+        const matched = pattern.includes('*')
+            ? globMatch(path, pattern)
+            : path === pattern
+        if (!matched) continue
+        const score = pattern.replace(/\*/g, '').length
+        candidates.push({ score, rule })
+    }
+    if (candidates.length === 0) return null
+    candidates.sort((a, b) => b.score - a.score)
+    return candidates[0].rule
+}
+
+function globMatch(path: string, pattern: string): boolean {
+    let regex = pathPatternRegexCache.get(pattern)
+    if (!regex) {
+        const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+        regex = new RegExp(`^${escaped}$`)
+        pathPatternRegexCache.set(pattern, regex)
+    }
+    return regex.test(path)
+}
+
+function shouldSkipClass(skipClasses: Set<string>, ...candidates: Array<string | null | undefined>): boolean {
+    for (const value of candidates) {
+        if (!value) continue
+        if (skipClasses.has(value.toLowerCase())) return true
+    }
+    return false
+}
+
+type PolicyDecision = 'allow' | 'block' | 'challenge' | 'none'
+
+function resolveIpRule(ip: string, rules: IpRuleConfig): PolicyDecision {
+    if (matchesAnyIpRule(ip, rules.allow ?? [])) return 'allow'
+    if (matchesAnyIpRule(ip, rules.block ?? [])) return 'block'
+    if (matchesAnyIpRule(ip, rules.challenge ?? [])) return 'challenge'
+    return 'none'
+}
+
+function matchesAnyIpRule(ip: string, rules: string[]): boolean {
+    for (const rule of rules) {
+        if (matchesIpRule(ip, rule)) return true
+    }
+    return false
+}
+
+function matchesIpRule(ip: string, rule: string): boolean {
+    if (rule.includes('/')) return isIpInCidr(ip, rule)
+    return ip === rule
+}
+
+function isIpInCidr(ip: string, cidr: string): boolean {
+    const [baseIp, prefixRaw] = cidr.split('/')
+    if (!baseIp || !prefixRaw) return false
+    const prefix = Number.parseInt(prefixRaw, 10)
+    const ipNum = ipv4ToInt(ip)
+    const baseNum = ipv4ToInt(baseIp)
+    if (ipNum === null || baseNum === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false
+    const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+    return (ipNum & mask) === (baseNum & mask)
+}
+
+function ipv4ToInt(ip: string): number | null {
+    const parts = ip.split('.')
+    if (parts.length !== 4) return null
+    let result = 0
+    for (const part of parts) {
+        if (!/^\d{1,3}$/.test(part)) return null
+        const octet = Number.parseInt(part, 10)
+        if (octet < 0 || octet > 255) return null
+        result = (result << 8) | octet
+    }
+    return result >>> 0
+}
+
+function resolveGeoRule(country: string | null, rules: GeoRuleConfig): PolicyDecision {
+    if (!country) return 'none'
+    const normalizedCountry = country.trim().toUpperCase()
+    if (!/^[A-Z]{2}$/.test(normalizedCountry)) return 'none'
+    if ((rules.allow ?? []).includes(normalizedCountry)) return 'allow'
+    if ((rules.block ?? []).includes(normalizedCountry)) return 'block'
+    if ((rules.challenge ?? []).includes(normalizedCountry)) return 'challenge'
+    return 'none'
+}
+
+async function checkRateLimit(env: Env, ip: string, config: RateLimitConfig): Promise<{
+    exceeded: boolean
+    count: number
+    limit: number
+    retryAfterSeconds: number
+}> {
+    const now = Date.now()
+    const currentMinute = Math.floor(now / 60_000)
+    const counterKey = `rate_limit:${ip}:${currentMinute}`
+    const existingRaw = await env.SENSOR_STATE.get(counterKey)
+    const existing = existingRaw ? Number.parseInt(existingRaw, 10) : 0
+    const count = Number.isFinite(existing) && existing > 0 ? existing + 1 : 1
+    await env.SENSOR_STATE.put(counterKey, String(count), { expirationTtl: 130 })
+    const limit = config.requests_per_minute + config.burst
+    const retryAfterSeconds = 60 - (Math.floor(now / 1000) % 60)
+    return {
+        exceeded: count > limit,
+        count,
+        limit,
+        retryAfterSeconds,
+    }
+}
+
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
         // Initialize on first request
@@ -177,11 +504,24 @@ export default {
         }
 
         const remoteConfig = stateManager ? await stateManager.getRemoteConfig() : null
-        const mode = remoteConfig?.mode ?? stateManager?.config.defenseMode ?? env.DEFENSE_MODE ?? 'monitor'
+        const baseMode = remoteConfig?.mode ?? stateManager?.config.defenseMode ?? env.DEFENSE_MODE ?? 'monitor'
 
         const url = new URL(request.url)
         const path = url.pathname
         const query = url.search
+        const sourceIpForPolicy = request.headers.get('cf-connecting-ip') ?? '0.0.0.0'
+
+        const [pathRulesConfig, ipRulesConfig, geoRulesConfig, rateLimitsConfig, responseHeadersConfig] = await Promise.all([
+            getPathRulesConfig(env),
+            getIpRulesConfig(env),
+            getGeoRulesConfig(env),
+            getRateLimitsConfig(env),
+            getResponseHeadersConfig(env),
+        ])
+        const withHeaders = (response: Response): Response => applySecurityHeaders(response, responseHeadersConfig)
+        const matchedPathRule = matchPathRule(path, pathRulesConfig)
+        const skipClasses = new Set((matchedPathRule?.skip_classes ?? []).map(c => c.toLowerCase()))
+        const mode = matchedPathRule?.mode ?? baseMode
 
         // ── Introspection endpoints ──────────────────────────────
         // Require INTROSPECTION_KEY when configured (defense against WAF fingerprinting)
@@ -201,16 +541,16 @@ export default {
                     && keyFromHeader.length === env.INTROSPECTION_KEY.length
                     && await timingSafeEqual(keyFromHeader, env.INTROSPECTION_KEY)
                 if (!keyValid) {
-                    return new Response(JSON.stringify({ error: 'unauthorized' }), {
+                    return withHeaders(new Response(JSON.stringify({ error: 'unauthorized' }), {
                         status: 401,
                         headers: { 'Content-Type': 'application/json' },
-                    })
+                    }))
                 }
             }
         }
 
         if (path === '/__invariant/health') {
-            return new Response(JSON.stringify({
+            return withHeaders(new Response(JSON.stringify({
                 status: 'operational',
                 version: '8.0.0',
                 mode,
@@ -220,19 +560,19 @@ export default {
                 timestamp: new Date().toISOString(),
             }), {
                 headers: { 'Content-Type': 'application/json' },
-            })
+            }))
         }
 
         if (path === '/__invariant/posture') {
             const report = responseAuditor.generateReport(url.hostname)
-            return new Response(JSON.stringify(report), {
+            return withHeaders(new Response(JSON.stringify(report), {
                 headers: { 'Content-Type': 'application/json' },
-            })
+            }))
         }
 
         if (path === '/__invariant/config') {
             if (request.method === 'GET') {
-                return new Response(JSON.stringify({
+                return withHeaders(new Response(JSON.stringify({
                     mode: mode,
                     thresholds: remoteConfig?.thresholds ?? null,
                     source: remoteConfig
@@ -242,21 +582,21 @@ export default {
                             : 'default',
                 }), {
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             if (request.method !== 'POST') {
-                return new Response(JSON.stringify({ error: 'method not allowed' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'method not allowed' }), {
                     status: 405,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             if (!stateManager) {
-                return new Response(JSON.stringify({ error: 'state storage unavailable' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'state storage unavailable' }), {
                     status: 503,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             let rawBody: unknown
@@ -264,17 +604,17 @@ export default {
                 const text = await request.text()
                 rawBody = text.trim().length > 0 ? JSON.parse(text) : {}
             } catch {
-                return new Response(JSON.stringify({ error: 'invalid json body' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'invalid json body' }), {
                     status: 400,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             if (!rawBody || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
-                return new Response(JSON.stringify({ error: 'invalid config payload' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'invalid config payload' }), {
                     status: 400,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             const body = rawBody as Record<string, unknown>
@@ -282,26 +622,26 @@ export default {
             const candidateThresholds = body.thresholds
 
             if (candidateMode !== undefined && candidateMode !== 'monitor' && candidateMode !== 'enforce' && candidateMode !== 'off') {
-                return new Response(JSON.stringify({ error: 'invalid mode' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'invalid mode' }), {
                     status: 400,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             if (candidateThresholds !== undefined) {
                 if (!isFiniteRecord(candidateThresholds)) {
-                    return new Response(JSON.stringify({ error: 'invalid thresholds payload' }), {
+                    return withHeaders(new Response(JSON.stringify({ error: 'invalid thresholds payload' }), {
                         status: 400,
                         headers: { 'Content-Type': 'application/json' },
-                    })
+                    }))
                 }
             }
 
             if (candidateMode === undefined && candidateThresholds === undefined) {
-                return new Response(JSON.stringify({ error: 'mode or thresholds required' }), {
+                return withHeaders(new Response(JSON.stringify({ error: 'mode or thresholds required' }), {
                     status: 400,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
             const newConfig: { mode?: 'monitor' | 'enforce' | 'off'; thresholds?: Record<string, number> } = {}
@@ -311,30 +651,92 @@ export default {
             try {
                 await stateManager.setRemoteConfig(newConfig)
             } catch (error) {
-                return new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'failed to store config' }), {
+                return withHeaders(new Response(JSON.stringify({ error: error instanceof Error ? error.message : 'failed to store config' }), {
                     status: 500,
                     headers: { 'Content-Type': 'application/json' },
-                })
+                }))
             }
 
-            return new Response(JSON.stringify({
+            return withHeaders(new Response(JSON.stringify({
                 mode: newConfig.mode,
                 thresholds: newConfig.thresholds,
                 source: 'remote',
             }), {
                 headers: { 'Content-Type': 'application/json' },
-            })
+            }))
         }
 
-        if (mode === 'off') return fetch(request)
+        const ipRuleDecision = resolveIpRule(sourceIpForPolicy, ipRulesConfig)
+        if (ipRuleDecision === 'allow') return withHeaders(await fetch(request))
+        if (ipRuleDecision === 'block') {
+            return withHeaders(new Response(JSON.stringify({
+                error: 'Request blocked by IP policy',
+                code: 'INVARIANT_IP_BLOCK',
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+            }))
+        }
+        if (ipRuleDecision === 'challenge') {
+            return withHeaders(new Response(JSON.stringify({
+                error: 'Request challenged by IP policy',
+                code: 'INVARIANT_IP_CHALLENGE',
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+            }))
+        }
+
+        const geoRuleDecision = resolveGeoRule(request.headers.get('cf-ipcountry'), geoRulesConfig)
+        if (geoRuleDecision === 'block') {
+            return withHeaders(new Response(JSON.stringify({
+                error: 'Request blocked by geo policy',
+                code: 'INVARIANT_GEO_BLOCK',
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+            }))
+        }
+        if (geoRuleDecision === 'challenge') {
+            return withHeaders(new Response(JSON.stringify({
+                error: 'Request challenged by geo policy',
+                code: 'INVARIANT_GEO_CHALLENGE',
+            }), {
+                status: 403,
+                headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' },
+            }))
+        }
+
+        try {
+            const rateLimitResult = await checkRateLimit(env, sourceIpForPolicy, rateLimitsConfig)
+            if (rateLimitResult.exceeded) {
+                return withHeaders(new Response(JSON.stringify({
+                    error: 'Rate limit exceeded',
+                    code: 'INVARIANT_RATE_LIMIT',
+                    limit: rateLimitResult.limit,
+                    requests: rateLimitResult.count,
+                }), {
+                    status: 429,
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-store',
+                        'Retry-After': String(rateLimitResult.retryAfterSeconds),
+                    },
+                }))
+            }
+        } catch {
+            // Rate limiting is fail-open on KV transient errors.
+        }
+
+        if (mode === 'off') return withHeaders(await fetch(request))
 
         // WebSocket upgrade interception — validate handshake before proxy.
         const wsUpgrade = analyzeWebSocketUpgrade(request, env)
         if (wsUpgrade.isWebSocketUpgrade) {
             if (wsUpgrade.shouldBlock) {
-                return blockResponse('high')
+                return withHeaders(blockResponse('high'))
             }
-            return fetch(request)
+            return withHeaders(await fetch(request))
         }
 
         // Skip static assets — comprehensive list of non-executable formats
@@ -343,7 +745,7 @@ export default {
         const isStaticAsset = /\.(?:css|js|mjs|png|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|map|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|br|wasm)$/i.test(path)
         const hasTraversal = /(?:\.\.|%2e%2e|%252e)/i.test(path)
         if (isStaticAsset && !hasTraversal) {
-            return fetch(request)
+            return withHeaders(await fetch(request))
         }
 
         // ══════════════════════════════════════════════════════════
@@ -473,6 +875,27 @@ export default {
             } catch {
                 // L2 failure must never break the main pipeline
             }
+        }
+
+        // Path-scoped exclusion rules are applied before threat scoring/decision.
+        if (skipClasses.size > 0) {
+            const filteredSignatures = signatureMatches.filter(sig =>
+                !shouldSkipClass(skipClasses, sig.subtype, sig.type),
+            )
+            signatureMatches.length = 0
+            signatureMatches.push(...filteredSignatures)
+
+            const filteredDynamicMatches = dynamicMatches.filter(dm =>
+                !shouldSkipClass(skipClasses, dm.signalSubtype, dm.signalType),
+            )
+            dynamicMatches.length = 0
+            dynamicMatches.push(...filteredDynamicMatches)
+
+            const filteredInvariants = invariantMatches.filter(inv =>
+                !shouldSkipClass(skipClasses, inv.class, inv.category),
+            )
+            invariantMatches.length = 0
+            invariantMatches.push(...filteredInvariants)
         }
 
         // L5 novelty detection
@@ -785,7 +1208,7 @@ export default {
             // blocked responses indistinguishable from fast origin responses.
             const jitterMs = 5 + Math.floor(Math.random() * 45)
             await new Promise(r => setTimeout(r, jitterMs))
-            return blockResponse(severity)
+            return withHeaders(blockResponse(severity))
         }
 
         // ── Origin Fetch ─────────────────────────────────────────
@@ -833,7 +1256,7 @@ export default {
             ctx.waitUntil(stateManager.persist())
         }
 
-        return modifiedResponse
+        return withHeaders(modifiedResponse)
     },
 
     async scheduled(event: ScheduledEvent, env: Env, ctx: ExecutionContext): Promise<void> {

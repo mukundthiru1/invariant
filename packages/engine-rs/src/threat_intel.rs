@@ -296,14 +296,22 @@ impl ThreatIntelFeed {
         let key = normalize_token(fingerprint);
 
         if let Some(actor_id) = self.campaign_actor_map.get(&key) {
-            return self.threat_actors.iter().find(|a| a.id == *actor_id).cloned();
+            return self
+                .threat_actors
+                .iter()
+                .find(|a| a.id == *actor_id)
+                .cloned();
         }
 
         for actor in &self.threat_actors {
             if normalize_token(&actor.id) == key || normalize_token(&actor.name) == key {
                 return Some(actor.clone());
             }
-            if actor.aliases.iter().any(|alias| normalize_token(alias) == key) {
+            if actor
+                .aliases
+                .iter()
+                .any(|alias| normalize_token(alias) == key)
+            {
                 return Some(actor.clone());
             }
         }
@@ -393,15 +401,17 @@ impl ThreatIntelFeed {
 
         for (idx, indicator) in self.indicators.iter().enumerate() {
             let expressions = match indicator.pattern_type.as_str() {
-                "yara" => {
-                    indicator
-                        .yara_rule
-                        .as_ref()
-                        .and_then(|rule| (!rule.trim().is_empty()).then_some(Vec::new()))
-                }
+                "yara" => indicator
+                    .yara_rule
+                    .as_ref()
+                    .and_then(|rule| (!rule.trim().is_empty()).then_some(Vec::new())),
                 _ => {
                     let parsed = parse_stix_pattern_subset(&indicator.pattern);
-                    if parsed.is_empty() { None } else { Some(parsed) }
+                    if parsed.is_empty() {
+                        None
+                    } else {
+                        Some(parsed)
+                    }
                 }
             };
 
@@ -509,9 +519,18 @@ fn parse_indicator(obj: &Value) -> Option<StixIndicator> {
         pattern,
         pattern_type,
         yara_rule,
-        confidence: obj.get("confidence").and_then(Value::as_u64).map(|v| v.min(100) as u8),
-        valid_from: obj.get("valid_from").and_then(Value::as_str).map(str::to_string),
-        valid_until: obj.get("valid_until").and_then(Value::as_str).map(str::to_string),
+        confidence: obj
+            .get("confidence")
+            .and_then(Value::as_u64)
+            .map(|v| v.min(100) as u8),
+        valid_from: obj
+            .get("valid_from")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        valid_until: obj
+            .get("valid_until")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         kill_chain_phases: extract_kill_chain_phases(obj),
         labels: extract_string_array(obj.get("labels")),
     })
@@ -532,8 +551,14 @@ fn parse_threat_actor(obj: &Value) -> Option<StixThreatActor> {
         id: id.to_string(),
         name,
         aliases: extract_string_array(obj.get("aliases")),
-        sophistication: obj.get("sophistication").and_then(Value::as_str).map(str::to_string),
-        resource_level: obj.get("resource_level").and_then(Value::as_str).map(str::to_string),
+        sophistication: obj
+            .get("sophistication")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        resource_level: obj
+            .get("resource_level")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         primary_motivation: obj
             .get("primary_motivation")
             .and_then(Value::as_str)
@@ -547,11 +572,7 @@ fn parse_attack_pattern(obj: &Value) -> Option<StixAttackPattern> {
         return None;
     }
 
-    let name = obj
-        .get("name")
-        .and_then(Value::as_str)?
-        .trim()
-        .to_string();
+    let name = obj.get("name").and_then(Value::as_str)?.trim().to_string();
     if name.is_empty() {
         return None;
     }
@@ -621,7 +642,10 @@ fn extract_kill_chain_phases(obj: &Value) -> Vec<String> {
 }
 
 fn parse_stix_pattern_subset(pattern: &str) -> Vec<PatternExpr> {
-    if pattern.len() > 4096 || pattern.contains('\0') || pattern.contains('\n') || pattern.contains('\r')
+    if pattern.len() > 4096
+        || pattern.contains('\0')
+        || pattern.contains('\n')
+        || pattern.contains('\r')
     {
         return Vec::new();
     }
@@ -665,16 +689,21 @@ fn parse_clause(clause: &str) -> Option<PatternExpr> {
         }
         let field = classify_pattern_field(field_raw);
         let compiled = match field {
-            PatternField::Md5 | PatternField::Sha1 | PatternField::Sha256 | PatternField::CertSha256 | PatternField::Ja3 | PatternField::Ja3s | PatternField::Asn | PatternField::WalletAddress => {
-                Regex::new(&format!("(?i:{pattern})")).ok()?
-            }
+            PatternField::Md5
+            | PatternField::Sha1
+            | PatternField::Sha256
+            | PatternField::CertSha256
+            | PatternField::Ja3
+            | PatternField::Ja3s
+            | PatternField::Asn
+            | PatternField::WalletAddress => Regex::new(&format!("(?i:{pattern})")).ok()?,
             _ => Regex::new(pattern).ok()?,
         };
         return Some(PatternExpr::Matches(field, compiled));
     }
 
-    let eq_matcher = Regex::new(r"(?i)^([a-z0-9_:\.\-']+)\s*=\s*'([^']+)'$")
-        .expect("valid stix = regex parser");
+    let eq_matcher =
+        Regex::new(r"(?i)^([a-z0-9_:\.\-']+)\s*=\s*'([^']+)'$").expect("valid stix = regex parser");
     if let Some(caps) = eq_matcher.captures(clause) {
         let field_raw = caps.get(1)?.as_str();
         let value = caps.get(2)?.as_str().to_string();
@@ -688,13 +717,20 @@ fn parse_clause(clause: &str) -> Option<PatternExpr> {
 fn classify_pattern_field(field: &str) -> PatternField {
     let f = field.to_ascii_lowercase();
 
-    if f.contains("ipv4-addr") || f.contains("ipv6-addr") || f.contains("src_ref.value") || f.contains("dst_ref.value") {
+    if f.contains("ipv4-addr")
+        || f.contains("ipv6-addr")
+        || f.contains("src_ref.value")
+        || f.contains("dst_ref.value")
+    {
         return PatternField::Ip;
     }
     if f.contains("wallet") || f.contains("btc") || f.contains("bitcoin") {
         return PatternField::WalletAddress;
     }
-    if f.contains("asn") || f.contains("autonomous-system-number") || f.contains("autonomous_system_number") {
+    if f.contains("asn")
+        || f.contains("autonomous-system-number")
+        || f.contains("autonomous_system_number")
+    {
         return PatternField::Asn;
     }
     if f.contains("ja3s") {
@@ -731,41 +767,39 @@ fn classify_pattern_field(field: &str) -> PatternField {
 fn expr_matches_input(expr: &PatternExpr, artifacts: &InputArtifacts) -> bool {
     match expr {
         PatternExpr::Eq(field, value) => matches_eq(*field, value, artifacts),
-        PatternExpr::Matches(field, regex) => {
-            match *field {
-        PatternField::Md5 | PatternField::Sha1 | PatternField::Sha256 | PatternField::CertSha256 => {
-                    artifacts.hashes.all.iter().any(|h| regex.is_match(h))
-                }
-                PatternField::WalletAddress => artifacts
-                    .wallet_addresses
+        PatternExpr::Matches(field, regex) => match *field {
+            PatternField::Md5
+            | PatternField::Sha1
+            | PatternField::Sha256
+            | PatternField::CertSha256 => artifacts.hashes.all.iter().any(|h| regex.is_match(h)),
+            PatternField::WalletAddress => artifacts
+                .wallet_addresses
+                .iter()
+                .any(|wallet| regex.is_match(wallet)),
+            PatternField::Ja3 => artifacts.ja3.iter().any(|ja3| regex.is_match(ja3)),
+            PatternField::Ja3s => artifacts.ja3s.iter().any(|ja3s| regex.is_match(ja3s)),
+            PatternField::Asn => artifacts.asns.iter().any(|asn| regex.is_match(asn)),
+            PatternField::Ip => {
+                artifacts
+                    .ips
                     .iter()
-                    .any(|wallet| regex.is_match(wallet)),
-                PatternField::Ja3 => {
-                    artifacts.ja3.iter().any(|ja3| regex.is_match(ja3))
-                }
-                PatternField::Ja3s => {
-                    artifacts.ja3s.iter().any(|ja3s| regex.is_match(ja3s))
-                }
-                PatternField::Asn => artifacts.asns.iter().any(|asn| regex.is_match(asn)),
-                PatternField::Ip => {
-                    artifacts.ips.iter().any(|ip| regex.is_match(&ip.to_string()))
-                        || regex.is_match(&artifacts.lower_input)
-                }
-                PatternField::Domain => {
-                    artifacts.domains.iter().any(|d| regex.is_match(d))
-                        || regex.is_match(&artifacts.lower_input)
-                }
-                PatternField::Url => {
-                    artifacts.urls.iter().any(|u| regex.is_match(u))
-                        || regex.is_match(&artifacts.lower_input)
-                }
-                PatternField::Email => {
-                    artifacts.emails.iter().any(|e| regex.is_match(e))
-                        || regex.is_match(&artifacts.lower_input)
-                }
-                PatternField::Generic => regex.is_match(&artifacts.lower_input),
+                    .any(|ip| regex.is_match(&ip.to_string()))
+                    || regex.is_match(&artifacts.lower_input)
             }
-        }
+            PatternField::Domain => {
+                artifacts.domains.iter().any(|d| regex.is_match(d))
+                    || regex.is_match(&artifacts.lower_input)
+            }
+            PatternField::Url => {
+                artifacts.urls.iter().any(|u| regex.is_match(u))
+                    || regex.is_match(&artifacts.lower_input)
+            }
+            PatternField::Email => {
+                artifacts.emails.iter().any(|e| regex.is_match(e))
+                    || regex.is_match(&artifacts.lower_input)
+            }
+            PatternField::Generic => regex.is_match(&artifacts.lower_input),
+        },
     }
 }
 
@@ -779,18 +813,19 @@ fn matches_eq(field: PatternField, value: &str, artifacts: &InputArtifacts) -> b
         PatternField::Ja3 => artifacts.ja3.contains(&needle),
         PatternField::Ja3s => artifacts.ja3s.contains(&needle),
         PatternField::Asn => artifacts.asns.contains(&normalize_asn_value(&needle)),
-        PatternField::WalletAddress => {
-            artifacts
-                .wallet_addresses
-                .iter()
-                .any(|wallet| normalize_wallet_address(wallet) == normalize_wallet_address(&needle))
-        }
+        PatternField::WalletAddress => artifacts
+            .wallet_addresses
+            .iter()
+            .any(|wallet| normalize_wallet_address(wallet) == normalize_wallet_address(&needle)),
         PatternField::Ip => {
             if let Some(cidr) = parse_cidr(&needle) {
                 artifacts.ips.iter().any(|ip| ip_in_cidr(*ip, &cidr))
                     || artifacts.lower_input.contains(&needle)
             } else {
-                needle.parse::<IpAddr>().ok().is_some_and(|ip| artifacts.ips.contains(&ip))
+                needle
+                    .parse::<IpAddr>()
+                    .ok()
+                    .is_some_and(|ip| artifacts.ips.contains(&ip))
                     || artifacts.lower_input.contains(&needle)
             }
         }
@@ -830,10 +865,24 @@ fn is_valid_stix_bundle_root(root: &Value) -> bool {
 
 fn is_valid_indicator_object(obj: &Value) -> bool {
     let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
-    let created = obj.get("created").and_then(Value::as_str).unwrap_or_default();
-    let modified = obj.get("modified").and_then(Value::as_str).unwrap_or_default();
-    let name = obj.get("name").and_then(Value::as_str).unwrap_or_default().trim();
-    let pattern = obj.get("pattern").and_then(Value::as_str).unwrap_or_default().trim();
+    let created = obj
+        .get("created")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let modified = obj
+        .get("modified")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
+    let pattern = obj
+        .get("pattern")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
 
     if !is_valid_stix_id(id, "indicator")
         || !is_non_empty_string(name)
@@ -865,9 +914,19 @@ fn is_valid_indicator_object(obj: &Value) -> bool {
 
 fn is_valid_threat_actor_object(obj: &Value) -> bool {
     let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
-    let created = obj.get("created").and_then(Value::as_str).unwrap_or_default();
-    let modified = obj.get("modified").and_then(Value::as_str).unwrap_or_default();
-    let name = obj.get("name").and_then(Value::as_str).unwrap_or_default().trim();
+    let created = obj
+        .get("created")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let modified = obj
+        .get("modified")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
 
     is_valid_stix_id(id, "threat-actor")
         && is_non_empty_string(name)
@@ -879,9 +938,19 @@ fn is_valid_threat_actor_object(obj: &Value) -> bool {
 
 fn is_valid_attack_pattern_object(obj: &Value) -> bool {
     let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
-    let created = obj.get("created").and_then(Value::as_str).unwrap_or_default();
-    let modified = obj.get("modified").and_then(Value::as_str).unwrap_or_default();
-    let name = obj.get("name").and_then(Value::as_str).unwrap_or_default().trim();
+    let created = obj
+        .get("created")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let modified = obj
+        .get("modified")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
 
     is_valid_stix_id(id, "attack-pattern")
         && is_non_empty_string(name)
@@ -893,9 +962,19 @@ fn is_valid_attack_pattern_object(obj: &Value) -> bool {
 
 fn is_valid_relationship_object(obj: &Value) -> bool {
     let id = obj.get("id").and_then(Value::as_str).unwrap_or_default();
-    let created = obj.get("created").and_then(Value::as_str).unwrap_or_default();
-    let modified = obj.get("modified").and_then(Value::as_str).unwrap_or_default();
-    let relation_type = obj.get("relationship_type").and_then(Value::as_str).unwrap_or_default().trim();
+    let created = obj
+        .get("created")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let modified = obj
+        .get("modified")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let relation_type = obj
+        .get("relationship_type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .trim();
 
     if !is_valid_stix_id(id, "relationship") {
         return false;
@@ -913,13 +992,19 @@ fn is_valid_relationship_object(obj: &Value) -> bool {
     let target_ref = obj.get("target_ref").and_then(Value::as_str);
 
     let source_ref = match source_ref {
-        Some(source_ref) if is_valid_stix_reference(source_ref) || is_valid_relationship_reference(source_ref) => source_ref,
+        Some(source_ref)
+            if is_valid_stix_reference(source_ref)
+                || is_valid_relationship_reference(source_ref) =>
+        {
+            source_ref
+        }
         _ => return false,
     };
 
     let target_ref = match target_ref {
         Some(target_ref)
-            if is_valid_stix_reference(target_ref) || is_valid_relationship_reference(target_ref) =>
+            if is_valid_stix_reference(target_ref)
+                || is_valid_relationship_reference(target_ref) =>
         {
             target_ref
         }
@@ -1020,7 +1105,8 @@ struct HashSets {
 
 fn extract_hashes(input: &str) -> HashSets {
     let mut sets = HashSets::default();
-    let hex = Regex::new(r"(?i)\b[a-f0-9]{32}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b").expect("valid hash extractor regex");
+    let hex = Regex::new(r"(?i)\b[a-f0-9]{32}\b|\b[a-f0-9]{40}\b|\b[a-f0-9]{64}\b")
+        .expect("valid hash extractor regex");
 
     for m in hex.find_iter(input) {
         let hash = m.as_str().to_ascii_lowercase();
@@ -1112,8 +1198,8 @@ fn extract_ips(input: &str) -> HashSet<IpAddr> {
 }
 
 fn extract_domains(input: &str) -> HashSet<String> {
-    let domain =
-        Regex::new(r"(?i)\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b").expect("valid domain regex");
+    let domain = Regex::new(r"(?i)\b(?:[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}\b")
+        .expect("valid domain regex");
     domain
         .find_iter(input)
         .map(|m| m.as_str().to_ascii_lowercase())
@@ -1121,10 +1207,8 @@ fn extract_domains(input: &str) -> HashSet<String> {
 }
 
 fn extract_emails(input: &str) -> HashSet<String> {
-    let email = Regex::new(
-        r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,63}\b",
-    )
-    .expect("valid email regex");
+    let email = Regex::new(r"(?i)\b[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,63}\b")
+        .expect("valid email regex");
     email
         .find_iter(input)
         .map(|m| m.as_str().to_ascii_lowercase())
@@ -1180,7 +1264,8 @@ fn extract_ja3s_hashes(input: &str) -> HashSet<String> {
 fn extract_wallet_addresses(input: &str) -> HashSet<String> {
     let mut out = HashSet::new();
     let bech32 = Regex::new(r"(?i)\bbc1[a-z0-9]{39,59}\b").expect("valid bech32 wallet regex");
-    let legacy = Regex::new(r"\b[13][1-9A-HJ-NP-Za-km-z]{25,34}\b").expect("valid base58 wallet regex");
+    let legacy =
+        Regex::new(r"\b[13][1-9A-HJ-NP-Za-km-z]{25,34}\b").expect("valid base58 wallet regex");
 
     for m in bech32.find_iter(input) {
         out.insert(m.as_str().to_ascii_lowercase());
@@ -1321,7 +1406,8 @@ fn percent_decode(input: &str) -> String {
         idx += 1;
     }
 
-    String::from_utf8(out.into_iter().map(|c| c as u8).collect()).unwrap_or_else(|_| input.to_string())
+    String::from_utf8(out.into_iter().map(|c| c as u8).collect())
+        .unwrap_or_else(|_| input.to_string())
 }
 
 fn hex_value(byte: u8) -> Option<u8> {
@@ -1432,7 +1518,8 @@ fn parse_rfc3339_to_unix(value: &str) -> Option<i64> {
     };
 
     let days = days_from_civil(year, month, day);
-    let seconds = days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second);
+    let seconds =
+        days * 86_400 + i64::from(hour) * 3600 + i64::from(minute) * 60 + i64::from(second);
     let adjusted = seconds - i64::from(offset_seconds);
 
     if tz_or_z.is_empty() {
@@ -1544,7 +1631,13 @@ fn to_snake_case(input: &str) -> String {
 fn normalize_token(value: &str) -> String {
     value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim_matches('_')
         .to_string()
@@ -1677,7 +1770,10 @@ mod tests {
     fn parses_attack_pattern_external_refs() {
         let feed = feed();
         assert_eq!(feed.attack_patterns[0].external_references, vec!["T1190"]);
-        assert_eq!(feed.attack_patterns[0].kill_chain_phases, vec!["exploitation"]);
+        assert_eq!(
+            feed.attack_patterns[0].kill_chain_phases,
+            vec!["exploitation"]
+        );
     }
 
     #[test]
@@ -1688,7 +1784,10 @@ mod tests {
             "POST /login host EVIL-DB.EXAMPLE payload",
         );
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "indicator--11111111-1111-4111-8111-111111111111");
+        assert_eq!(
+            hits[0].id,
+            "indicator--11111111-1111-4111-8111-111111111111"
+        );
     }
 
     #[test]
@@ -1698,7 +1797,10 @@ mod tests {
             InvariantClass::SqlStringTermination,
             "GET https://cdn.evil-db.example/dropper",
         );
-        assert!(hits.iter().any(|h| h.id == "indicator--22222222-1111-4111-8111-111111111111"));
+        assert!(
+            hits.iter()
+                .any(|h| h.id == "indicator--22222222-1111-4111-8111-111111111111")
+        );
     }
 
     #[test]
@@ -1709,7 +1811,10 @@ mod tests {
             "hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         );
         assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].id, "indicator--33333333-1111-4111-8111-111111111111");
+        assert_eq!(
+            hits[0].id,
+            "indicator--33333333-1111-4111-8111-111111111111"
+        );
     }
 
     #[test]
@@ -1725,15 +1830,22 @@ mod tests {
     #[test]
     fn campaign_actor_lookup_by_relationship() {
         let feed = feed();
-        let actor = feed.get_threat_actor_for_campaign("fp-abc").expect("actor should resolve");
+        let actor = feed
+            .get_threat_actor_for_campaign("fp-abc")
+            .expect("actor should resolve");
         assert_eq!(actor.name, "APT Example");
     }
 
     #[test]
     fn campaign_actor_lookup_by_alias_fingerprint() {
         let feed = feed();
-        let actor = feed.get_threat_actor_for_campaign("fp-123").expect("actor should resolve");
-        assert_eq!(actor.id, "threat-actor--aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+        let actor = feed
+            .get_threat_actor_for_campaign("fp-123")
+            .expect("actor should resolve");
+        assert_eq!(
+            actor.id,
+            "threat-actor--aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        );
     }
 
     #[test]
@@ -1741,7 +1853,11 @@ mod tests {
         let feed = feed();
         let ctx = feed.get_kill_chain_context(&[InvariantClass::SqlUnionExtraction]);
         assert!(ctx.phases.contains(&AttackPhase::Exploitation));
-        assert!(ctx.attack_pattern_ids.iter().any(|id| id.starts_with("attack-pattern--")));
+        assert!(
+            ctx.attack_pattern_ids
+                .iter()
+                .any(|id| id.starts_with("attack-pattern--"))
+        );
         assert!(ctx.mitre_attack_ids.contains(&"T1190".to_string()));
     }
 
@@ -1994,10 +2110,7 @@ mod tests {
           ]
         }"#;
         let feed = feed_from(bundle);
-        let hits = feed.match_detection(
-            InvariantClass::SqlTautology,
-            "src=::ffff:203.0.113.12",
-        );
+        let hits = feed.match_detection(InvariantClass::SqlTautology, "src=::ffff:203.0.113.12");
         assert_eq!(hits.len(), 1);
     }
 
@@ -2043,13 +2156,22 @@ mod tests {
           ]
         }"#;
         assert!(
-            !parse_stix_pattern_subset("[file:hashes.MD5 = 'd41d8cd98f00b204e9800998ecf8427e']").is_empty()
+            !parse_stix_pattern_subset("[file:hashes.MD5 = 'd41d8cd98f00b204e9800998ecf8427e']")
+                .is_empty()
         );
         let feed = feed_from(bundle);
         assert_eq!(feed.indicators.len(), 1);
-        assert!(indicator_relevant_to_class(&feed.indicators[0], &class_match_tokens(InvariantClass::CmdSeparator)));
+        assert!(indicator_relevant_to_class(
+            &feed.indicators[0],
+            &class_match_tokens(InvariantClass::CmdSeparator)
+        ));
         let artifacts = build_input_artifacts("value=D41D8CD98F00B204E9800998ECF8427E");
-        assert!(artifacts.hashes.md5.contains("d41d8cd98f00b204e9800998ecf8427e"));
+        assert!(
+            artifacts
+                .hashes
+                .md5
+                .contains("d41d8cd98f00b204e9800998ecf8427e")
+        );
         let hits = feed.match_detection(
             InvariantClass::CmdSeparator,
             "value=D41D8CD98F00B204E9800998ECF8427E",
@@ -2077,7 +2199,12 @@ mod tests {
         }"#;
         let feed = feed_from(bundle);
         let artifacts = build_input_artifacts("hash=ABCDEF0123456789ABCDEF0123456789");
-        assert!(artifacts.hashes.all.contains("abcdef0123456789abcdef0123456789"));
+        assert!(
+            artifacts
+                .hashes
+                .all
+                .contains("abcdef0123456789abcdef0123456789")
+        );
         let hits = feed.match_detection(
             InvariantClass::CmdSeparator,
             "hash=ABCDEF0123456789ABCDEF0123456789",
@@ -2145,10 +2272,16 @@ mod tests {
         let artifacts = build_input_artifacts(
             "wallet=1BoatSLRHtKNngkdXEeobR76b53LETtpyT&wallet=bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080",
         );
-        assert!(artifacts
-            .wallet_addresses
-            .contains("1boatslrhtknngkdxeeobr76b53lettpyt"));
-        assert!(artifacts.wallet_addresses.contains("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080"));
+        assert!(
+            artifacts
+                .wallet_addresses
+                .contains("1boatslrhtknngkdxeeobr76b53lettpyt")
+        );
+        assert!(
+            artifacts
+                .wallet_addresses
+                .contains("bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kygt080")
+        );
         let hits1 = feed.match_detection(
             InvariantClass::SqlTautology,
             "wallet=1BoatSLRHtKNngkdXEeobR76b53LETtpyT",
@@ -2220,10 +2353,7 @@ mod tests {
         let feed = feed_from(bundle);
         let artifacts = build_input_artifacts("peer AS13335 connected");
         assert!(artifacts.asns.contains("13335"));
-        let hits = feed.match_detection(
-            InvariantClass::CmdSeparator,
-            "peer AS13335 connected",
-        );
+        let hits = feed.match_detection(InvariantClass::CmdSeparator, "peer AS13335 connected");
         assert_eq!(hits.len(), 1);
     }
 
@@ -2390,19 +2520,33 @@ mod tests {
             );
         }
 
-        let md5_eq = parse_stix_pattern_subset("[file:hashes.MD5 = 'd41d8cd98f00b204e9800998ecf8427e']");
+        let md5_eq =
+            parse_stix_pattern_subset("[file:hashes.MD5 = 'd41d8cd98f00b204e9800998ecf8427e']");
         assert!(matches!(md5_eq[0], PatternExpr::Eq(PatternField::Md5, _)));
 
         let md5_matches = parse_stix_pattern_subset("[file:hashes.MD5 MATCHES '^[A-F0-9]{32}$']");
-        assert!(matches!(md5_matches[0], PatternExpr::Matches(PatternField::Md5, _)));
+        assert!(matches!(
+            md5_matches[0],
+            PatternExpr::Matches(PatternField::Md5, _)
+        ));
 
-        let wallet = parse_stix_pattern_subset("[wallet-address:value = '1BoatSLRHtKNngkdXEeobR76b53LETtpyT']");
-        assert!(matches!(wallet[0], PatternExpr::Eq(PatternField::WalletAddress, _)));
+        let wallet = parse_stix_pattern_subset(
+            "[wallet-address:value = '1BoatSLRHtKNngkdXEeobR76b53LETtpyT']",
+        );
+        assert!(matches!(
+            wallet[0],
+            PatternExpr::Eq(PatternField::WalletAddress, _)
+        ));
 
         let asn = parse_stix_pattern_subset("[autonomous-system-number:number = 'AS13335']");
         assert!(matches!(asn[0], PatternExpr::Eq(PatternField::Asn, _)));
 
-        let cert = parse_stix_pattern_subset("[x509-certificate:hashes.'SHA-256' = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef']");
-        assert!(matches!(cert[0], PatternExpr::Eq(PatternField::CertSha256, _)));
+        let cert = parse_stix_pattern_subset(
+            "[x509-certificate:hashes.'SHA-256' = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef']",
+        );
+        assert!(matches!(
+            cert[0],
+            PatternExpr::Eq(PatternField::CertSha256, _)
+        ));
     }
 }

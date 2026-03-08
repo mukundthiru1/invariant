@@ -108,7 +108,9 @@ impl UrlTokenizer {
                 push(&mut tokens, UrlTokenType::Whitespace, bytes, start, i);
             } else {
                 let start = i;
-                while i < bytes.len() && !matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'?' | b'#') {
+                while i < bytes.len()
+                    && !matches!(bytes[i], b' ' | b'\t' | b'\r' | b'\n' | b'/' | b'?' | b'#')
+                {
                     i += 1;
                 }
                 if i > start {
@@ -132,7 +134,13 @@ impl UrlTokenizer {
             if slash_idx.is_none() || at_idx < slash_idx.unwrap_or(usize::MAX) {
                 let userinfo = &remaining[..=at_idx];
                 if !userinfo.iter().any(|b| b.is_ascii_whitespace()) {
-                    push(tokens, UrlTokenType::Userinfo, bytes, pos, pos + userinfo.len());
+                    push(
+                        tokens,
+                        UrlTokenType::Userinfo,
+                        bytes,
+                        pos,
+                        pos + userinfo.len(),
+                    );
                     pos += userinfo.len();
                 }
             }
@@ -152,7 +160,12 @@ impl UrlTokenizer {
                 pos = end;
             }
         } else {
-            while pos < bytes.len() && !matches!(bytes[pos], b' ' | b'\t' | b'\r' | b'\n' | b'/' | b':' | b'?' | b'#') {
+            while pos < bytes.len()
+                && !matches!(
+                    bytes[pos],
+                    b' ' | b'\t' | b'\r' | b'\n' | b'/' | b':' | b'?' | b'#'
+                )
+            {
                 pos += 1;
             }
             if pos > host_start {
@@ -181,7 +194,9 @@ fn parse_scheme(bytes: &[u8]) -> Option<(usize, bool)> {
     }
 
     let mut i = 1usize;
-    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'+' | b'.' | b'-')) {
+    while i < bytes.len()
+        && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'+' | b'.' | b'-'))
+    {
         i += 1;
     }
 
@@ -256,7 +271,10 @@ fn is_ipv6_internal(host: &str) -> bool {
         .trim_start_matches('[')
         .trim_end_matches(']')
         .to_ascii_lowercase();
-    if stripped == "::1" || stripped == "::" || stripped == "0000:0000:0000:0000:0000:0000:0000:0001" {
+    if stripped == "::1"
+        || stripped == "::"
+        || stripped == "0000:0000:0000:0000:0000:0000:0000:0001"
+    {
         return true;
     }
     if let Some(mapped) = stripped.strip_prefix("::ffff:") {
@@ -312,7 +330,13 @@ fn num_to_ipv4(num: u32) -> String {
     )
 }
 
-fn push(tokens: &mut Vec<Token<UrlTokenType>>, ty: UrlTokenType, bytes: &[u8], start: usize, end: usize) {
+fn push(
+    tokens: &mut Vec<Token<UrlTokenType>>,
+    ty: UrlTokenType,
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+) {
     tokens.push(Token {
         token_type: ty,
         value: to_value(bytes, start, end),
@@ -347,7 +371,10 @@ mod tests {
 
     #[test]
     fn url_max_input_bound() {
-        let s = format!("http://example.com/{}", "a".repeat(MAX_TOKENIZER_INPUT + 5000));
+        let s = format!(
+            "http://example.com/{}",
+            "a".repeat(MAX_TOKENIZER_INPUT + 5000)
+        );
         let stream = UrlTokenizer.tokenize(&s);
         assert!(stream.all().len() <= MAX_TOKEN_COUNT);
     }

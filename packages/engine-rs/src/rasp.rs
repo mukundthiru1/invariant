@@ -139,7 +139,9 @@ impl RaspContext {
                     severity: Severity::Critical,
                     confidence: 0.84,
                     sink: "process_exec".to_owned(),
-                    evidence: format!("{} {}", exec.command, exec.args.join(" ")).trim().to_owned(),
+                    evidence: format!("{} {}", exec.command, exec.args.join(" "))
+                        .trim()
+                        .to_owned(),
                     message: "dangerous process execution pattern observed".to_owned(),
                     timestamp: exec.timestamp,
                 });
@@ -201,7 +203,9 @@ pub fn detect_sqli_via_query_taint(input: &str, queries: &[DatabaseQuery]) -> Ve
     queries
         .iter()
         .filter_map(|q| {
-            if contains_verbatim(&q.query, input) || q.params.iter().any(|p| contains_verbatim(p, input)) {
+            if contains_verbatim(&q.query, input)
+                || q.params.iter().any(|p| contains_verbatim(p, input))
+            {
                 Some(RaspDetection {
                     class: infer_sql_class(&q.query),
                     severity: Severity::Critical,
@@ -237,7 +241,9 @@ pub fn detect_rce_via_exec_taint(input: &str, execs: &[ProcessExec]) -> Vec<Rasp
                     severity: Severity::Critical,
                     confidence: 0.99,
                     sink: "process_exec".to_owned(),
-                    evidence: format!("{} {}", exec.command, exec.args.join(" ")).trim().to_owned(),
+                    evidence: format!("{} {}", exec.command, exec.args.join(" "))
+                        .trim()
+                        .to_owned(),
                     message: "confirmed RCE: input tainted process execution".to_owned(),
                     timestamp: exec.timestamp,
                 })
@@ -280,7 +286,10 @@ pub fn detect_ssrf_via_network_taint(input: &str, calls: &[NetworkCall]) -> Vec<
         .collect()
 }
 
-pub fn detect_path_traversal_via_file_taint(input: &str, accesses: &[FileAccess]) -> Vec<RaspDetection> {
+pub fn detect_path_traversal_via_file_taint(
+    input: &str,
+    accesses: &[FileAccess],
+) -> Vec<RaspDetection> {
     if input.is_empty() {
         return Vec::new();
     }
@@ -301,7 +310,8 @@ pub fn detect_path_traversal_via_file_taint(input: &str, accesses: &[FileAccess]
                     confidence: 0.99,
                     sink: "filesystem".to_owned(),
                     evidence: file.path.clone(),
-                    message: "confirmed path traversal: input tainted sensitive file path".to_owned(),
+                    message: "confirmed path traversal: input tainted sensitive file path"
+                        .to_owned(),
                     timestamp: file.timestamp,
                 })
             } else {
@@ -320,7 +330,9 @@ pub fn trace_taint(input: &str, context: &RaspContext) -> TaintTrace {
     let mut sinks = Vec::new();
 
     for q in &context.db_queries {
-        if contains_verbatim(&q.query, input) || q.params.iter().any(|p| contains_verbatim(p, input)) {
+        if contains_verbatim(&q.query, input)
+            || q.params.iter().any(|p| contains_verbatim(p, input))
+        {
             hops.push(TaintHop {
                 component: "database".to_owned(),
                 detail: format!("driver={} query_taint", q.driver),
@@ -348,7 +360,9 @@ pub fn trace_taint(input: &str, context: &RaspContext) -> TaintTrace {
             sinks.push(TaintSink {
                 class: infer_cmd_class(exec).unwrap_or(InvariantClass::CmdArgumentInjection),
                 sink: "process_exec".to_owned(),
-                evidence: format!("{} {}", exec.command, exec.args.join(" ")).trim().to_owned(),
+                evidence: format!("{} {}", exec.command, exec.args.join(" "))
+                    .trim()
+                    .to_owned(),
                 timestamp: exec.timestamp,
             });
         }
@@ -432,7 +446,12 @@ fn infer_sql_class(query: &str) -> InvariantClass {
     let q = query.to_ascii_lowercase();
     if q.contains(" union ") {
         InvariantClass::SqlUnionExtraction
-    } else if q.contains(";") && (q.contains(" drop ") || q.contains(" insert ") || q.contains(" update ") || q.contains(" delete ")) {
+    } else if q.contains(";")
+        && (q.contains(" drop ")
+            || q.contains(" insert ")
+            || q.contains(" update ")
+            || q.contains(" delete "))
+    {
         InvariantClass::SqlStackedExecution
     } else if q.contains(" or ") && (q.contains("=1") || q.contains(" true")) {
         InvariantClass::SqlTautology
@@ -486,12 +505,18 @@ fn is_outside_allowed_dirs(path: &str) -> bool {
 
     let normalized = path.replace('\\', "/");
     let lower = normalized.to_ascii_lowercase();
-    if lower.contains("../") || lower.contains("..\\") || lower.ends_with("/..") || lower.contains("%2e%2e") {
+    if lower.contains("../")
+        || lower.contains("..\\")
+        || lower.ends_with("/..")
+        || lower.contains("%2e%2e")
+    {
         return true;
     }
 
     if lower.starts_with('/') {
-        return !ALLOWED_DIRS.iter().any(|d| lower == *d || lower.starts_with(&format!("{d}/")));
+        return !ALLOWED_DIRS
+            .iter()
+            .any(|d| lower == *d || lower.starts_with(&format!("{d}/")));
     }
 
     false
@@ -541,7 +566,10 @@ mod tests {
 
     #[test]
     fn detect_sqli_via_query_taint_positive() {
-        let ds = detect_sqli_via_query_taint("' OR 1=1--", &[q("SELECT * FROM users WHERE name = '' OR 1=1--'")]);
+        let ds = detect_sqli_via_query_taint(
+            "' OR 1=1--",
+            &[q("SELECT * FROM users WHERE name = '' OR 1=1--'")],
+        );
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].class, InvariantClass::SqlTautology);
     }
@@ -554,9 +582,15 @@ mod tests {
 
     #[test]
     fn detect_rce_via_exec_taint_command() {
-        let ds = detect_rce_via_exec_taint("; cat /etc/passwd", &[exec("sh", &["-c", "id; cat /etc/passwd"])]);
+        let ds = detect_rce_via_exec_taint(
+            "; cat /etc/passwd",
+            &[exec("sh", &["-c", "id; cat /etc/passwd"])],
+        );
         assert_eq!(ds.len(), 1);
-        assert!(matches!(ds[0].class, InvariantClass::CmdSeparator | InvariantClass::CmdSubstitution));
+        assert!(matches!(
+            ds[0].class,
+            InvariantClass::CmdSeparator | InvariantClass::CmdSubstitution
+        ));
     }
 
     #[test]
@@ -576,7 +610,10 @@ mod tests {
 
     #[test]
     fn detect_ssrf_via_network_taint_positive() {
-        let ds = detect_ssrf_via_network_taint("169.254.169.254", &[net("http://169.254.169.254/latest/meta-data")]);
+        let ds = detect_ssrf_via_network_taint(
+            "169.254.169.254",
+            &[net("http://169.254.169.254/latest/meta-data")],
+        );
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].class, InvariantClass::SsrfCloudMetadata);
     }
@@ -589,14 +626,18 @@ mod tests {
 
     #[test]
     fn detect_path_traversal_via_file_taint_positive() {
-        let ds = detect_path_traversal_via_file_taint("../../etc/passwd", &[file("/etc/../../etc/passwd")]);
+        let ds = detect_path_traversal_via_file_taint(
+            "../../etc/passwd",
+            &[file("/etc/../../etc/passwd")],
+        );
         assert_eq!(ds.len(), 1);
         assert_eq!(ds[0].class, InvariantClass::PathDotdotEscape);
     }
 
     #[test]
     fn detect_path_traversal_via_file_taint_negative_when_allowed_dir() {
-        let ds = detect_path_traversal_via_file_taint("avatar.png", &[file("/app/uploads/avatar.png")]);
+        let ds =
+            detect_path_traversal_via_file_taint("avatar.png", &[file("/app/uploads/avatar.png")]);
         assert!(ds.is_empty());
     }
 
@@ -605,7 +646,7 @@ mod tests {
         let ctx = RaspContext {
             db_queries: vec![q("SELECT * FROM users WHERE id = 'abc'")],
             file_accesses: vec![file("/etc/abc")],
-            process_execs: vec![exec("sh", &["-c", "echo abc"] )],
+            process_execs: vec![exec("sh", &["-c", "echo abc"])],
             network_calls: vec![net("http://internal.service/abc")],
         };
 
@@ -624,10 +665,27 @@ mod tests {
         };
 
         let findings = ctx.analyze();
-        assert!(findings.correlated_classes.contains(&InvariantClass::SqlTautology));
-        assert!(findings.correlated_classes.contains(&InvariantClass::PathDotdotEscape));
-        assert!(findings.correlated_classes.iter().any(|c| matches!(c, InvariantClass::CmdSeparator | InvariantClass::CmdArgumentInjection | InvariantClass::CmdSubstitution)));
-        assert!(findings.correlated_classes.contains(&InvariantClass::SsrfCloudMetadata));
+        assert!(
+            findings
+                .correlated_classes
+                .contains(&InvariantClass::SqlTautology)
+        );
+        assert!(
+            findings
+                .correlated_classes
+                .contains(&InvariantClass::PathDotdotEscape)
+        );
+        assert!(findings.correlated_classes.iter().any(|c| matches!(
+            c,
+            InvariantClass::CmdSeparator
+                | InvariantClass::CmdArgumentInjection
+                | InvariantClass::CmdSubstitution
+        )));
+        assert!(
+            findings
+                .correlated_classes
+                .contains(&InvariantClass::SsrfCloudMetadata)
+        );
     }
 
     #[test]
@@ -683,7 +741,13 @@ mod tests {
         };
 
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::PathDotdotEscape || m.class == InvariantClass::PathEncodingBypass));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::PathDotdotEscape
+                    || m.class == InvariantClass::PathEncodingBypass)
+        );
         assert!(resp.decision.action >= DefenseAction::Block || resp.analysis.recommendation.block);
     }
 }

@@ -18,45 +18,46 @@
 //!   - CampaignIntelligence: 10,000 sessions × behavioral fingerprints = bounded
 //!   - Knowledge graph: static, shared, read-only after init
 
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
-use serde::{Deserialize, Serialize};
 
-use crate::campaign::{CampaignIntelligence, CampaignSignal, Campaign, EncodingPreference, AttackPhase};
-use crate::chain::{ChainCorrelator, ChainSignal, ChainMatch};
+use crate::api_schema::{ApiSchema, SchemaViolation, SchemaViolationType, validate_request};
 use crate::body_parser::{
     FieldAnomaly, FieldContext, FieldType, ParsedBody, analyze_field, detect_json_injection,
     detect_multipart_abuse, infer_field_type, parse_body,
 };
+use crate::bot_detect::{
+    BotClassification, BotSignals, RequestTiming, analyze_headers, classify_bot, compute_bot_score,
+    identify_browser_ja3, identify_known_bot_ja3, identify_legitimate_bot, is_automated_timing,
+    is_credential_stuffing, is_known_scanner, parse_ja3,
+};
+use crate::campaign::{
+    AttackPhase, Campaign, CampaignIntelligence, CampaignSignal, EncodingPreference,
+};
+use crate::chain::{ChainCorrelator, ChainMatch, ChainSignal};
+use crate::compliance::{ComplianceReport, compliance_report};
 use crate::effect::{
-    simulate_sql_effect, simulate_cmd_effect, simulate_xss_effect,
-    simulate_path_effect, simulate_ssrf_effect, fingerprint_adversary,
-    ExploitEffect, AdversaryFingerprint,
+    AdversaryFingerprint, ExploitEffect, fingerprint_adversary, simulate_cmd_effect,
+    simulate_path_effect, simulate_sql_effect, simulate_ssrf_effect, simulate_xss_effect,
 };
 use crate::engine::InvariantEngine;
 use crate::entropy::anomaly_confidence_multiplier;
+use crate::intent::{AttackIntent, classify_intent};
 use crate::knowledge::{DetectionEnrichment, ExploitKnowledgeGraph};
 use crate::mitre::MitreMapper;
-use crate::compliance::{ComplianceReport, compliance_report};
 use crate::normalizer::detect_encoding_evasion;
 use crate::polyglot::analyze_polyglot_input;
-use crate::intent::{classify_intent, AttackIntent};
-use crate::response::{generate_response_plan, DetectionContext};
-use crate::response_analysis::{self, ResponseAnalysis, ResponseFindingType};
-use crate::shape::{auto_validate_shape, ShapeValidation};
-use crate::telemetry::{EngineHealth, Telemetry};
-use crate::threat_intel::ThreatIntelFeed;
-use crate::types::*;
-use crate::api_schema::{ApiSchema, SchemaViolation, SchemaViolationType, validate_request};
-use crate::bot_detect::{
-    BotClassification, BotSignals, RequestTiming, analyze_headers, classify_bot,
-    compute_bot_score, identify_browser_ja3, identify_known_bot_ja3, identify_legitimate_bot,
-    is_automated_timing, is_credential_stuffing, is_known_scanner, parse_ja3,
-};
 use crate::rasp::{
     RaspContext, detect_path_traversal_via_file_taint, detect_rce_via_exec_taint,
     detect_sqli_via_query_taint, detect_ssrf_via_network_taint, detections_to_matches,
 };
+use crate::response::{DetectionContext, generate_response_plan};
+use crate::response_analysis::{self, ResponseAnalysis, ResponseFindingType};
+use crate::shape::{ShapeValidation, auto_validate_shape};
+use crate::telemetry::{EngineHealth, Telemetry};
+use crate::threat_intel::ThreatIntelFeed;
+use crate::types::*;
 
 // ── Runtime Caching and Heuristics ─────────────────────────────────
 
@@ -115,7 +116,10 @@ struct MitreTechniqueCache {
 
 impl MitreTechniqueCache {
     fn new(size: usize) -> Self {
-        Self { max_entries: size, ..Self::default() }
+        Self {
+            max_entries: size,
+            ..Self::default()
+        }
     }
 
     fn get(&mut self, key: u64) -> Option<Vec<&'static str>> {
@@ -141,7 +145,10 @@ impl MitreTechniqueCache {
     }
 }
 
-fn request_analysis_cache_key(request: &UnifiedRequest, known_context: Option<&InputContext>) -> u64 {
+fn request_analysis_cache_key(
+    request: &UnifiedRequest,
+    known_context: Option<&InputContext>,
+) -> u64 {
     let mut hasher = DefaultHasher::new();
     request.input.hash(&mut hasher);
     request.source_hash.hash(&mut hasher);
@@ -224,7 +231,11 @@ fn make_runtime_match(
         severity: class.default_severity(),
         is_novel_variant: false,
         description: description.into(),
-        detection_levels: DetectionLevels { l1: false, l2: true, convergent: false },
+        detection_levels: DetectionLevels {
+            l1: false,
+            l2: true,
+            convergent: false,
+        },
         l2_evidence: None,
         proof: None,
         cve_enrichment: None,
@@ -320,7 +331,11 @@ fn derive_fallback_source_hash(
     request.method.to_ascii_uppercase().hash(&mut hasher);
     request.path.hash(&mut hasher);
     sanitize_header_value(user_agent).hash(&mut hasher);
-    request.ja3.as_ref().map(|s| sanitize_header_value(s)).hash(&mut hasher);
+    request
+        .ja3
+        .as_ref()
+        .map(|s| sanitize_header_value(s))
+        .hash(&mut hasher);
 
     for (k, v) in sanitized_headers {
         if k.eq_ignore_ascii_case("x-forwarded-for")
@@ -467,10 +482,7 @@ fn detect_runtime_protocol_anomalies(
             .user_agent
             .as_ref()
             .is_some_and(|ua| ua.contains('\0'))
-        || request
-            .ja3
-            .as_ref()
-            .is_some_and(|ja3| ja3.contains('\0'))
+        || request.ja3.as_ref().is_some_and(|ja3| ja3.contains('\0'))
         || request
             .headers
             .iter()
@@ -489,7 +501,8 @@ fn detect_runtime_protocol_anomalies(
 fn merge_runtime_matches(matches: &mut Vec<InvariantMatch>, runtime_matches: Vec<InvariantMatch>) {
     for runtime_match in runtime_matches {
         if let Some(existing) = matches.iter_mut().find(|m| m.class == runtime_match.class) {
-            existing.confidence = clamp_confidence(existing.confidence.max(runtime_match.confidence));
+            existing.confidence =
+                clamp_confidence(existing.confidence.max(runtime_match.confidence));
             existing.severity = std::cmp::max(existing.severity, runtime_match.severity);
             if runtime_match.description.len() > existing.description.len() {
                 existing.description = runtime_match.description;
@@ -514,12 +527,15 @@ fn apply_runtime_findings_to_recommendation(
     if runtime_block {
         recommendation.block = true;
         recommendation.reason = "runtime_protocol_anomaly".to_owned();
-        recommendation.confidence = clamp_confidence(matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max));
+        recommendation.confidence =
+            clamp_confidence(matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max));
     }
 }
 
 fn enforce_critical_action(decision: &mut DefenseDecision, matches: &[InvariantMatch]) {
-    if matches.iter().any(|m| m.severity == Severity::Critical) && decision.action < DefenseAction::Block {
+    if matches.iter().any(|m| m.severity == Severity::Critical)
+        && decision.action < DefenseAction::Block
+    {
         decision.action = DefenseAction::Block;
         decision.alert = true;
         decision.confidence = decision.confidence.max(0.90);
@@ -543,10 +559,16 @@ fn normalize_decision(decision: &mut DefenseDecision, matches: &[InvariantMatch]
     decision.confidence = clamp_confidence(decision.confidence);
 }
 
-fn to_serialized_intent(intent: &crate::intent::IntentClassification) -> crate::types::IntentClassification {
+fn to_serialized_intent(
+    intent: &crate::intent::IntentClassification,
+) -> crate::types::IntentClassification {
     crate::types::IntentClassification {
         primary_intent: format!("{:?}", intent.primary_intent),
-        intents: intent.intents.iter().map(|intent| format!("{:?}", intent)).collect(),
+        intents: intent
+            .intents
+            .iter()
+            .map(|intent| format!("{:?}", intent))
+            .collect(),
         confidence: intent.confidence,
         detail: intent.detail.clone(),
         severity_multiplier: intent.severity_multiplier,
@@ -557,21 +579,36 @@ fn to_serialized_intent(intent: &crate::intent::IntentClassification) -> crate::
 fn has_suspicious_ascii(input: &str) -> bool {
     let mut hits = 0usize;
     for b in input.bytes() {
-        if matches!(b, b'<' | b'>' | b'"' | b'\'' | b'`' | b'|' | b';' | b'&' | b'$' | b'(' | b')') {
+        if matches!(
+            b,
+            b'<' | b'>' | b'"' | b'\'' | b'`' | b'|' | b';' | b'&' | b'$' | b'(' | b')'
+        ) {
             hits += 1;
         }
     }
     hits >= FAST_PATH_TRIGGER_CHARS
 }
 
-fn should_run_full_analysis(request: &UnifiedRequest, l1_matches: &[InvariantMatch], known_context: Option<&InputContext>) -> bool {
-    if !l1_matches.is_empty() { return true; }
-    if request.source_reputation.unwrap_or(0.0_f64) >= 0.65 { return true; }
+fn should_run_full_analysis(
+    request: &UnifiedRequest,
+    l1_matches: &[InvariantMatch],
+    known_context: Option<&InputContext>,
+) -> bool {
+    if !l1_matches.is_empty() {
+        return true;
+    }
+    if request.source_reputation.unwrap_or(0.0_f64) >= 0.65 {
+        return true;
+    }
     if known_context.is_some() {
         return true;
     }
-    if request.path.len() >= FAST_PATH_MAX_LEN && has_suspicious_ascii(&request.path) { return true; }
-    if request.input.len() > 4096 { return true; }
+    if request.path.len() >= FAST_PATH_MAX_LEN && has_suspicious_ascii(&request.path) {
+        return true;
+    }
+    if request.input.len() > 4096 {
+        return true;
+    }
     has_suspicious_ascii(&request.input)
 }
 
@@ -587,7 +624,10 @@ fn has_response_context(request: &UnifiedRequest) -> bool {
             .is_some_and(|body| !body.trim().is_empty())
 }
 
-fn build_response_analysis(request: &UnifiedRequest, request_classes: &[InvariantClass]) -> Option<ResponseAnalysis> {
+fn build_response_analysis(
+    request: &UnifiedRequest,
+    request_classes: &[InvariantClass],
+) -> Option<ResponseAnalysis> {
     if !has_response_context(request) {
         return None;
     }
@@ -598,56 +638,74 @@ fn build_response_analysis(request: &UnifiedRequest, request_classes: &[Invarian
 
     let mut analysis = response_analysis::analyze_response(status, headers, body, request_classes);
 
-    if request_classes.iter().any(|c| matches!(
-        c,
-        InvariantClass::SqlStringTermination
-            | InvariantClass::SqlTautology
-            | InvariantClass::SqlUnionExtraction
-            | InvariantClass::SqlStackedExecution
-            | InvariantClass::SqlTimeOracle
-            | InvariantClass::SqlErrorOracle
-            | InvariantClass::SqlCommentTruncation
-            | InvariantClass::JsonSqlBypass
-    )) {
+    if request_classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::SqlStringTermination
+                | InvariantClass::SqlTautology
+                | InvariantClass::SqlUnionExtraction
+                | InvariantClass::SqlStackedExecution
+                | InvariantClass::SqlTimeOracle
+                | InvariantClass::SqlErrorOracle
+                | InvariantClass::SqlCommentTruncation
+                | InvariantClass::JsonSqlBypass
+        )
+    }) {
         if let Some(confirm) = response_analysis::confirm_sqli_success(&request.input, body) {
             analysis
                 .findings
-                .push(response_analysis::confirmation_to_finding(confirm, Severity::Critical));
+                .push(response_analysis::confirmation_to_finding(
+                    confirm,
+                    Severity::Critical,
+                ));
         }
     }
 
-    if request_classes.iter().any(|c| matches!(
-        c,
-        InvariantClass::XssTagInjection
-            | InvariantClass::XssAttributeEscape
-            | InvariantClass::XssEventHandler
-            | InvariantClass::XssProtocolHandler
-            | InvariantClass::XssTemplateExpression
-    )) {
+    if request_classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::XssTagInjection
+                | InvariantClass::XssAttributeEscape
+                | InvariantClass::XssEventHandler
+                | InvariantClass::XssProtocolHandler
+                | InvariantClass::XssTemplateExpression
+        )
+    }) {
         if let Some(confirm) = response_analysis::confirm_xss_reflection(&request.input, body) {
             analysis
                 .findings
-                .push(response_analysis::confirmation_to_finding(confirm, Severity::Critical));
+                .push(response_analysis::confirmation_to_finding(
+                    confirm,
+                    Severity::Critical,
+                ));
         }
     }
 
-    if request_classes.iter().any(|c| matches!(
-        c,
-        InvariantClass::SsrfInternalReach
-            | InvariantClass::SsrfCloudMetadata
-            | InvariantClass::SsrfProtocolSmuggle
-    )) {
+    if request_classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::SsrfInternalReach
+                | InvariantClass::SsrfCloudMetadata
+                | InvariantClass::SsrfProtocolSmuggle
+        )
+    }) {
         if let Some(confirm) = response_analysis::confirm_ssrf_success(status, body) {
             analysis
                 .findings
-                .push(response_analysis::confirmation_to_finding(confirm, Severity::Critical));
+                .push(response_analysis::confirmation_to_finding(
+                    confirm,
+                    Severity::Critical,
+                ));
         }
     }
 
     Some(analysis)
 }
 
-fn apply_response_findings_to_decision(decision: &mut DefenseDecision, analysis: Option<&ResponseAnalysis>) {
+fn apply_response_findings_to_decision(
+    decision: &mut DefenseDecision,
+    analysis: Option<&ResponseAnalysis>,
+) {
     let Some(analysis) = analysis else {
         return;
     };
@@ -661,8 +719,7 @@ fn apply_response_findings_to_decision(decision: &mut DefenseDecision, analysis:
         let detail_snippet: String = finding.detail.chars().take(60).collect();
         decision.contributors.push(format!(
             "response:{:?}:{}",
-            finding.finding_type,
-            detail_snippet
+            finding.finding_type, detail_snippet
         ));
         if finding.finding_type == ResponseFindingType::ExploitConfirmation {
             decision.alert = true;
@@ -701,7 +758,10 @@ fn mitre_cache_key(classes: &[InvariantClass]) -> u64 {
     hasher.finish()
 }
 
-fn build_fast_analysis(request: &UnifiedRequest, mut matches: Vec<InvariantMatch>) -> AnalysisResult {
+fn build_fast_analysis(
+    request: &UnifiedRequest,
+    mut matches: Vec<InvariantMatch>,
+) -> AnalysisResult {
     let rep = request.source_reputation.unwrap_or(0.0_f64);
     let rep_boost = if rep > 0.6 { (rep - 0.6) * 0.4 } else { 0.0 };
 
@@ -752,12 +812,24 @@ fn build_fast_analysis(request: &UnifiedRequest, mut matches: Vec<InvariantMatch
     }
 }
 
-fn requires_post_processing_artifacts(matches: &[InvariantMatch], decision: &DefenseDecision, threat_level: f64) -> bool {
-    if matches.is_empty() { return false; }
-    if threat_level >= 80.0 { return true; }
+fn requires_post_processing_artifacts(
+    matches: &[InvariantMatch],
+    decision: &DefenseDecision,
+    threat_level: f64,
+) -> bool {
+    if matches.is_empty() {
+        return false;
+    }
+    if threat_level >= 80.0 {
+        return true;
+    }
     match decision.action {
-        DefenseAction::Allow | DefenseAction::Monitor | DefenseAction::Challenge
-        | DefenseAction::Block | DefenseAction::Lockdown | DefenseAction::Throttle => true,
+        DefenseAction::Allow
+        | DefenseAction::Monitor
+        | DefenseAction::Challenge
+        | DefenseAction::Block
+        | DefenseAction::Lockdown
+        | DefenseAction::Throttle => true,
     }
 }
 
@@ -769,7 +841,10 @@ fn split_path_and_query(path: &str) -> (&str, &str) {
     }
 }
 
-fn apply_schema_violations_to_decision(decision: &mut DefenseDecision, violations: &[SchemaViolation]) {
+fn apply_schema_violations_to_decision(
+    decision: &mut DefenseDecision,
+    violations: &[SchemaViolation],
+) {
     if violations.is_empty() {
         return;
     }
@@ -807,7 +882,10 @@ fn apply_schema_violations_to_decision(decision: &mut DefenseDecision, violation
 
 impl AnalysisCache {
     fn new(size: usize) -> Self {
-        Self { max_entries: size, ..Self::default() }
+        Self {
+            max_entries: size,
+            ..Self::default()
+        }
     }
 
     fn get(&mut self, key: u64) -> Option<AnalysisResult> {
@@ -835,7 +913,10 @@ impl AnalysisCache {
 
 impl CveEnrichmentCache {
     fn new(size: usize) -> Self {
-        Self { max_entries: size, ..Self::default() }
+        Self {
+            max_entries: size,
+            ..Self::default()
+        }
     }
 
     fn get(&mut self, key: &CveCacheKey) -> Option<DetectionEnrichment> {
@@ -1061,47 +1142,174 @@ struct PathBehaviorRule {
 }
 
 static CLASS_BEHAVIORS: &[ClassBehaviorRule] = &[
-    ClassBehaviorRule { classes: &[InvariantClass::MassAssignment, InvariantClass::AuthNoneAlgorithm], behaviors: &["privilege_escalation"] },
-    ClassBehaviorRule { classes: &[InvariantClass::ProtoPollution, InvariantClass::ProtoPollutionGadget], behaviors: &["property_injection"] },
-    ClassBehaviorRule { classes: &[InvariantClass::SsrfCloudMetadata], behaviors: &["credential_extraction"] },
-    ClassBehaviorRule { classes: &[InvariantClass::LogJndiLookup], behaviors: &["outbound_connection", "class_loading"] },
-    ClassBehaviorRule { classes: &[InvariantClass::JwtKidInjection, InvariantClass::JwtJwkEmbedding, InvariantClass::JwtConfusion, InvariantClass::AuthNoneAlgorithm], behaviors: &["auth_bypass", "token_forgery"] },
-    ClassBehaviorRule { classes: &[InvariantClass::CachePoisoning, InvariantClass::CacheDeception], behaviors: &["cache_manipulation"] },
-    ClassBehaviorRule { classes: &[InvariantClass::BolaIdor], behaviors: &["authorization_bypass"] },
-    ClassBehaviorRule { classes: &[InvariantClass::ApiMassEnum], behaviors: &["data_exfiltration", "enumeration"] },
-    ClassBehaviorRule { classes: &[InvariantClass::LlmPromptInjection, InvariantClass::LlmJailbreak], behaviors: &["instruction_override"] },
-    ClassBehaviorRule { classes: &[InvariantClass::LlmDataExfiltration], behaviors: &["data_exfiltration"] },
-    ClassBehaviorRule { classes: &[InvariantClass::DependencyConfusion, InvariantClass::PostinstallInjection], behaviors: &["supply_chain_compromise"] },
-    ClassBehaviorRule { classes: &[InvariantClass::EnvExfiltration], behaviors: &["credential_extraction", "data_exfiltration"] },
-    ClassBehaviorRule { classes: &[InvariantClass::WsInjection, InvariantClass::WsHijack], behaviors: &["websocket_abuse"] },
-    ClassBehaviorRule { classes: &[InvariantClass::HttpSmuggleClTe, InvariantClass::HttpSmuggleH2, InvariantClass::HttpSmuggleChunkExt, InvariantClass::HttpSmuggleZeroCl, InvariantClass::HttpSmuggleExpect], behaviors: &["request_smuggling"] },
-    ClassBehaviorRule { classes: &[InvariantClass::DeserJavaGadget, InvariantClass::DeserPhpObject, InvariantClass::DeserPythonPickle], behaviors: &["code_execution"] },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::MassAssignment,
+            InvariantClass::AuthNoneAlgorithm,
+        ],
+        behaviors: &["privilege_escalation"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::ProtoPollution,
+            InvariantClass::ProtoPollutionGadget,
+        ],
+        behaviors: &["property_injection"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::SsrfCloudMetadata],
+        behaviors: &["credential_extraction"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::LogJndiLookup],
+        behaviors: &["outbound_connection", "class_loading"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::JwtKidInjection,
+            InvariantClass::JwtJwkEmbedding,
+            InvariantClass::JwtConfusion,
+            InvariantClass::AuthNoneAlgorithm,
+        ],
+        behaviors: &["auth_bypass", "token_forgery"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::CachePoisoning,
+            InvariantClass::CacheDeception,
+        ],
+        behaviors: &["cache_manipulation"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::BolaIdor],
+        behaviors: &["authorization_bypass"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::ApiMassEnum],
+        behaviors: &["data_exfiltration", "enumeration"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::LlmPromptInjection,
+            InvariantClass::LlmJailbreak,
+        ],
+        behaviors: &["instruction_override"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::LlmDataExfiltration],
+        behaviors: &["data_exfiltration"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::DependencyConfusion,
+            InvariantClass::PostinstallInjection,
+        ],
+        behaviors: &["supply_chain_compromise"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::EnvExfiltration],
+        behaviors: &["credential_extraction", "data_exfiltration"],
+    },
+    ClassBehaviorRule {
+        classes: &[InvariantClass::WsInjection, InvariantClass::WsHijack],
+        behaviors: &["websocket_abuse"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::HttpSmuggleClTe,
+            InvariantClass::HttpSmuggleH2,
+            InvariantClass::HttpSmuggleChunkExt,
+            InvariantClass::HttpSmuggleZeroCl,
+            InvariantClass::HttpSmuggleExpect,
+        ],
+        behaviors: &["request_smuggling"],
+    },
+    ClassBehaviorRule {
+        classes: &[
+            InvariantClass::DeserJavaGadget,
+            InvariantClass::DeserPhpObject,
+            InvariantClass::DeserPythonPickle,
+        ],
+        behaviors: &["code_execution"],
+    },
 ];
 
 static CONTENT_BEHAVIORS: &[ContentBehaviorRule] = &[
     ContentBehaviorRule {
-        classes: &[InvariantClass::PathDotdotEscape, InvariantClass::PathEncodingBypass, InvariantClass::PathNullTerminate, InvariantClass::PathNormalizationBypass],
-        patterns: &[".env", "passwd", "shadow", "id_rsa", "id_ed25519", ".ssh", ".git/config", ".aws/credentials", ".docker/config", "wp-config.php", "database.yml", "application.properties"],
+        classes: &[
+            InvariantClass::PathDotdotEscape,
+            InvariantClass::PathEncodingBypass,
+            InvariantClass::PathNullTerminate,
+            InvariantClass::PathNormalizationBypass,
+        ],
+        patterns: &[
+            ".env",
+            "passwd",
+            "shadow",
+            "id_rsa",
+            "id_ed25519",
+            ".ssh",
+            ".git/config",
+            ".aws/credentials",
+            ".docker/config",
+            "wp-config.php",
+            "database.yml",
+            "application.properties",
+        ],
         behaviors: &["credential_extraction", "path_sensitive_file"],
     },
     ContentBehaviorRule {
-        classes: &[InvariantClass::XssTagInjection, InvariantClass::XssEventHandler, InvariantClass::XssProtocolHandler, InvariantClass::XssAttributeEscape],
+        classes: &[
+            InvariantClass::XssTagInjection,
+            InvariantClass::XssEventHandler,
+            InvariantClass::XssProtocolHandler,
+            InvariantClass::XssAttributeEscape,
+        ],
         patterns: &["document.cookie", "localstorage", "sessionstorage"],
         behaviors: &["cookie_exfil"],
     },
     ContentBehaviorRule {
-        classes: &[InvariantClass::CmdSeparator, InvariantClass::CmdSubstitution, InvariantClass::CmdArgumentInjection],
-        patterns: &["/bin/bash", "/bin/sh", "nc ", "ncat ", "netcat", "mkfifo", "/dev/tcp", "python -c", "perl -e", "php -r", "ruby -e", "socat"],
+        classes: &[
+            InvariantClass::CmdSeparator,
+            InvariantClass::CmdSubstitution,
+            InvariantClass::CmdArgumentInjection,
+        ],
+        patterns: &[
+            "/bin/bash",
+            "/bin/sh",
+            "nc ",
+            "ncat ",
+            "netcat",
+            "mkfifo",
+            "/dev/tcp",
+            "python -c",
+            "perl -e",
+            "php -r",
+            "ruby -e",
+            "socat",
+        ],
         behaviors: &["reverse_shell", "outbound_connection"],
     },
     ContentBehaviorRule {
-        classes: &[InvariantClass::SstiJinjaTwig, InvariantClass::SstiElExpression],
+        classes: &[
+            InvariantClass::SstiJinjaTwig,
+            InvariantClass::SstiElExpression,
+        ],
         patterns: &["__class__", "__mro__", "__subclasses__", "__globals__"],
         behaviors: &["class_traversal"],
     },
     ContentBehaviorRule {
-        classes: &[InvariantClass::SstiJinjaTwig, InvariantClass::SstiElExpression],
-        patterns: &[".exec(", "popen(", "getruntime(", "processbuilder(", "runtime.exec("],
+        classes: &[
+            InvariantClass::SstiJinjaTwig,
+            InvariantClass::SstiElExpression,
+        ],
+        patterns: &[
+            ".exec(",
+            "popen(",
+            "getruntime(",
+            "processbuilder(",
+            "runtime.exec(",
+        ],
         behaviors: &["code_execution"],
     },
     ContentBehaviorRule {
@@ -1113,7 +1321,15 @@ static CONTENT_BEHAVIORS: &[ContentBehaviorRule] = &[
 
 static PATH_BEHAVIORS: &[PathBehaviorRule] = &[
     PathBehaviorRule {
-        path_prefixes: &["/admin", "/wp-admin", "/dashboard", "/manager", "/console", "/actuator", "/phpmyadmin"],
+        path_prefixes: &[
+            "/admin",
+            "/wp-admin",
+            "/dashboard",
+            "/manager",
+            "/console",
+            "/actuator",
+            "/phpmyadmin",
+        ],
         behaviors: &["admin_access"],
     },
     PathBehaviorRule {
@@ -1129,25 +1345,35 @@ fn route_effect_simulation(classes: &[InvariantClass], input: &str) -> Option<Ex
 
     // SQL injection
     let sql_classes = [
-        InvariantClass::SqlTautology, InvariantClass::SqlUnionExtraction,
-        InvariantClass::SqlStackedExecution, InvariantClass::SqlTimeOracle,
-        InvariantClass::SqlErrorOracle, InvariantClass::SqlStringTermination,
-        InvariantClass::SqlCommentTruncation, InvariantClass::JsonSqlBypass,
+        InvariantClass::SqlTautology,
+        InvariantClass::SqlUnionExtraction,
+        InvariantClass::SqlStackedExecution,
+        InvariantClass::SqlTimeOracle,
+        InvariantClass::SqlErrorOracle,
+        InvariantClass::SqlStringTermination,
+        InvariantClass::SqlCommentTruncation,
+        InvariantClass::JsonSqlBypass,
     ];
     if sql_classes.iter().any(|c| class_set.contains(c)) {
         return Some(simulate_sql_effect(input, None));
     }
 
     // Command injection
-    let cmd_classes = [InvariantClass::CmdSeparator, InvariantClass::CmdSubstitution, InvariantClass::CmdArgumentInjection];
+    let cmd_classes = [
+        InvariantClass::CmdSeparator,
+        InvariantClass::CmdSubstitution,
+        InvariantClass::CmdArgumentInjection,
+    ];
     if cmd_classes.iter().any(|c| class_set.contains(c)) {
         return Some(simulate_cmd_effect(input));
     }
 
     // XSS
     let xss_classes = [
-        InvariantClass::XssTagInjection, InvariantClass::XssEventHandler,
-        InvariantClass::XssProtocolHandler, InvariantClass::XssAttributeEscape,
+        InvariantClass::XssTagInjection,
+        InvariantClass::XssEventHandler,
+        InvariantClass::XssProtocolHandler,
+        InvariantClass::XssAttributeEscape,
         InvariantClass::XssTemplateExpression,
     ];
     if xss_classes.iter().any(|c| class_set.contains(c)) {
@@ -1156,15 +1382,21 @@ fn route_effect_simulation(classes: &[InvariantClass], input: &str) -> Option<Ex
 
     // Path traversal
     let path_classes = [
-        InvariantClass::PathDotdotEscape, InvariantClass::PathEncodingBypass,
-        InvariantClass::PathNullTerminate, InvariantClass::PathNormalizationBypass,
+        InvariantClass::PathDotdotEscape,
+        InvariantClass::PathEncodingBypass,
+        InvariantClass::PathNullTerminate,
+        InvariantClass::PathNormalizationBypass,
     ];
     if path_classes.iter().any(|c| class_set.contains(c)) {
         return Some(simulate_path_effect(input));
     }
 
     // SSRF
-    let ssrf_classes = [InvariantClass::SsrfInternalReach, InvariantClass::SsrfCloudMetadata, InvariantClass::SsrfProtocolSmuggle];
+    let ssrf_classes = [
+        InvariantClass::SsrfInternalReach,
+        InvariantClass::SsrfCloudMetadata,
+        InvariantClass::SsrfProtocolSmuggle,
+    ];
     if ssrf_classes.iter().any(|c| class_set.contains(c)) {
         return Some(simulate_ssrf_effect(input));
     }
@@ -1356,8 +1588,10 @@ impl UnifiedRuntime {
     /// Replace chain correlator subsystem.
     pub fn replace_chains(&mut self, chains: ChainCorrelator) -> ChainCorrelator {
         let old = std::mem::replace(&mut self.chains, chains);
-        self.telemetry
-            .set_health_dimensions(self.chains.chain_count(), self.knowledge_graph.total_entries());
+        self.telemetry.set_health_dimensions(
+            self.chains.chain_count(),
+            self.knowledge_graph.total_entries(),
+        );
         old
     }
 
@@ -1367,10 +1601,15 @@ impl UnifiedRuntime {
     }
 
     /// Replace knowledge graph subsystem.
-    pub fn replace_knowledge_graph(&mut self, knowledge_graph: ExploitKnowledgeGraph) -> ExploitKnowledgeGraph {
+    pub fn replace_knowledge_graph(
+        &mut self,
+        knowledge_graph: ExploitKnowledgeGraph,
+    ) -> ExploitKnowledgeGraph {
         let old = std::mem::replace(&mut self.knowledge_graph, knowledge_graph);
-        self.telemetry
-            .set_health_dimensions(self.chains.chain_count(), self.knowledge_graph.total_entries());
+        self.telemetry.set_health_dimensions(
+            self.chains.chain_count(),
+            self.knowledge_graph.total_entries(),
+        );
         old
     }
 
@@ -1427,10 +1666,15 @@ impl UnifiedRuntime {
                 .unwrap_or_default();
         }
         user_agent = sanitize_header_value(&user_agent);
-        let fallback_source_hash = derive_fallback_source_hash(request, &sanitized_headers, &user_agent);
+        let fallback_source_hash =
+            derive_fallback_source_hash(request, &sanitized_headers, &user_agent);
 
         let header_profile = analyze_headers(&sanitized_headers);
-        let ja3 = request.ja3.as_deref().filter(|s| !s.trim().is_empty()).map(parse_ja3);
+        let ja3 = request
+            .ja3
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .map(parse_ja3);
         let known_legitimate_bot = identify_legitimate_bot(&user_agent);
         let known_scanner = is_known_scanner(&user_agent);
         let known_bot_ja3 = ja3.as_ref().and_then(identify_known_bot_ja3);
@@ -1443,7 +1687,8 @@ impl UnifiedRuntime {
                 automated: is_automated_timing(&request.recent_intervals_ms),
             })
         };
-        let credential_stuffing = is_credential_stuffing(&request.recent_paths, &request.recent_intervals_ms);
+        let credential_stuffing =
+            is_credential_stuffing(&request.recent_paths, &request.recent_intervals_ms);
         let bot_signals = BotSignals {
             user_agent,
             header_profile,
@@ -1497,20 +1742,37 @@ impl UnifiedRuntime {
 
         if let Some(rasp) = request.rasp_context.as_ref() {
             let mut confirmed = Vec::new();
-            confirmed.extend(detect_sqli_via_query_taint(&request.input, &rasp.db_queries));
-            confirmed.extend(detect_rce_via_exec_taint(&request.input, &rasp.process_execs));
-            confirmed.extend(detect_ssrf_via_network_taint(&request.input, &rasp.network_calls));
-            confirmed.extend(detect_path_traversal_via_file_taint(&request.input, &rasp.file_accesses));
+            confirmed.extend(detect_sqli_via_query_taint(
+                &request.input,
+                &rasp.db_queries,
+            ));
+            confirmed.extend(detect_rce_via_exec_taint(
+                &request.input,
+                &rasp.process_execs,
+            ));
+            confirmed.extend(detect_ssrf_via_network_taint(
+                &request.input,
+                &rasp.network_calls,
+            ));
+            confirmed.extend(detect_path_traversal_via_file_taint(
+                &request.input,
+                &rasp.file_accesses,
+            ));
 
             if !confirmed.is_empty() {
                 rasp_confirmed_exploit = true;
                 rasp_confirmed_count = confirmed.len();
 
                 for detection in &confirmed {
-                    if let Some(existing) = matches.iter_mut().find(|m| m.class == detection.class) {
-                        existing.confidence = clamp_confidence(existing.confidence.max(detection.confidence));
+                    if let Some(existing) = matches.iter_mut().find(|m| m.class == detection.class)
+                    {
+                        existing.confidence =
+                            clamp_confidence(existing.confidence.max(detection.confidence));
                         existing.severity = std::cmp::max(existing.severity, detection.severity);
-                        existing.description = format!("{} | rasp_confirmed_sink:{}", existing.description, detection.sink);
+                        existing.description = format!(
+                            "{} | rasp_confirmed_sink:{}",
+                            existing.description, detection.sink
+                        );
                         if existing.l2_evidence.is_none() {
                             existing.l2_evidence = Some(detection.evidence.clone());
                         }
@@ -1524,16 +1786,21 @@ impl UnifiedRuntime {
                     .collect();
                 matches.extend(detections_to_matches(&missing));
 
-                let max_rasp_conf = confirmed.iter().map(|d| d.confidence).fold(0.0_f64, f64::max);
+                let max_rasp_conf = confirmed
+                    .iter()
+                    .map(|d| d.confidence)
+                    .fold(0.0_f64, f64::max);
                 analysis.recommendation.block = true;
-                analysis.recommendation.confidence = clamp_confidence(
-                    analysis.recommendation.confidence.max(max_rasp_conf),
-                );
+                analysis.recommendation.confidence =
+                    clamp_confidence(analysis.recommendation.confidence.max(max_rasp_conf));
                 analysis.recommendation.threshold = analysis.recommendation.threshold.min(0.5);
-                if analysis.recommendation.reason == "no_detections" || analysis.recommendation.reason.is_empty() {
+                if analysis.recommendation.reason == "no_detections"
+                    || analysis.recommendation.reason.is_empty()
+                {
                     analysis.recommendation.reason = "rasp_confirmed_exploit".to_owned();
                 } else {
-                    analysis.recommendation.reason = format!("{}|rasp_confirmed_exploit", analysis.recommendation.reason);
+                    analysis.recommendation.reason =
+                        format!("{}|rasp_confirmed_exploit", analysis.recommendation.reason);
                 }
             }
         }
@@ -1572,8 +1839,11 @@ impl UnifiedRuntime {
 
             if !field_level_matches.is_empty() {
                 for field_match in field_level_matches {
-                    if let Some(existing) = matches.iter_mut().find(|m| m.class == field_match.class) {
-                        existing.confidence = clamp_confidence(existing.confidence.max(field_match.confidence));
+                    if let Some(existing) =
+                        matches.iter_mut().find(|m| m.class == field_match.class)
+                    {
+                        existing.confidence =
+                            clamp_confidence(existing.confidence.max(field_match.confidence));
                         existing.severity = std::cmp::max(existing.severity, field_match.severity);
                         if field_match.description.len() > existing.description.len() {
                             existing.description = field_match.description;
@@ -1590,9 +1860,8 @@ impl UnifiedRuntime {
                 }
 
                 let max_conf = matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max);
-                analysis.recommendation.confidence = clamp_confidence(
-                    analysis.recommendation.confidence.max(max_conf),
-                );
+                analysis.recommendation.confidence =
+                    clamp_confidence(analysis.recommendation.confidence.max(max_conf));
                 if self.engine.should_block(&matches) {
                     analysis.recommendation.block = true;
                     analysis.recommendation.reason = "field_level_detection_threshold".to_owned();
@@ -1604,10 +1873,14 @@ impl UnifiedRuntime {
             }
         }
 
-        let runtime_protocol_matches = detect_runtime_protocol_anomalies(request, &sanitized_headers);
+        let runtime_protocol_matches =
+            detect_runtime_protocol_anomalies(request, &sanitized_headers);
         if !runtime_protocol_matches.is_empty() {
             merge_runtime_matches(&mut matches, runtime_protocol_matches.clone());
-            apply_runtime_findings_to_recommendation(&mut analysis.recommendation, &runtime_protocol_matches);
+            apply_runtime_findings_to_recommendation(
+                &mut analysis.recommendation,
+                &runtime_protocol_matches,
+            );
         }
 
         if matches.is_empty() {
@@ -1638,8 +1911,10 @@ impl UnifiedRuntime {
                 &request.source_hash,
                 request.timestamp,
             );
-            self.telemetry
-                .set_health_dimensions(self.chains.chain_count(), self.knowledge_graph.total_entries());
+            self.telemetry.set_health_dimensions(
+                self.chains.chain_count(),
+                self.knowledge_graph.total_entries(),
+            );
 
             return UnifiedResponse {
                 analysis,
@@ -1670,20 +1945,32 @@ impl UnifiedRuntime {
         let detected_classes: Vec<InvariantClass> = matches.iter().map(|m| m.class).collect();
         let response_analysis = build_response_analysis(request, &detected_classes);
         let should_collect_chain = detected_classes.len() >= HOT_PATH_BUFFERED_CHAIN_MIN
-            || matches.iter().any(|m| m.confidence >= 0.72 || m.severity >= Severity::High);
+            || matches
+                .iter()
+                .any(|m| m.confidence >= 0.72 || m.severity >= Severity::High);
         let polyglot = analyze_polyglot_input(&detected_classes, &request.input);
         let analyze_intent = should_full_analysis
             || should_collect_chain
-            || matches.iter().any(|m| m.confidence >= 0.55 || m.severity == Severity::Critical);
+            || matches
+                .iter()
+                .any(|m| m.confidence >= 0.55 || m.severity == Severity::Critical);
         let evasion = if should_full_analysis || should_collect_chain || analyze_intent {
             detect_encoding_evasion(&request.input)
         } else {
             default_encoding_evasion()
         };
-        let anomaly_mult = if should_full_analysis { anomaly_confidence_multiplier(&request.input) } else { 1.0 };
+        let anomaly_mult = if should_full_analysis {
+            anomaly_confidence_multiplier(&request.input)
+        } else {
+            1.0
+        };
 
         let intent = if analyze_intent {
-            Some(classify_intent(&detected_classes, &request.input, Some(&request.path)))
+            Some(classify_intent(
+                &detected_classes,
+                &request.input,
+                Some(&request.path),
+            ))
         } else {
             None
         };
@@ -1698,10 +1985,13 @@ impl UnifiedRuntime {
             analysis.anomaly_score = Some((anomaly_mult - 1.0).min(1.0));
         }
 
-        if should_full_analysis || should_collect_chain || evasion.is_evasion || anomaly_mult > 1.0 {
+        if should_full_analysis || should_collect_chain || evasion.is_evasion || anomaly_mult > 1.0
+        {
             for m in matches.iter_mut() {
                 if evasion.is_evasion {
-                    m.confidence = clamp_confidence((m.confidence * (1.0 + evasion.confidence * 0.03)).min(0.99));
+                    m.confidence = clamp_confidence(
+                        (m.confidence * (1.0 + evasion.confidence * 0.03)).min(0.99),
+                    );
                 }
                 if anomaly_mult > 1.0 {
                     m.confidence = clamp_confidence((m.confidence * anomaly_mult).min(0.99));
@@ -1719,7 +2009,11 @@ impl UnifiedRuntime {
             }
         }
 
-        matches.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+        matches.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         matches.dedup_by_key(|m| m.class);
         clamp_match_confidences(&mut matches);
 
@@ -1727,14 +2021,24 @@ impl UnifiedRuntime {
         analysis.recommendation.confidence = clamp_confidence(analysis.recommendation.confidence);
 
         // ── Step 3: Temporal Correlation — Chain Detection ──
-        let behaviors = derive_behaviors(&analysis.matches, &request.input, &request.path, &polyglot, evasion.is_evasion);
+        let behaviors = derive_behaviors(
+            &analysis.matches,
+            &request.input,
+            &request.path,
+            &polyglot,
+            evasion.is_evasion,
+        );
 
         let chain_matches = if should_collect_chain {
             let chain_signal = ChainSignal {
                 source_hash: request.source_hash.clone(),
                 classes: detected_classes.clone(),
                 behaviors: behaviors.clone(),
-                confidence: analysis.matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max),
+                confidence: analysis
+                    .matches
+                    .iter()
+                    .map(|m| m.confidence)
+                    .fold(0.0_f64, f64::max),
                 path: request.path.clone(),
                 method: request.method.clone(),
                 timestamp: request.timestamp,
@@ -1755,7 +2059,11 @@ impl UnifiedRuntime {
                     source_hash: derived_hash.clone(),
                     classes: detected_classes.clone(),
                     behaviors: behaviors.clone(),
-                    confidence: analysis.matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max),
+                    confidence: analysis
+                        .matches
+                        .iter()
+                        .map(|m| m.confidence)
+                        .fold(0.0_f64, f64::max),
                     path: request.path.clone(),
                     method: request.method.clone(),
                     timestamp: request.timestamp,
@@ -1774,7 +2082,9 @@ impl UnifiedRuntime {
         // ── Step 4: Campaign Intelligence ──
         let enc = detect_encoding_preference(&request.input);
         let top_match = analysis.matches.iter().max_by(|a, b| {
-            a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal)
+            a.confidence
+                .partial_cmp(&b.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
         });
         let signal = if let Some(top) = top_match {
             CampaignSignal {
@@ -1817,7 +2127,10 @@ impl UnifiedRuntime {
 
         let threat_level = self.campaigns.get_threat_level(&request.source_hash);
         let attack_phase = self.campaigns.get_attack_phase(&request.source_hash);
-        let active_campaign = self.campaigns.is_part_of_campaign(&request.source_hash).cloned();
+        let active_campaign = self
+            .campaigns
+            .is_part_of_campaign(&request.source_hash)
+            .cloned();
         let mut threat_level = threat_level;
         let mut attack_phase = attack_phase;
         let mut active_campaign = active_campaign;
@@ -1864,7 +2177,9 @@ impl UnifiedRuntime {
             decision.action = std::cmp::max(decision.action, DefenseAction::Block);
             decision.confidence = decision.confidence.max(0.99);
             decision.alert = true;
-            decision.contributors.push(format!("rasp:confirmed_sinks:{rasp_confirmed_count}"));
+            decision
+                .contributors
+                .push(format!("rasp:confirmed_sinks:{rasp_confirmed_count}"));
             if decision.reason == "no_detections" {
                 decision.reason = "RASP-confirmed exploit path".to_owned();
             }
@@ -1872,7 +2187,10 @@ impl UnifiedRuntime {
 
         let should_skip_cve = decision.action >= DefenseAction::Block
             && decision.confidence >= 0.97
-            && analysis.matches.iter().all(|m| m.severity >= Severity::High);
+            && analysis
+                .matches
+                .iter()
+                .all(|m| m.severity >= Severity::High);
 
         let mut all_linked_cves = HashSet::new();
         let mut actively_exploited_cves = Vec::new();
@@ -1880,7 +2198,10 @@ impl UnifiedRuntime {
         let mut verification_hits = 0_u32;
 
         if !should_skip_cve {
-            let tech_ref = request.detected_tech.as_ref().map(|t| (t.vendor.as_str(), t.product.as_str()));
+            let tech_ref = request
+                .detected_tech
+                .as_ref()
+                .map(|t| (t.vendor.as_str(), t.product.as_str()));
             for m in analysis.matches.iter() {
                 let key = CveCacheKey {
                     class: m.class,
@@ -1933,7 +2254,9 @@ impl UnifiedRuntime {
             decision.confidence = clamp_confidence(
                 (decision.confidence + (ioc_hit_count as f64 * 0.03).min(0.15)).min(0.99),
             );
-            decision.contributors.push(format!("threat_intel:ioc_hits:{ioc_hit_count}"));
+            decision
+                .contributors
+                .push(format!("threat_intel:ioc_hits:{ioc_hit_count}"));
         }
         if let Some(derived_hash) = fallback_source_hash.as_ref() {
             if derived_hash != &request.source_hash {
@@ -1969,15 +2292,17 @@ impl UnifiedRuntime {
         if let Some(ref eff) = effect_simulation {
             if eff.impact.base_score >= 9.0 && !decision.alert {
                 decision.alert = true;
-                decision
-                    .contributors
-                    .push(format!("effect:{:?}:impact_{:.1}", eff.operation, eff.impact.base_score));
+                decision.contributors.push(format!(
+                    "effect:{:?}:impact_{:.1}",
+                    eff.operation, eff.impact.base_score
+                ));
             }
         }
 
         if let Some(ref sv) = shape_validation {
             if !sv.matches && sv.confidence_boost > 0.0 {
-                decision.confidence = clamp_confidence((decision.confidence + sv.confidence_boost).min(0.99));
+                decision.confidence =
+                    clamp_confidence((decision.confidence + sv.confidence_boost).min(0.99));
                 decision
                     .contributors
                     .push(format!("shape_violation:deviation_{:.2}", sv.deviation));
@@ -1992,7 +2317,9 @@ impl UnifiedRuntime {
         normalize_decision(&mut decision, &analysis.matches);
 
         if field_anomaly_count > 0 {
-            decision.contributors.push(format!("body_parser:field_anomalies:{field_anomaly_count}"));
+            decision
+                .contributors
+                .push(format!("body_parser:field_anomalies:{field_anomaly_count}"));
         }
 
         let response_plan = if !analysis.matches.is_empty() {
@@ -2022,7 +2349,9 @@ impl UnifiedRuntime {
         };
 
         if verification_hits > 0 && should_post_process {
-            decision.contributors.push("runtime:verified_cve_present".into());
+            decision
+                .contributors
+                .push("runtime:verified_cve_present".into());
         }
 
         let highest_severity = self.engine.highest_severity(&analysis.matches);
@@ -2034,8 +2363,10 @@ impl UnifiedRuntime {
             &request.source_hash,
             request.timestamp,
         );
-        self.telemetry
-            .set_health_dimensions(self.chains.chain_count(), self.knowledge_graph.total_entries());
+        self.telemetry.set_health_dimensions(
+            self.chains.chain_count(),
+            self.knowledge_graph.total_entries(),
+        );
 
         UnifiedResponse {
             analysis,
@@ -2065,10 +2396,14 @@ impl UnifiedRuntime {
     /// Fallible wrapper for `process` with request contract checks.
     pub fn try_process(&mut self, request: &UnifiedRequest) -> InvariantResult<UnifiedResponse> {
         if request.input.trim().is_empty() {
-            return Err(InvariantError::invalid_input("request input must not be empty"));
+            return Err(InvariantError::invalid_input(
+                "request input must not be empty",
+            ));
         }
         if request.source_hash.trim().is_empty() {
-            return Err(InvariantError::invalid_input("source_hash must not be empty"));
+            return Err(InvariantError::invalid_input(
+                "source_hash must not be empty",
+            ));
         }
         if request.method.trim().is_empty() {
             return Err(InvariantError::invalid_input("method must not be empty"));
@@ -2095,7 +2430,9 @@ impl UnifiedRuntime {
     /// Fallible wrapper for `get_stats` with timestamp validation.
     pub fn try_get_stats(&self, now: u64) -> InvariantResult<RuntimeStats> {
         if now == 0 {
-            return Err(InvariantError::invalid_input("stats timestamp must be greater than 0"));
+            return Err(InvariantError::invalid_input(
+                "stats timestamp must be greater than 0",
+            ));
         }
         Ok(self.get_stats(now))
     }
@@ -2107,7 +2444,9 @@ impl UnifiedRuntime {
 }
 
 impl Default for UnifiedRuntime {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Lightweight runtime metrics for health and capacity introspection.
@@ -2142,8 +2481,12 @@ fn derive_behaviors(
     let input_lower = input.to_lowercase();
 
     // Analysis-level signals
-    if polyglot.is_polyglot { behaviors.push("polyglot_attack".into()); }
-    if encoding_evasion { behaviors.push("encoding_evasion".into()); }
+    if polyglot.is_polyglot {
+        behaviors.push("polyglot_attack".into());
+    }
+    if encoding_evasion {
+        behaviors.push("encoding_evasion".into());
+    }
 
     // Class → behavior
     for rule in CLASS_BEHAVIORS {
@@ -2154,7 +2497,9 @@ fn derive_behaviors(
 
     // Class + content → behavior
     for rule in CONTENT_BEHAVIORS {
-        if !rule.classes.iter().any(|c| class_names.contains(c)) { continue; }
+        if !rule.classes.iter().any(|c| class_names.contains(c)) {
+            continue;
+        }
         if rule.patterns.iter().any(|p| {
             let p_lower = p.to_lowercase();
             input_lower.contains(&p_lower) || path_lower.contains(&p_lower)
@@ -2189,7 +2534,9 @@ fn make_defense_decision(
     let mut contributors: Vec<String> = Vec::new();
 
     // 1. Completed critical chain → lockdown
-    if let Some(chain) = chain_matches.iter().find(|c| c.completion >= 1.0 && matches!(c.severity, crate::chain::ChainSeverity::Critical)) {
+    if let Some(chain) = chain_matches.iter().find(|c| {
+        c.completion >= 1.0 && matches!(c.severity, crate::chain::ChainSeverity::Critical)
+    }) {
         contributors.push(format!("chain:{}:complete", chain.chain_id));
         return DefenseDecision {
             action: DefenseAction::Lockdown,
@@ -2222,7 +2569,10 @@ fn make_defense_decision(
             let max_conf = matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max);
             return DefenseDecision {
                 action: DefenseAction::Block,
-                reason: format!("Source is part of active campaign: {}", campaign.description),
+                reason: format!(
+                    "Source is part of active campaign: {}",
+                    campaign.description
+                ),
                 confidence: max_conf,
                 contributors,
                 alert: campaign.severity >= crate::campaign::CampaignSeverity::Critical,
@@ -2236,7 +2586,10 @@ fn make_defense_decision(
         let max_conf = matches.iter().map(|m| m.confidence).fold(0.0_f64, f64::max);
         return DefenseDecision {
             action: DefenseAction::Block,
-            reason: format!("High threat source (level {:.1}) with active detection", threat_level),
+            reason: format!(
+                "High threat source (level {:.1}) with active detection",
+                threat_level
+            ),
             confidence: max_conf,
             contributors,
             alert: true,
@@ -2245,10 +2598,18 @@ fn make_defense_decision(
 
     // 5. Chain in progress (high completion ≥66%)
     if let Some(chain) = chain_matches.iter().find(|c| c.completion >= 0.66) {
-        contributors.push(format!("chain:{}:{}%", chain.chain_id, (chain.completion * 100.0) as u32));
+        contributors.push(format!(
+            "chain:{}:{}%",
+            chain.chain_id,
+            (chain.completion * 100.0) as u32
+        ));
         return DefenseDecision {
             action: DefenseAction::Block,
-            reason: format!("Attack chain {} at {}% completion", chain.name, (chain.completion * 100.0) as u32),
+            reason: format!(
+                "Attack chain {} at {}% completion",
+                chain.name,
+                (chain.completion * 100.0) as u32
+            ),
             confidence: chain.confidence,
             contributors,
             alert: matches!(chain.severity, crate::chain::ChainSeverity::Critical),
@@ -2257,10 +2618,18 @@ fn make_defense_decision(
 
     // 6. Chain in progress (medium completion ≥50%)
     if let Some(chain) = chain_matches.iter().find(|c| c.completion >= 0.50) {
-        contributors.push(format!("chain:{}:{}%", chain.chain_id, (chain.completion * 100.0) as u32));
+        contributors.push(format!(
+            "chain:{}:{}%",
+            chain.chain_id,
+            (chain.completion * 100.0) as u32
+        ));
         return DefenseDecision {
             action: DefenseAction::Challenge,
-            reason: format!("Attack chain {} at {}% completion", chain.name, (chain.completion * 100.0) as u32),
+            reason: format!(
+                "Attack chain {} at {}% completion",
+                chain.name,
+                (chain.completion * 100.0) as u32
+            ),
             confidence: chain.confidence,
             contributors,
             alert: false,
@@ -2306,7 +2675,10 @@ fn make_defense_decision(
 
     // 8. Standard analysis block recommendation
     if analysis.recommendation.block {
-        if let Some(top) = matches.iter().max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()) {
+        if let Some(top) = matches
+            .iter()
+            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap())
+        {
             contributors.push(format!("match:{:?}:{:.2}", top.class, top.confidence));
         }
 
@@ -2318,9 +2690,12 @@ fn make_defense_decision(
         }
 
         let force_alert = if let Some(intent) = intent {
-            matches!(intent.primary_intent,
-                AttackIntent::ExfiltrateCredentials | AttackIntent::DestroyData |
-                AttackIntent::CodeExecution | AttackIntent::EstablishPersistence
+            matches!(
+                intent.primary_intent,
+                AttackIntent::ExfiltrateCredentials
+                    | AttackIntent::DestroyData
+                    | AttackIntent::CodeExecution
+                    | AttackIntent::EstablishPersistence
             )
         } else {
             false
@@ -2328,7 +2703,10 @@ fn make_defense_decision(
 
         let reason = if let Some(intent) = intent {
             if intent.primary_intent != AttackIntent::Unknown {
-                format!("{} [intent: {}]", analysis.recommendation.reason, intent.detail)
+                format!(
+                    "{} [intent: {}]",
+                    analysis.recommendation.reason, intent.detail
+                )
             } else {
                 analysis.recommendation.reason.clone()
             }
@@ -2336,7 +2714,11 @@ fn make_defense_decision(
             analysis.recommendation.reason.clone()
         };
 
-        let sev = matches.iter().map(|m| m.severity).max().unwrap_or(Severity::Low);
+        let sev = matches
+            .iter()
+            .map(|m| m.severity)
+            .max()
+            .unwrap_or(Severity::Low);
 
         return DefenseDecision {
             action: DefenseAction::Block,
@@ -2355,15 +2737,25 @@ fn make_defense_decision(
                 action: DefenseAction::Block,
                 reason: "critical_detection_below_threshold".into(),
                 confidence: max_conf.max(analysis.recommendation.confidence),
-                contributors: matches.iter().map(|m| format!("match:{:?}:{:.2}", m.class, m.confidence)).collect(),
+                contributors: matches
+                    .iter()
+                    .map(|m| format!("match:{:?}:{:.2}", m.class, m.confidence))
+                    .collect(),
                 alert: true,
             };
         }
         return DefenseDecision {
-            action: if threat_level >= 30.0 { DefenseAction::Monitor } else { DefenseAction::Allow },
+            action: if threat_level >= 30.0 {
+                DefenseAction::Monitor
+            } else {
+                DefenseAction::Allow
+            },
             reason: "detections_below_threshold".into(),
             confidence: max_conf,
-            contributors: matches.iter().map(|m| format!("match:{:?}:{:.2}", m.class, m.confidence)).collect(),
+            contributors: matches
+                .iter()
+                .map(|m| format!("match:{:?}:{:.2}", m.class, m.confidence))
+                .collect(),
             alert: false,
         };
     }
@@ -2386,16 +2778,34 @@ fn detect_encoding_preference(input: &str) -> EncodingPreference {
     let has_hex = input.contains("0x") || input.contains("\\x");
 
     let mut count = 0u32;
-    if has_url { count += 1; }
-    if has_double_url { count += 1; }
-    if has_unicode { count += 1; }
-    if has_hex { count += 1; }
+    if has_url {
+        count += 1;
+    }
+    if has_double_url {
+        count += 1;
+    }
+    if has_unicode {
+        count += 1;
+    }
+    if has_hex {
+        count += 1;
+    }
 
-    if count >= 2 { return EncodingPreference::Mixed; }
-    if has_double_url { return EncodingPreference::UrlDouble; }
-    if has_url { return EncodingPreference::UrlSingle; }
-    if has_unicode { return EncodingPreference::Unicode; }
-    if has_hex { return EncodingPreference::Hex; }
+    if count >= 2 {
+        return EncodingPreference::Mixed;
+    }
+    if has_double_url {
+        return EncodingPreference::UrlDouble;
+    }
+    if has_url {
+        return EncodingPreference::UrlSingle;
+    }
+    if has_unicode {
+        return EncodingPreference::Unicode;
+    }
+    if has_hex {
+        return EncodingPreference::Hex;
+    }
     EncodingPreference::Plain
 }
 
@@ -2449,7 +2859,11 @@ fn collect_body_fields(parsed: &ParsedBody) -> Vec<(FieldContext, String)> {
                 (
                     FieldContext {
                         field_name: field.name.clone(),
-                        field_path: if field.name.is_empty() { "$multipart".into() } else { field.name.clone() },
+                        field_path: if field.name.is_empty() {
+                            "$multipart".into()
+                        } else {
+                            field.name.clone()
+                        },
                         expected_type: infer_field_type(&field.name),
                     },
                     field.body.clone(),
@@ -2531,8 +2945,12 @@ mod tests {
     fn sql_injection_blocks() {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("' OR 1=1--"));
-        assert!(resp.decision.action >= DefenseAction::Block || resp.analysis.recommendation.block,
-            "SQL injection should be blocked: action={:?}, block={}", resp.decision.action, resp.analysis.recommendation.block);
+        assert!(
+            resp.decision.action >= DefenseAction::Block || resp.analysis.recommendation.block,
+            "SQL injection should be blocked: action={:?}, block={}",
+            resp.decision.action,
+            resp.analysis.recommendation.block
+        );
         assert!(!resp.analysis.matches.is_empty());
     }
 
@@ -2547,15 +2965,23 @@ mod tests {
     fn cmd_injection_detects() {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("; cat /etc/passwd"));
-        assert!(!resp.analysis.matches.is_empty(), "CMD injection should be detected");
+        assert!(
+            !resp.analysis.matches.is_empty(),
+            "CMD injection should be detected"
+        );
     }
 
     #[test]
     fn effect_simulation_runs() {
         let mut rt = UnifiedRuntime::new();
-        let resp = rt.process(&make_request("' UNION SELECT username, password FROM users--"));
+        let resp = rt.process(&make_request(
+            "' UNION SELECT username, password FROM users--",
+        ));
         if !resp.analysis.matches.is_empty() {
-            assert!(resp.effect_simulation.is_some(), "SQL injection should produce effect simulation");
+            assert!(
+                resp.effect_simulation.is_some(),
+                "SQL injection should produce effect simulation"
+            );
         }
     }
 
@@ -2564,7 +2990,10 @@ mod tests {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("' OR 1=1--"));
         if !resp.analysis.matches.is_empty() {
-            assert!(resp.adversary_fingerprint.is_some(), "Detected attack should produce adversary fingerprint");
+            assert!(
+                resp.adversary_fingerprint.is_some(),
+                "Detected attack should produce adversary fingerprint"
+            );
         }
     }
 
@@ -2574,7 +3003,10 @@ mod tests {
         let mut req = make_request("' OR 1=1--");
         req.param_name = Some("email".into());
         let resp = rt.process(&req);
-        assert!(resp.shape_validation.is_some(), "Should validate shape when param_name provided");
+        assert!(
+            resp.shape_validation.is_some(),
+            "Should validate shape when param_name provided"
+        );
     }
 
     #[test]
@@ -2582,7 +3014,10 @@ mod tests {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("'; DROP TABLE users;--"));
         if !resp.analysis.matches.is_empty() {
-            assert!(resp.response_plan.is_some(), "Detections should produce response plan");
+            assert!(
+                resp.response_plan.is_some(),
+                "Detections should produce response plan"
+            );
         }
     }
 
@@ -2591,7 +3026,10 @@ mod tests {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("' OR 1=1--"));
         if !resp.analysis.matches.is_empty() {
-            assert!(!resp.mitre_techniques.is_empty(), "Detections should map to MITRE techniques");
+            assert!(
+                !resp.mitre_techniques.is_empty(),
+                "Detections should map to MITRE techniques"
+            );
         }
     }
 
@@ -2600,8 +3038,14 @@ mod tests {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("' OR 1=1--"));
         if !resp.analysis.matches.is_empty() {
-            assert!(!resp.compliance_mappings.mappings.is_empty(), "Detections should map to compliance controls");
-            assert!(!resp.compliance_mappings.audit_evidence.is_empty(), "Detections should produce audit evidence");
+            assert!(
+                !resp.compliance_mappings.mappings.is_empty(),
+                "Detections should map to compliance controls"
+            );
+            assert!(
+                !resp.compliance_mappings.audit_evidence.is_empty(),
+                "Detections should produce audit evidence"
+            );
         }
     }
 
@@ -2628,22 +3072,40 @@ mod tests {
         let t2 = rt.campaigns.get_threat_level("test_source_123");
 
         // Threat should increase (or at least stay same)
-        assert!(t2 >= t1, "Threat level should not decrease: t1={t1}, t2={t2}");
+        assert!(
+            t2 >= t1,
+            "Threat level should not decrease: t1={t1}, t2={t2}"
+        );
     }
 
     #[test]
     fn processing_time_measured() {
         let mut rt = UnifiedRuntime::new();
         let resp = rt.process(&make_request("' OR 1=1--"));
-        assert!(resp.total_processing_time_us > 0.0, "Processing time should be measured");
+        assert!(
+            resp.total_processing_time_us > 0.0,
+            "Processing time should be measured"
+        );
     }
 
     #[test]
     fn encoding_preference_detection() {
-        assert_eq!(detect_encoding_preference("hello world"), EncodingPreference::Plain);
-        assert_eq!(detect_encoding_preference("%27%20OR"), EncodingPreference::UrlSingle);
-        assert_eq!(detect_encoding_preference("%2527%20OR"), EncodingPreference::Mixed);
-        assert_eq!(detect_encoding_preference("\\u0027 OR"), EncodingPreference::Unicode);
+        assert_eq!(
+            detect_encoding_preference("hello world"),
+            EncodingPreference::Plain
+        );
+        assert_eq!(
+            detect_encoding_preference("%27%20OR"),
+            EncodingPreference::UrlSingle
+        );
+        assert_eq!(
+            detect_encoding_preference("%2527%20OR"),
+            EncodingPreference::Mixed
+        );
+        assert_eq!(
+            detect_encoding_preference("\\u0027 OR"),
+            EncodingPreference::Unicode
+        );
     }
 
     #[test]
@@ -2655,14 +3117,27 @@ mod tests {
             severity: Severity::Critical,
             is_novel_variant: false,
             description: "test".into(),
-            detection_levels: DetectionLevels { l1: true, l2: false, convergent: false },
+            detection_levels: DetectionLevels {
+                l1: true,
+                l2: false,
+                convergent: false,
+            },
             l2_evidence: None,
             proof: None,
             cve_enrichment: None,
         }];
         let polyglot = crate::polyglot::analyze_polyglot(&[InvariantClass::SsrfCloudMetadata]);
-        let behaviors = derive_behaviors(&matches, "http://169.254.169.254/latest/meta-data/", "/api/fetch", &polyglot, false);
-        assert!(behaviors.contains(&"credential_extraction".to_string()), "SSRF cloud metadata should derive credential_extraction");
+        let behaviors = derive_behaviors(
+            &matches,
+            "http://169.254.169.254/latest/meta-data/",
+            "/api/fetch",
+            &polyglot,
+            false,
+        );
+        assert!(
+            behaviors.contains(&"credential_extraction".to_string()),
+            "SSRF cloud metadata should derive credential_extraction"
+        );
     }
 
     #[test]
@@ -2673,7 +3148,9 @@ mod tests {
         first.timestamp = 1000;
         let r1 = rt.process(&first);
 
-        let mut second = make_request("' UNION    SELECT username,password FROM users--<script>alert(1)</script>");
+        let mut second = make_request(
+            "' UNION    SELECT username,password FROM users--<script>alert(1)</script>",
+        );
         second.timestamp = 1010;
         let r2 = rt.process(&second);
 
@@ -2737,7 +3214,8 @@ mod tests {
     #[test]
     fn structured_json_field_analysis_decodes_and_detects_nested_payload() {
         let mut rt = UnifiedRuntime::new();
-        let mut req = make_request(r#"{"profile":{"bio":"\u003cscript\u003ealert(1)\u003c/script\u003e"}}"#);
+        let mut req =
+            make_request(r#"{"profile":{"bio":"\u003cscript\u003ealert(1)\u003c/script\u003e"}}"#);
         req.content_type = Some("application/json".into());
         let resp = rt.process(&req);
         assert!(
@@ -2852,15 +3330,17 @@ mod tests {
 
         let req = make_request(r#"{"username":"m","is_admin":true}"#);
         let resp = rt.process(&req);
-        assert!(resp
-            .schema_violations
-            .iter()
-            .any(|v| v.violation_type == SchemaViolationType::ExtraField));
-        assert!(resp
-            .decision
-            .contributors
-            .iter()
-            .any(|c| c.starts_with("api_schema:violations:")));
+        assert!(
+            resp.schema_violations
+                .iter()
+                .any(|v| v.violation_type == SchemaViolationType::ExtraField)
+        );
+        assert!(
+            resp.decision
+                .contributors
+                .iter()
+                .any(|c| c.starts_with("api_schema:violations:"))
+        );
     }
 
     fn critical_match_with_confidence(confidence: f64) -> InvariantMatch {
@@ -2871,7 +3351,11 @@ mod tests {
             severity: Severity::Critical,
             is_novel_variant: false,
             description: "critical test".into(),
-            detection_levels: DetectionLevels { l1: true, l2: false, convergent: false },
+            detection_levels: DetectionLevels {
+                l1: true,
+                l2: false,
+                convergent: false,
+            },
             l2_evidence: None,
             proof: None,
             cve_enrichment: None,
@@ -2910,14 +3394,23 @@ mod tests {
                     severity: Severity::High,
                     is_novel_variant: false,
                     description: "negative".into(),
-                    detection_levels: DetectionLevels { l1: true, l2: false, convergent: false },
+                    detection_levels: DetectionLevels {
+                        l1: true,
+                        l2: false,
+                        convergent: false,
+                    },
                     l2_evidence: None,
                     proof: None,
                     cve_enrichment: None,
                 },
             ],
         );
-        assert!(analysis.matches.iter().all(|m| (0.0..=1.0).contains(&m.confidence)));
+        assert!(
+            analysis
+                .matches
+                .iter()
+                .all(|m| (0.0..=1.0).contains(&m.confidence))
+        );
         assert!((0.0..=1.0).contains(&analysis.recommendation.confidence));
     }
 
@@ -3015,8 +3508,14 @@ mod tests {
         req.path = "/api/unknown".into();
         let resp = rt.process(&req);
 
-        assert!(!resp.analysis.matches.is_empty(), "attack detection should remain active");
-        assert!(!resp.schema_violations.is_empty(), "schema violation should still be surfaced");
+        assert!(
+            !resp.analysis.matches.is_empty(),
+            "attack detection should remain active"
+        );
+        assert!(
+            !resp.schema_violations.is_empty(),
+            "schema violation should still be surfaced"
+        );
         assert!(resp.decision.action >= DefenseAction::Block);
     }
 
@@ -3044,7 +3543,12 @@ mod tests {
             ("Transfer-Encoding".into(), "chunked".into()),
         ];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleClTe));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleClTe)
+        );
     }
 
     #[test]
@@ -3056,7 +3560,12 @@ mod tests {
             ("Transfer-Encoding".into(), "chunked".into()),
         ];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleChunkExt));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleChunkExt)
+        );
     }
 
     #[test]
@@ -3074,7 +3583,12 @@ mod tests {
         let mut req = make_request("header-test");
         req.headers = vec![("X-Oversized".into(), "A".repeat(9 * 1024))];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleH2));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleH2)
+        );
     }
 
     #[test]
@@ -3086,7 +3600,12 @@ mod tests {
             ("content-type".into(), "text/plain".into()),
         ];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleH2));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleH2)
+        );
     }
 
     #[test]
@@ -3119,7 +3638,12 @@ mod tests {
         req.ja3 = Some("771,4865\0".into());
         req.headers = vec![("X-A\0".into(), "b\0c".into())];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::PathNullTerminate));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::PathNullTerminate)
+        );
     }
 
     #[test]
@@ -3131,7 +3655,12 @@ mod tests {
             ("Content-Length".into(), "9".into()),
         ];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleClTe));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleClTe)
+        );
     }
 
     #[test]
@@ -3140,7 +3669,12 @@ mod tests {
         let mut req = make_request("non-empty-body");
         req.headers = vec![("Content-Length".into(), "0".into())];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleZeroCl));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleZeroCl)
+        );
     }
 
     #[test]
@@ -3152,7 +3686,12 @@ mod tests {
             ("Content-Length".into(), "6".into()),
         ];
         let resp = rt.process(&req);
-        assert!(resp.analysis.matches.iter().any(|m| m.class == InvariantClass::HttpSmuggleExpect));
+        assert!(
+            resp.analysis
+                .matches
+                .iter()
+                .any(|m| m.class == InvariantClass::HttpSmuggleExpect)
+        );
     }
 
     #[test]
@@ -3170,16 +3709,18 @@ mod tests {
         req2.timestamp = 1001;
         let r2 = rt.process(&req2);
 
-        assert!(r1
-            .decision
-            .contributors
-            .iter()
-            .any(|c| c == "source_identity:fallback_hash_applied"));
-        assert!(r2
-            .decision
-            .contributors
-            .iter()
-            .any(|c| c == "source_identity:fallback_hash_applied"));
+        assert!(
+            r1.decision
+                .contributors
+                .iter()
+                .any(|c| c == "source_identity:fallback_hash_applied")
+        );
+        assert!(
+            r2.decision
+                .contributors
+                .iter()
+                .any(|c| c == "source_identity:fallback_hash_applied")
+        );
         assert!(r2.threat_level >= r1.threat_level);
     }
 }

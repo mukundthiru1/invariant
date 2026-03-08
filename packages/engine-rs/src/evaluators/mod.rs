@@ -8,35 +8,35 @@
 //!
 //! INVARIANT: This registry is the single source of truth for L2 routing.
 
-pub mod sql;
-pub mod xss;
-pub mod cmd;
-pub mod path;
-pub mod ssrf;
-pub mod nosql;
-pub mod xxe;
-pub mod crlf;
-pub mod ssti;
-pub mod redirect;
-pub mod proto_pollution;
-pub mod log4shell;
-pub mod deser;
-pub mod ldap;
-pub mod graphql;
-pub mod http_smuggle;
-pub mod mass_assignment;
-pub mod supply_chain;
-pub mod llm;
-pub mod websocket;
-pub mod jwt;
-pub mod cache;
 pub mod api_abuse;
-pub mod idor;
-pub mod hpp;
-pub mod race_condition;
-pub mod redos;
-pub mod oast;
+pub mod cache;
+pub mod cmd;
 pub mod cors;
+pub mod crlf;
+pub mod deser;
+pub mod graphql;
+pub mod hpp;
+pub mod http_smuggle;
+pub mod idor;
+pub mod jwt;
+pub mod ldap;
+pub mod llm;
+pub mod log4shell;
+pub mod mass_assignment;
+pub mod nosql;
+pub mod oast;
+pub mod path;
+pub mod proto_pollution;
+pub mod race_condition;
+pub mod redirect;
+pub mod redos;
+pub mod sql;
+pub mod ssrf;
+pub mod ssti;
+pub mod supply_chain;
+pub mod websocket;
+pub mod xss;
+pub mod xxe;
 
 use crate::types::InvariantClass;
 use serde::{Deserialize, Serialize};
@@ -89,6 +89,20 @@ pub struct L2Result {
     pub evidence: Vec<ProofEvidence>,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct L2InputHints {
+    pub sql_like: bool,
+    pub html_like: bool,
+    pub shell_like: bool,
+    pub path_like: bool,
+    pub url_like: bool,
+    pub xml_like: bool,
+    pub template_like: bool,
+    pub header_like: bool,
+    pub graphql_like: bool,
+    pub websocket_like: bool,
+}
+
 // ── Evaluator Trait ─────────────────────────────────────────────
 
 /// Every L2 evaluator implements this trait.
@@ -120,14 +134,18 @@ static XXE_EVALUATOR: xxe::XxeEvaluator = xxe::XxeEvaluator;
 static CRLF_EVALUATOR: crlf::CrlfEvaluator = crlf::CrlfEvaluator;
 static SSTI_EVALUATOR: ssti::SstiEvaluator = ssti::SstiEvaluator;
 static REDIRECT_EVALUATOR: redirect::RedirectEvaluator = redirect::RedirectEvaluator;
-static PROTO_POLLUTION_EVALUATOR: proto_pollution::ProtoPollutionEvaluator = proto_pollution::ProtoPollutionEvaluator;
+static PROTO_POLLUTION_EVALUATOR: proto_pollution::ProtoPollutionEvaluator =
+    proto_pollution::ProtoPollutionEvaluator;
 static LOG4SHELL_EVALUATOR: log4shell::Log4ShellEvaluator = log4shell::Log4ShellEvaluator;
 static DESER_EVALUATOR: deser::DeserEvaluator = deser::DeserEvaluator;
 static LDAP_EVALUATOR: ldap::LdapEvaluator = ldap::LdapEvaluator;
 static GRAPHQL_EVALUATOR: graphql::GraphqlEvaluator = graphql::GraphqlEvaluator;
-static HTTP_SMUGGLE_EVALUATOR: http_smuggle::HttpSmuggleEvaluator = http_smuggle::HttpSmuggleEvaluator;
-static MASS_ASSIGNMENT_EVALUATOR: mass_assignment::MassAssignmentEvaluator = mass_assignment::MassAssignmentEvaluator;
-static SUPPLY_CHAIN_EVALUATOR: supply_chain::SupplyChainEvaluator = supply_chain::SupplyChainEvaluator;
+static HTTP_SMUGGLE_EVALUATOR: http_smuggle::HttpSmuggleEvaluator =
+    http_smuggle::HttpSmuggleEvaluator;
+static MASS_ASSIGNMENT_EVALUATOR: mass_assignment::MassAssignmentEvaluator =
+    mass_assignment::MassAssignmentEvaluator;
+static SUPPLY_CHAIN_EVALUATOR: supply_chain::SupplyChainEvaluator =
+    supply_chain::SupplyChainEvaluator;
 static LLM_EVALUATOR: llm::LlmEvaluator = llm::LlmEvaluator;
 static WEBSOCKET_EVALUATOR: websocket::WebSocketEvaluator = websocket::WebSocketEvaluator;
 static JWT_EVALUATOR: jwt::JwtEvaluator = jwt::JwtEvaluator;
@@ -135,7 +153,8 @@ static CACHE_EVALUATOR: cache::CacheEvaluator = cache::CacheEvaluator;
 static API_ABUSE_EVALUATOR: api_abuse::ApiAbuseEvaluator = api_abuse::ApiAbuseEvaluator;
 static IDOR_EVALUATOR: idor::IdorEvaluator = idor::IdorEvaluator;
 static HPP_EVALUATOR: hpp::HppEvaluator = hpp::HppEvaluator;
-static RACE_CONDITION_EVALUATOR: race_condition::RaceConditionEvaluator = race_condition::RaceConditionEvaluator;
+static RACE_CONDITION_EVALUATOR: race_condition::RaceConditionEvaluator =
+    race_condition::RaceConditionEvaluator;
 static REDOS_EVALUATOR: redos::RedosEvaluator = redos::RedosEvaluator;
 static OAST_EVALUATOR: oast::OastEvaluator = oast::OastEvaluator;
 static CORS_EVALUATOR: cors::CorsEvaluator = cors::CorsEvaluator;
@@ -185,9 +204,51 @@ pub fn all_evaluators() -> &'static [&'static dyn L2Evaluator] {
 /// Run all L2 evaluators on input. Returns mapped results.
 #[inline]
 pub fn evaluate_l2(input: &str) -> Vec<L2Result> {
+    // Compatibility path: when callers request generic L2 evaluation without
+    // hints, run the full evaluator set.
+    evaluate_l2_with_hints(
+        input,
+        &L2InputHints {
+            sql_like: true,
+            html_like: true,
+            shell_like: true,
+            path_like: true,
+            url_like: true,
+            xml_like: true,
+            template_like: true,
+            header_like: true,
+            graphql_like: true,
+            websocket_like: true,
+        },
+    )
+}
+
+#[inline]
+fn should_run_evaluator(evaluator_id: &str, hints: &L2InputHints) -> bool {
+    match evaluator_id {
+        "sql_tautology" | "sql_structural" => hints.sql_like,
+        "xss" => hints.html_like,
+        "cmd_injection" => hints.shell_like,
+        "path_traversal" => hints.path_like,
+        "ssrf" | "redirect" => hints.url_like,
+        "xxe" => hints.xml_like,
+        "ssti" => hints.template_like,
+        "crlf" | "http_smuggle" => hints.header_like,
+        "graphql" => hints.graphql_like,
+        "websocket" => hints.websocket_like || hints.header_like,
+        _ => true,
+    }
+}
+
+/// Run L2 evaluators with optional hot-path gating hints.
+#[inline]
+pub fn evaluate_l2_with_hints(input: &str, hints: &L2InputHints) -> Vec<L2Result> {
     let mut results = Vec::with_capacity(8);
 
     for evaluator in all_evaluators() {
+        if !should_run_evaluator(evaluator.id(), hints) {
+            continue;
+        }
         let detections = evaluator.detect(input);
         for det in detections {
             if let Some(class) = evaluator.map_class(&det.detection_type) {
@@ -244,7 +305,9 @@ mod tests {
                     "Expected detection_type '{}' for input {:?}, got {:?}",
                     $dtype,
                     $input,
-                    dets.iter().map(|d| d.detection_type.as_str()).collect::<Vec<_>>()
+                    dets.iter()
+                        .map(|d| d.detection_type.as_str())
+                        .collect::<Vec<_>>()
                 );
             }
         };
@@ -253,7 +316,11 @@ mod tests {
     #[test]
     fn registry_has_all_evaluators() {
         let evaluators = all_evaluators();
-        assert!(evaluators.len() >= 24, "Expected at least 24 evaluators, got {}", evaluators.len());
+        assert!(
+            evaluators.len() >= 24,
+            "Expected at least 24 evaluators, got {}",
+            evaluators.len()
+        );
 
         // Check all IDs are unique
         let mut ids: Vec<&str> = evaluators.iter().map(|e| e.id()).collect();
@@ -266,7 +333,9 @@ mod tests {
     fn sql_injection_detected() {
         let results = evaluate_l2("' OR 1=1--");
         assert!(
-            results.iter().any(|r| r.class == InvariantClass::SqlTautology),
+            results
+                .iter()
+                .any(|r| r.class == InvariantClass::SqlTautology),
             "Expected SqlTautology detection for ' OR 1=1--"
         );
     }
@@ -274,14 +343,20 @@ mod tests {
     #[test]
     fn benign_input_no_detections() {
         let results = evaluate_l2("hello world");
-        assert!(results.is_empty(), "Expected no detections for benign input, got {:?}", results);
+        assert!(
+            results.is_empty(),
+            "Expected no detections for benign input, got {:?}",
+            results
+        );
     }
 
     #[test]
     fn xss_detected() {
         let results = evaluate_l2("<script>alert(1)</script>");
         assert!(
-            results.iter().any(|r| r.class == InvariantClass::XssTagInjection),
+            results
+                .iter()
+                .any(|r| r.class == InvariantClass::XssTagInjection),
             "Expected XssTagInjection for <script>alert(1)</script>"
         );
     }

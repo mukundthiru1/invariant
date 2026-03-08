@@ -108,7 +108,11 @@ pub fn infer_field_type(field_name: &str) -> FieldType {
     if name.contains("email") {
         return FieldType::Email;
     }
-    if name.contains("url") || name.contains("uri") || name.contains("link") || name.contains("website") {
+    if name.contains("url")
+        || name.contains("uri")
+        || name.contains("link")
+        || name.contains("website")
+    {
         return FieldType::Url;
     }
     if name.ends_with("id") || name == "id" || name.contains("_id") || name.contains("uuid") {
@@ -172,29 +176,57 @@ pub fn analyze_field(field_name: &str, value: &str, field_type: FieldType) -> Ve
                 anomalies.push(anomaly(field_name, &path, "invalid email shape"));
             }
             if sql {
-                anomalies.push(anomaly(field_name, &path, "unexpected SQL-like payload in email field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "unexpected SQL-like payload in email field",
+                ));
             }
             if xss {
-                anomalies.push(anomaly(field_name, &path, "unexpected HTML/JS payload in email field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "unexpected HTML/JS payload in email field",
+                ));
             }
         }
         FieldType::Numeric => {
             if !looks_like_numeric(v) {
-                anomalies.push(anomaly(field_name, &path, "non-numeric data in numeric field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "non-numeric data in numeric field",
+                ));
             }
             if xss {
-                anomalies.push(anomaly(field_name, &path, "XSS-like payload in numeric field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "XSS-like payload in numeric field",
+                ));
             }
             if sql {
-                anomalies.push(anomaly(field_name, &path, "SQL-like payload in numeric field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "SQL-like payload in numeric field",
+                ));
             }
         }
         FieldType::Boolean => {
             if !looks_like_boolean(v) {
-                anomalies.push(anomaly(field_name, &path, "non-boolean data in boolean field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "non-boolean data in boolean field",
+                ));
             }
             if xss || sql {
-                anomalies.push(anomaly(field_name, &path, "injection-like payload in boolean field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "injection-like payload in boolean field",
+                ));
             }
         }
         FieldType::Date => {
@@ -202,7 +234,11 @@ pub fn analyze_field(field_name: &str, value: &str, field_type: FieldType) -> Ve
                 anomalies.push(anomaly(field_name, &path, "unexpected date format"));
             }
             if sql || xss {
-                anomalies.push(anomaly(field_name, &path, "injection-like payload in date field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "injection-like payload in date field",
+                ));
             }
         }
         FieldType::Id => {
@@ -210,7 +246,11 @@ pub fn analyze_field(field_name: &str, value: &str, field_type: FieldType) -> Ve
                 anomalies.push(anomaly(field_name, &path, "unexpected ID format"));
             }
             if lower.contains("../") || lower.contains("..\\") {
-                anomalies.push(anomaly(field_name, &path, "path traversal-like sequence in ID field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "path traversal-like sequence in ID field",
+                ));
             }
         }
         FieldType::Url => {
@@ -218,7 +258,11 @@ pub fn analyze_field(field_name: &str, value: &str, field_type: FieldType) -> Ve
                 anomalies.push(anomaly(field_name, &path, "invalid URL format"));
             }
             if lower.contains("javascript:") || lower.contains("data:text/html") {
-                anomalies.push(anomaly(field_name, &path, "executable URL scheme in URL field"));
+                anomalies.push(anomaly(
+                    field_name,
+                    &path,
+                    "executable URL scheme in URL field",
+                ));
             }
         }
         FieldType::FreeText | FieldType::Unknown => {
@@ -326,7 +370,14 @@ pub fn extract_all_string_values(json: &str) -> Vec<(String, String)> {
     let mut fields = Vec::new();
     let mut max_depth = 0usize;
     let mut depth_exceeded = false;
-    walk_json_strings(&value, "", 0, &mut max_depth, &mut depth_exceeded, &mut fields);
+    walk_json_strings(
+        &value,
+        "",
+        0,
+        &mut max_depth,
+        &mut depth_exceeded,
+        &mut fields,
+    );
     if depth_exceeded {
         fields.push(("$".to_owned(), "<max-json-depth-exceeded>".to_owned()));
     }
@@ -343,7 +394,11 @@ pub fn detect_multipart_abuse(fields: &[MultipartField]) -> Vec<FieldAnomaly> {
         };
 
         if field.name.trim().is_empty() {
-            anomalies.push(anomaly("multipart", &path, "multipart field with missing name"));
+            anomalies.push(anomaly(
+                "multipart",
+                &path,
+                "multipart field with missing name",
+            ));
         }
 
         if field.body.contains("\r\n--") || field.body.contains("\n--") {
@@ -354,7 +409,11 @@ pub fn detect_multipart_abuse(fields: &[MultipartField]) -> Vec<FieldAnomaly> {
             ));
         }
 
-        if field.body.to_ascii_lowercase().contains("content-disposition:") {
+        if field
+            .body
+            .to_ascii_lowercase()
+            .contains("content-disposition:")
+        {
             anomalies.push(anomaly(
                 &field.name,
                 &path,
@@ -476,10 +535,8 @@ fn parse_multipart(body: &str, boundary: &str) -> Vec<MultipartField> {
             if lower.starts_with("content-disposition:") {
                 for token in line.split(';').map(str::trim) {
                     if let Some(name) = token.strip_prefix("name=") {
-                        field.name = truncate_string(
-                            name.trim_matches('"'),
-                            MAX_MULTIPART_FIELD_NAME_LEN,
-                        );
+                        field.name =
+                            truncate_string(name.trim_matches('"'), MAX_MULTIPART_FIELD_NAME_LEN);
                     } else if let Some(fname) = token.strip_prefix("filename=") {
                         field.filename = Some(truncate_string(
                             fname.trim_matches('"'),
@@ -502,22 +559,37 @@ fn parse_multipart(body: &str, boundary: &str) -> Vec<MultipartField> {
     out
 }
 
-pub fn detect_multipart_boundary_confusion(body: &str, boundary: Option<&str>) -> Vec<FieldAnomaly> {
+pub fn detect_multipart_boundary_confusion(
+    body: &str,
+    boundary: Option<&str>,
+) -> Vec<FieldAnomaly> {
     let mut anomalies = Vec::new();
     let boundary = match boundary {
         Some(v) if !v.trim().is_empty() => v,
         _ => {
-            anomalies.push(anomaly("multipart", "$", "multipart body has missing boundary"));
+            anomalies.push(anomaly(
+                "multipart",
+                "$",
+                "multipart body has missing boundary",
+            ));
             return anomalies;
         }
     };
 
     if boundary.len() > MAX_MULTIPART_BOUNDARY_LEN {
-        anomalies.push(anomaly("multipart", "$", "multipart boundary length exceeds safe threshold"));
+        anomalies.push(anomaly(
+            "multipart",
+            "$",
+            "multipart boundary length exceeds safe threshold",
+        ));
     }
 
     if boundary.contains(' ') || boundary.contains('\r') || boundary.contains('\n') {
-        anomalies.push(anomaly("multipart", "$", "multipart boundary contains invalid control/spacing characters"));
+        anomalies.push(anomaly(
+            "multipart",
+            "$",
+            "multipart boundary contains invalid control/spacing characters",
+        ));
     }
 
     let marker = format!("--{boundary}");
@@ -552,7 +624,11 @@ pub fn detect_multipart_boundary_confusion(body: &str, boundary: Option<&str>) -
     }
 
     if !saw_boundary_marker {
-        anomalies.push(anomaly("multipart", "$", "multipart boundary marker missing"));
+        anomalies.push(anomaly(
+            "multipart",
+            "$",
+            "multipart boundary marker missing",
+        ));
     }
 
     if anomalies.is_empty() {
@@ -613,12 +689,20 @@ pub fn detect_chunked_encoding_abuse(body: &str) -> Vec<FieldAnomaly> {
         idx += size;
 
         if idx + consume_len > bytes.len() {
-            anomalies.push(anomaly("body", "$", "chunked transfer malformed terminator"));
+            anomalies.push(anomaly(
+                "body",
+                "$",
+                "chunked transfer malformed terminator",
+            ));
             break;
         }
 
         if &bytes[idx..idx + consume_len] != b"\r\n" && &bytes[idx..idx + consume_len] != b"\n" {
-            anomalies.push(anomaly("body", "$", "chunked transfer malformed terminator"));
+            anomalies.push(anomaly(
+                "body",
+                "$",
+                "chunked transfer malformed terminator",
+            ));
             break;
         }
         idx += consume_len;
@@ -640,7 +724,11 @@ pub fn detect_chunked_encoding_abuse(body: &str) -> Vec<FieldAnomaly> {
     }
 
     if had_chunked && anomalies.is_empty() {
-        anomalies.push(anomaly("body", "$", "chunked transfer encoding-like body detected"));
+        anomalies.push(anomaly(
+            "body",
+            "$",
+            "chunked transfer encoding-like body detected",
+        ));
     }
     anomalies
 }
@@ -737,7 +825,10 @@ fn extract_xml_attributes(tag_content: &str) -> Vec<(String, String)> {
     let _tag = rest.next();
     for token in rest {
         if let Some((k, v)) = token.split_once('=') {
-            attrs.push((k.to_owned(), v.trim_matches('"').trim_matches('\'').to_owned()));
+            attrs.push((
+                k.to_owned(),
+                v.trim_matches('"').trim_matches('\'').to_owned(),
+            ));
         }
     }
     attrs
@@ -857,7 +948,10 @@ fn walk_json_for_anomalies(
 
     let kind = json_kind(value);
     if !path.is_empty() {
-        type_map.entry(canonicalize_json_path(path)).or_default().insert(kind);
+        type_map
+            .entry(canonicalize_json_path(path))
+            .or_default()
+            .insert(kind);
     }
 
     match value {
@@ -870,11 +964,7 @@ fn walk_json_for_anomalies(
                     } else {
                         format!("{path}.{k}")
                     };
-                    anomalies.push(anomaly(
-                        k,
-                        &kp,
-                        "prototype-pollution key in JSON payload",
-                    ));
+                    anomalies.push(anomaly(k, &kp, "prototype-pollution key in JSON payload"));
                 }
                 let next = if path.is_empty() {
                     k.to_owned()
@@ -1173,7 +1263,7 @@ fn scan_duplicate_json_object(
     let mut seen = HashMap::new();
 
     loop {
-    let key = parse_json_string(body, idx)?;
+        let key = parse_json_string(body, idx)?;
 
         skip_json_ws(bytes, idx);
         if *idx >= bytes.len() || bytes[*idx] != b':' {
@@ -1361,11 +1451,7 @@ fn parse_json_primitive_end(body: &str, idx: &mut usize) -> Option<usize> {
                 }
                 *idx += 1;
             }
-            if *idx == start {
-                None
-            } else {
-                Some(*idx)
-            }
+            if *idx == start { None } else { Some(*idx) }
         }
         _ => {
             let s = &body[*idx..];
@@ -1502,8 +1588,14 @@ mod tests {
         let parsed = parse_body(Some("application/json"), body);
         match parsed {
             ParsedBody::Json(json) => {
-                assert!(json.fields.contains(&("user.email".into(), "a@b.com".into())));
-                assert!(json.fields.contains(&("items[0].name".into(), "pen".into())));
+                assert!(
+                    json.fields
+                        .contains(&("user.email".into(), "a@b.com".into()))
+                );
+                assert!(
+                    json.fields
+                        .contains(&("items[0].name".into(), "pen".into()))
+                );
             }
             _ => panic!("expected json"),
         }
@@ -1527,10 +1619,7 @@ mod tests {
     #[test]
     fn parse_multipart_extracts_field_metadata() {
         let body = "--abc\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n--abc--";
-        let parsed = parse_body(
-            Some("multipart/form-data; boundary=abc"),
-            body,
-        );
+        let parsed = parse_body(Some("multipart/form-data; boundary=abc"), body);
         match parsed {
             ParsedBody::Multipart(fields) => {
                 assert_eq!(fields.len(), 1);
@@ -1556,7 +1645,11 @@ mod tests {
             nested.push('}');
         }
         let anomalies = detect_json_injection(&nested);
-        assert!(anomalies.iter().any(|a| a.message.contains("excessive JSON nesting")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("excessive JSON nesting"))
+        );
     }
 
     #[test]
@@ -1578,32 +1671,48 @@ mod tests {
     fn detect_duplicate_json_keys_with_conflicting_values() {
         let anomalies =
             detect_json_injection(r#"{"profile":{"role":"admin","role":"user"},"role":"guest"}"#);
-        assert!(anomalies.iter().any(|a| a.message.contains("duplicate JSON key with conflicting values")));
+        assert!(anomalies.iter().any(|a| {
+            a.message
+                .contains("duplicate JSON key with conflicting values")
+        }));
     }
 
     #[test]
     fn detect_multipart_boundary_confusion_with_embedded_marker_and_missing_boundary() {
         let body = "line1\n--abc-attack\nvalue--abc--\n--abc\n";
         let anomalies = detect_multipart_boundary_confusion(body, Some("abc"));
-        assert!(anomalies.iter().any(|a| a.message.contains("appears in body content")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("appears in body content"))
+        );
 
         let missing = detect_multipart_boundary_confusion("just text", None);
-        assert!(missing.iter().any(|a| a.message.contains("missing boundary")));
+        assert!(
+            missing
+                .iter()
+                .any(|a| a.message.contains("missing boundary"))
+        );
     }
 
     #[test]
     fn detect_chunked_encoding_abuse_invalid_size_or_truncated_body() {
         let invalid_size = "G\r\nabc\r\n0\r\n\r\n";
         let invalid_size_anomalies = detect_chunked_encoding_abuse(invalid_size);
-        assert!(invalid_size_anomalies
-            .iter()
-            .any(|a| a.message.contains("invalid chunk size token")));
+        assert!(
+            invalid_size_anomalies
+                .iter()
+                .any(|a| a.message.contains("invalid chunk size token"))
+        );
 
         let truncated = "4\r\nabc";
         let truncated_anomalies = detect_chunked_encoding_abuse(truncated);
-        assert!(truncated_anomalies
-            .iter()
-            .any(|a| a.message.contains("truncated chunked body") || a.message.contains("length mismatch")));
+        assert!(
+            truncated_anomalies
+                .iter()
+                .any(|a| a.message.contains("truncated chunked body")
+                    || a.message.contains("length mismatch"))
+        );
     }
 
     #[test]
@@ -1614,7 +1723,11 @@ mod tests {
         }
         body.push_str("0\r\n\r\n");
         let anomalies = detect_chunked_encoding_abuse(&body);
-        assert!(anomalies.iter().any(|a| a.message.contains("excessive chunk count")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("excessive chunk count"))
+        );
     }
 
     #[test]
@@ -1639,7 +1752,12 @@ mod tests {
         let fields = parse_multipart(&body, "abc");
         assert_eq!(fields.len(), 1);
         assert!(fields[0].name.len() <= MAX_MULTIPART_FIELD_NAME_LEN);
-        assert!(fields[0].filename.as_ref().is_some_and(|name| name.len() <= MAX_MULTIPART_FILENAME_LEN));
+        assert!(
+            fields[0]
+                .filename
+                .as_ref()
+                .is_some_and(|name| name.len() <= MAX_MULTIPART_FILENAME_LEN)
+        );
         assert!(fields[0].body.len() <= MAX_MULTIPART_FIELD_VALUE_LEN);
     }
 
@@ -1650,7 +1768,10 @@ mod tests {
         match parsed {
             ParsedBody::Xml(xml) => {
                 assert!(xml.fields.contains(&("/root/user/@id".into(), "42".into())));
-                assert!(xml.fields.contains(&("/root/user/email".into(), "x@y.com".into())));
+                assert!(
+                    xml.fields
+                        .contains(&("/root/user/email".into(), "x@y.com".into()))
+                );
             }
             _ => panic!("expected xml"),
         }
@@ -1682,13 +1803,21 @@ mod tests {
     #[test]
     fn detect_json_injection_finds_proto_pollution_keys() {
         let anomalies = detect_json_injection(r#"{"user":{"__proto__":{"admin":true}}}"#);
-        assert!(anomalies.iter().any(|a| a.message.contains("prototype-pollution")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("prototype-pollution"))
+        );
     }
 
     #[test]
     fn detect_json_injection_finds_type_confusion() {
         let anomalies = detect_json_injection(r#"{"x":"1","arr":[{"x":1},{"x":"2"}]}"#);
-        assert!(anomalies.iter().any(|a| a.message.contains("type confusion")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("type confusion"))
+        );
     }
 
     #[test]
@@ -1709,7 +1838,11 @@ mod tests {
         }];
         let anomalies = detect_multipart_abuse(&fields);
         assert!(anomalies.iter().any(|a| a.message.contains("traversal")));
-        assert!(anomalies.iter().any(|a| a.message.contains("double-extension")));
+        assert!(
+            anomalies
+                .iter()
+                .any(|a| a.message.contains("double-extension"))
+        );
     }
 
     #[test]

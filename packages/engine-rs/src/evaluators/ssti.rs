@@ -7,8 +7,12 @@ use regex::Regex;
 pub struct SstiEvaluator;
 
 impl L2Evaluator for SstiEvaluator {
-    fn id(&self) -> &'static str { "ssti" }
-    fn prefix(&self) -> &'static str { "L2 SSTI" }
+    fn id(&self) -> &'static str {
+        "ssti"
+    }
+    fn prefix(&self) -> &'static str {
+        "L2 SSTI"
+    }
 
     #[inline]
 
@@ -17,7 +21,8 @@ impl L2Evaluator for SstiEvaluator {
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
 
         // Jinja2/Twig: {{ ... }}
-        static jinja: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"\{\{.*?\}\}").unwrap());
+        static jinja: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"\{\{.*?\}\}").unwrap());
         if let Some(m) = jinja.find(&decoded) {
             let content = m.as_str();
             static JINJA_CODE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -44,7 +49,9 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Mathematical probe: {{7*7}} or ${7*7} or #{7*7}
-        static math_probe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?:\{\{|\$\{|#\{)\s*\d+\s*\*\s*\d+\s*(?:\}\}|\})").unwrap());
+        static math_probe: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?:\{\{|\$\{|#\{)\s*\d+\s*\*\s*\d+\s*(?:\}\}|\})").unwrap()
+        });
         if let Some(m) = math_probe.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_probe".into(),
@@ -62,12 +69,16 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Freemarker: <#assign ...>
-        static freemarker: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"<#(?:assign|include|import)\s").unwrap());
+        static freemarker: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"<#(?:assign|include|import)\s").unwrap());
         if let Some(m) = freemarker.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_freemarker".into(),
                 confidence: 0.90,
-                detail: format!("FreeMarker SSTI: {}", &decoded[m.start()..decoded.len().min(m.start() + 60)]),
+                detail: format!(
+                    "FreeMarker SSTI: {}",
+                    &decoded[m.start()..decoded.len().min(m.start() + 60)]
+                ),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -80,7 +91,9 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Velocity: #set($x = ...)
-        static velocity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"#(?:set|foreach|if|include|parse)\s*\(").unwrap());
+        static velocity: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"#(?:set|foreach|if|include|parse)\s*\(").unwrap()
+        });
         if let Some(m) = velocity.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_velocity".into(),
@@ -98,11 +111,13 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // ERB: <%= ... %>
-        static erb: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"<%=?\s*.*?%>").unwrap());
+        static erb: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"<%=?\s*.*?%>").unwrap());
         if let Some(m) = erb.find(&decoded) {
             let content = m.as_str();
-            static ERB_EXEC_RE: std::sync::LazyLock<Regex> =
-                std::sync::LazyLock::new(|| Regex::new(r"(?i)(?:system|exec|eval|`|IO\.|File\.|Kernel\.)").unwrap());
+            static ERB_EXEC_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)(?:system|exec|eval|`|IO\.|File\.|Kernel\.)").unwrap()
+            });
             if ERB_EXEC_RE.is_match(content) {
                 dets.push(L2Detection {
                     detection_type: "ssti_erb".into(),
@@ -121,7 +136,10 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Pebble/Spring EL expression: ${T(java.lang.Runtime)...}
-        static spel_runtime: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)\$\{\s*T\s*\(\s*java\.lang\.(?:Runtime|ProcessBuilder|Class)\s*\)").unwrap());
+        static spel_runtime: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\$\{\s*T\s*\(\s*java\.lang\.(?:Runtime|ProcessBuilder|Class)\s*\)")
+                .unwrap()
+        });
         if let Some(m) = spel_runtime.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_spel_runtime".into(),
@@ -131,26 +149,37 @@ impl L2Evaluator for SstiEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Template expression resolves Java runtime classes for code execution".into(),
+                    interpretation:
+                        "Template expression resolves Java runtime classes for code execution"
+                            .into(),
                     offset: m.start(),
-                    property: "User input must not inject Spring/Pebble template expressions".into(),
+                    property: "User input must not inject Spring/Pebble template expressions"
+                        .into(),
                 }],
             });
         }
 
         // Mako SSTI: <% import os %> and ${os.popen(...).read()}
-        static mako_import: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)<%\s*import\s+os\s*%>").unwrap());
-        static mako_popen: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)\$\{\s*os\.popen\s*\([^)]*\)\.read\(\)\s*\}").unwrap());
+        static mako_import: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?is)<%\s*import\s+os\s*%>").unwrap());
+        static mako_popen: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)\$\{\s*os\.popen\s*\([^)]*\)\.read\(\)\s*\}").unwrap()
+        });
         if let Some(m) = mako_import.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_mako_rce".into(),
-                confidence: if mako_popen.is_match(&decoded) { 0.95 } else { 0.91 },
+                confidence: if mako_popen.is_match(&decoded) {
+                    0.95
+                } else {
+                    0.91
+                },
                 detail: format!("Mako import-based SSTI: {}", m.as_str()),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Mako template block imports OS module for command execution".into(),
+                    interpretation: "Mako template block imports OS module for command execution"
+                        .into(),
                     offset: m.start(),
                     property: "User input must not inject Mako template code blocks".into(),
                 }],
@@ -159,28 +188,40 @@ impl L2Evaluator for SstiEvaluator {
         if let Some(m) = mako_popen.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_mako_rce".into(),
-                confidence: if mako_import.is_match(&decoded) { 0.95 } else { 0.93 },
+                confidence: if mako_import.is_match(&decoded) {
+                    0.95
+                } else {
+                    0.93
+                },
                 detail: format!("Mako command execution chain: {}", m.as_str()),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SemanticEval,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Mako expression executes shell command and returns output".into(),
+                    interpretation: "Mako expression executes shell command and returns output"
+                        .into(),
                     offset: m.start(),
-                    property: "User input must not execute commands through Mako expressions".into(),
+                    property: "User input must not execute commands through Mako expressions"
+                        .into(),
                 }],
             });
         }
 
         // Twig sandbox escape chains: |filter('system') and _self.env.getRuntime
-        static TWIG_FILTER_SYSTEM_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?i)\|\s*filter\s*\(\s*['"]system['"]\s*\)"#).unwrap());
+        static TWIG_FILTER_SYSTEM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)\|\s*filter\s*\(\s*['"]system['"]\s*\)"#).unwrap()
+        });
         let twig_filter_system = &*TWIG_FILTER_SYSTEM_RE;
-        static twig_runtime: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?i)_self\.env\.getRuntime").unwrap());
+        static twig_runtime: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)_self\.env\.getRuntime").unwrap());
         if let Some(m) = twig_filter_system.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_twig_escape".into(),
-                confidence: if twig_runtime.is_match(&decoded) { 0.96 } else { 0.92 },
+                confidence: if twig_runtime.is_match(&decoded) {
+                    0.96
+                } else {
+                    0.92
+                },
                 detail: format!("Twig sandbox escape via system filter: {}", m.as_str()),
                 position: m.start(),
                 evidence: vec![ProofEvidence {
@@ -201,7 +242,8 @@ impl L2Evaluator for SstiEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::SemanticEval,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Twig self object traversal reaches runtime internals for escape".into(),
+                    interpretation:
+                        "Twig self object traversal reaches runtime internals for escape".into(),
                     offset: m.start(),
                     property: "User input must not access Twig runtime internals".into(),
                 }],
@@ -209,7 +251,9 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Jinja2 class traversal gadget enumeration
-        static jinja_class_chain: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"''\.__class__\.__mro__\[\s*2\s*\]\.__subclasses__\(\)").unwrap());
+        static jinja_class_chain: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"''\.__class__\.__mro__\[\s*2\s*\]\.__subclasses__\(\)").unwrap()
+        });
         if let Some(m) = jinja_class_chain.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_jinja_class_chain".into(),
@@ -227,7 +271,9 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Smarty SSTI: {php}system(...){/php}
-        static smarty_php_system: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| Regex::new(r"(?is)\{php\}.*?system\s*\([^)]*\).*?\{/php\}").unwrap());
+        static smarty_php_system: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?is)\{php\}.*?system\s*\([^)]*\).*?\{/php\}").unwrap()
+        });
         if let Some(m) = smarty_php_system.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_smarty_php".into(),
@@ -237,14 +283,16 @@ impl L2Evaluator for SstiEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Smarty php tag executes system command in template context".into(),
+                    interpretation: "Smarty php tag executes system command in template context"
+                        .into(),
                     offset: m.start(),
                     property: "User input must not inject Smarty php execution tags".into(),
                 }],
             });
         }
-        static SMARTY_WRITE_FILE_RE: std::sync::LazyLock<Regex> =
-            std::sync::LazyLock::new(|| Regex::new(r#"(?i)\{Smarty_Internal_Write_File::writeFile\(\$SCRIPT_NAME,\s*["'][^"']*["']\)\}"#).unwrap());
+        static SMARTY_WRITE_FILE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)\{Smarty_Internal_Write_File::writeFile\(\$SCRIPT_NAME,\s*["'][^"']*["']\)\}"#).unwrap()
+        });
         let smarty_write_file = &*SMARTY_WRITE_FILE_RE;
         if let Some(m) = smarty_write_file.find(&decoded) {
             dets.push(L2Detection {
@@ -255,9 +303,12 @@ impl L2Evaluator for SstiEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "Smarty internal writeFile API writes attacker-controlled template content".into(),
+                    interpretation:
+                        "Smarty internal writeFile API writes attacker-controlled template content"
+                            .into(),
                     offset: m.start(),
-                    property: "Template input must not invoke Smarty internal file-write APIs".into(),
+                    property: "Template input must not invoke Smarty internal file-write APIs"
+                        .into(),
                 }],
             });
         }
@@ -304,9 +355,11 @@ impl L2Evaluator for SstiEvaluator {
         }
 
         // Twig template injection via block/parent/source primitives.
-        static TWIG_BLOCK_PARENT_SOURCE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r#"(?is)(?:\{%\s*block\s+[a-zA-Z_][a-zA-Z0-9_]*\s*%|\{\{\s*parent\s*\(|\{\{\s*source\s*\()"#).unwrap()
-        });
+        static TWIG_BLOCK_PARENT_SOURCE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+            || {
+                Regex::new(r#"(?is)(?:\{%\s*block\s+[a-zA-Z_][a-zA-Z0-9_]*\s*%|\{\{\s*parent\s*\(|\{\{\s*source\s*\()"#).unwrap()
+            },
+        );
         if let Some(m) = TWIG_BLOCK_PARENT_SOURCE_RE.find(&decoded) {
             dets.push(L2Detection {
                 detection_type: "ssti_twig_function_injection".into(),
@@ -381,7 +434,9 @@ impl L2Evaluator for SstiEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: m.as_str().to_owned(),
-                    interpretation: "EL expression resolves runtime/reflective Java classes for code execution".into(),
+                    interpretation:
+                        "EL expression resolves runtime/reflective Java classes for code execution"
+                            .into(),
                     offset: m.start(),
                     property: "EL expressions from user input must be disabled or sandboxed".into(),
                 }],
@@ -413,14 +468,21 @@ impl L2Evaluator for SstiEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "ssti_jinja" | "ssti_probe" | "ssti_freemarker" | "ssti_velocity" | "ssti_erb"
-                => Some(InvariantClass::SstiJinjaTwig),
+            "ssti_jinja" | "ssti_probe" | "ssti_freemarker" | "ssti_velocity" | "ssti_erb" => {
+                Some(InvariantClass::SstiJinjaTwig)
+            }
             "ssti_spel_runtime" | "ssti_el_injection" => Some(InvariantClass::SstiElExpression),
-            "ssti_mako_rce" | "ssti_twig_escape" | "ssti_jinja_class_chain"
-            | "ssti_smarty_php" | "ssti_smarty_writefile" | "ssti_handlebars_chain"
-            | "ssti_jinja_hierarchy_traversal" | "ssti_twig_function_injection"
-            | "ssti_smarty_literal" | "ssti_pebble_runtime" | "ssti_mako_module_block"
-                => Some(InvariantClass::SstiJinjaTwig),
+            "ssti_mako_rce"
+            | "ssti_twig_escape"
+            | "ssti_jinja_class_chain"
+            | "ssti_smarty_php"
+            | "ssti_smarty_writefile"
+            | "ssti_handlebars_chain"
+            | "ssti_jinja_hierarchy_traversal"
+            | "ssti_twig_function_injection"
+            | "ssti_smarty_literal"
+            | "ssti_pebble_runtime"
+            | "ssti_mako_module_block" => Some(InvariantClass::SstiJinjaTwig),
             _ => None,
         }
     }
@@ -455,8 +517,15 @@ mod tests {
     fn detects_jinja_class_traversal_chain() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{{''.__class__.__mro__[2].__subclasses__()}}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_jinja_class_chain"));
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_jinja_class_chain" && (d.confidence - 0.94).abs() < f64::EPSILON));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_jinja_class_chain")
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_jinja_class_chain"
+                    && (d.confidence - 0.94).abs() < f64::EPSILON)
+        );
     }
 
     #[test]
@@ -464,49 +533,70 @@ mod tests {
         let eval = SstiEvaluator;
         let dets = eval.detect("{php}system('id');{/php} {Smarty_Internal_Write_File::writeFile($SCRIPT_NAME,\"code\")}");
         assert!(dets.iter().any(|d| d.detection_type == "ssti_smarty_php"));
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_smarty_writefile"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_smarty_writefile")
+        );
     }
 
     #[test]
     fn detects_handlebars_chain_payload() {
         let eval = SstiEvaluator;
         let dets = eval.detect(r#"{{#with "s" as |string|}}{{#with "e"}}{{this}}"#);
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_handlebars_chain"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_handlebars_chain")
+        );
     }
 
     #[test]
     fn detects_jinja_hierarchy_traversal_markers() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{{ ''.__class__.__mro__[1].__subclasses__() }}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_jinja_hierarchy_traversal"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_jinja_hierarchy_traversal")
+        );
     }
 
     #[test]
     fn detects_twig_block_injection() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{% block body %}{{ source('admin.twig') }}{% endblock %}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_twig_function_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_twig_function_injection")
+        );
     }
 
     #[test]
     fn detects_twig_parent_function_injection() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{{ parent() }}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_twig_function_injection"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_twig_function_injection")
+        );
     }
 
     #[test]
     fn detects_smarty_literal_tag_injection() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{literal}{$smarty.server.DOCUMENT_ROOT}{/literal}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_smarty_literal"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_smarty_literal")
+        );
     }
 
     #[test]
     fn detects_pebble_runtime_chain() {
         let eval = SstiEvaluator;
         let dets = eval.detect("{{ beans['runtime'].exec('id') }}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_pebble_runtime"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_pebble_runtime")
+        );
     }
 
     #[test]
@@ -527,13 +617,19 @@ mod tests {
     fn detects_mako_module_import_block() {
         let eval = SstiEvaluator;
         let dets = eval.detect("<%! import os %>${os.system('id')}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_mako_module_block"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_mako_module_block")
+        );
     }
 
     #[test]
     fn detects_mako_module_import_subprocess_block() {
         let eval = SstiEvaluator;
         let dets = eval.detect("<%! import subprocess %>${7*7}");
-        assert!(dets.iter().any(|d| d.detection_type == "ssti_mako_module_block"));
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssti_mako_module_block")
+        );
     }
 }

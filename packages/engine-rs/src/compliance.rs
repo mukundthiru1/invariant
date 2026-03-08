@@ -148,25 +148,52 @@ fn control(
 fn owasp_top10_2021_for_class(class: InvariantClass) -> &'static str {
     use InvariantClass::*;
     match class {
-        BolaIdor | ApiMassEnum | MassAssignment | PathDotdotEscape | PathNullTerminate
-        | PathEncodingBypass | PathNormalizationBypass | OpenRedirectBypass
+        BolaIdor
+        | ApiMassEnum
+        | MassAssignment
+        | PathDotdotEscape
+        | PathNullTerminate
+        | PathEncodingBypass
+        | PathNormalizationBypass
+        | OpenRedirectBypass
         | LlmDataExfiltration => "A01:2021",
 
         AuthNoneAlgorithm | JwtKidInjection | JwtJwkEmbedding | JwtConfusion => "A02:2021",
 
-        SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
-        | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass
-        | XssTagInjection | XssAttributeEscape | XssEventHandler | XssProtocolHandler
-        | XssTemplateExpression | CmdSeparator | CmdSubstitution | CmdArgumentInjection
-        | NosqlOperatorInjection | NosqlJsInjection | LdapFilterInjection
-        | SstiJinjaTwig | SstiElExpression | XxeEntityExpansion | XmlInjection
-        | CrlfHeaderInjection | LogJndiLookup | WsInjection | LlmPromptInjection => "A03:2021",
+        SqlStringTermination
+        | SqlTautology
+        | SqlUnionExtraction
+        | SqlStackedExecution
+        | SqlTimeOracle
+        | SqlErrorOracle
+        | SqlCommentTruncation
+        | JsonSqlBypass
+        | XssTagInjection
+        | XssAttributeEscape
+        | XssEventHandler
+        | XssProtocolHandler
+        | XssTemplateExpression
+        | CmdSeparator
+        | CmdSubstitution
+        | CmdArgumentInjection
+        | NosqlOperatorInjection
+        | NosqlJsInjection
+        | LdapFilterInjection
+        | SstiJinjaTwig
+        | SstiElExpression
+        | XxeEntityExpansion
+        | XmlInjection
+        | CrlfHeaderInjection
+        | LogJndiLookup
+        | WsInjection
+        | LlmPromptInjection => "A03:2021",
 
         GraphqlBatchAbuse | RegexDos | LlmJailbreak => "A04:2021",
 
-        CachePoisoning | CacheDeception | HttpSmuggleClTe | HttpSmuggleH2
-        | HttpSmuggleChunkExt | HttpSmuggleZeroCl | HttpSmuggleExpect
-        | GraphqlIntrospection | CorsOriginAbuse => "A05:2021",
+        CachePoisoning | CacheDeception | HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt
+        | HttpSmuggleZeroCl | HttpSmuggleExpect | GraphqlIntrospection | CorsOriginAbuse => {
+            "A05:2021"
+        }
 
         DependencyConfusion | PostinstallInjection => "A06:2021",
 
@@ -189,7 +216,9 @@ fn owasp_api_top10_for_class(class: InvariantClass) -> &'static str {
         | JwtJwkEmbedding | JwtConfusion | WsHijack => "API2:2023",
         ApiMassEnum | GraphqlIntrospection => "API3:2023",
         SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | HttpSmuggleClTe
-        | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl | HttpSmuggleExpect => "API7:2023",
+        | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl | HttpSmuggleExpect => {
+            "API7:2023"
+        }
         CachePoisoning | CacheDeception | OpenRedirectBypass => "API8:2023",
         GraphqlBatchAbuse | RegexDos => "API4:2023",
         MassAssignment => "API6:2023",
@@ -204,7 +233,10 @@ fn cwe_ids_for_class(class: InvariantClass) -> &'static [&'static str] {
         SqlStringTermination | SqlTautology | SqlUnionExtraction | SqlStackedExecution
         | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => &["CWE-89"],
 
-        XssTagInjection | XssAttributeEscape | XssEventHandler | XssProtocolHandler
+        XssTagInjection
+        | XssAttributeEscape
+        | XssEventHandler
+        | XssProtocolHandler
         | XssTemplateExpression => &["CWE-79"],
 
         PathDotdotEscape | PathEncodingBypass | PathNormalizationBypass => &["CWE-22"],
@@ -213,7 +245,9 @@ fn cwe_ids_for_class(class: InvariantClass) -> &'static [&'static str] {
         CmdSeparator | CmdSubstitution => &["CWE-78"],
         CmdArgumentInjection => &["CWE-88"],
 
-        SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | OastInteraction => &["CWE-918"],
+        SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | OastInteraction => {
+            &["CWE-918"]
+        }
 
         DeserJavaGadget | DeserPhpObject | DeserPythonPickle => &["CWE-502"],
 
@@ -294,7 +328,12 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Code changes are reviewed by individuals other than the author, and approved by management before release to production.",
     ));
 
-    if matches!(class, InvariantClass::DependencyConfusion | InvariantClass::PostinstallInjection | InvariantClass::LogJndiLookup) {
+    if matches!(
+        class,
+        InvariantClass::DependencyConfusion
+            | InvariantClass::PostinstallInjection
+            | InvariantClass::LogJndiLookup
+    ) {
         controls.push(control(
             ComplianceFramework::Pci4,
             "PCI DSS 4.0 6.3.2",
@@ -316,7 +355,13 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Detected security events are analyzed for impact and triaged for response.",
     ));
 
-    if matches!(class, InvariantClass::BolaIdor | InvariantClass::MassAssignment | InvariantClass::AuthNoneAlgorithm | InvariantClass::AuthHeaderSpoof) {
+    if matches!(
+        class,
+        InvariantClass::BolaIdor
+            | InvariantClass::MassAssignment
+            | InvariantClass::AuthNoneAlgorithm
+            | InvariantClass::AuthHeaderSpoof
+    ) {
         controls.push(control(
             ComplianceFramework::Soc2,
             "CC6.1",
@@ -332,7 +377,13 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Appropriate technical and organizational measures ensure ongoing confidentiality, integrity, availability and resilience of processing systems and services.",
     ));
 
-    if matches!(class, InvariantClass::BolaIdor | InvariantClass::ApiMassEnum | InvariantClass::LlmDataExfiltration | InvariantClass::EnvExfiltration) {
+    if matches!(
+        class,
+        InvariantClass::BolaIdor
+            | InvariantClass::ApiMassEnum
+            | InvariantClass::LlmDataExfiltration
+            | InvariantClass::EnvExfiltration
+    ) {
         controls.push(control(
             ComplianceFramework::Gdpr,
             "GDPR Art.25",
@@ -354,7 +405,13 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Policies and procedures protect ePHI from improper alteration or destruction.",
     ));
 
-    if matches!(class, InvariantClass::SsrfInternalReach | InvariantClass::SsrfCloudMetadata | InvariantClass::SsrfProtocolSmuggle | InvariantClass::WsHijack) {
+    if matches!(
+        class,
+        InvariantClass::SsrfInternalReach
+            | InvariantClass::SsrfCloudMetadata
+            | InvariantClass::SsrfProtocolSmuggle
+            | InvariantClass::WsHijack
+    ) {
         controls.push(control(
             ComplianceFramework::Hipaa,
             "45 CFR 164.312(e)(1)",
@@ -376,7 +433,14 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Vulnerability findings are identified, assessed, and remediated as part of risk management.",
     ));
 
-    if matches!(class, InvariantClass::BolaIdor | InvariantClass::ApiMassEnum | InvariantClass::MassAssignment | InvariantClass::AuthNoneAlgorithm | InvariantClass::AuthHeaderSpoof) {
+    if matches!(
+        class,
+        InvariantClass::BolaIdor
+            | InvariantClass::ApiMassEnum
+            | InvariantClass::MassAssignment
+            | InvariantClass::AuthNoneAlgorithm
+            | InvariantClass::AuthHeaderSpoof
+    ) {
         controls.push(control(
             ComplianceFramework::Nist80053,
             "AC-3",
@@ -384,7 +448,12 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
             "System enforces approved authorizations for logical access to information and functions.",
         ));
     }
-    if matches!(class, InvariantClass::CrlfLogInjection | InvariantClass::CachePoisoning | InvariantClass::CacheDeception) {
+    if matches!(
+        class,
+        InvariantClass::CrlfLogInjection
+            | InvariantClass::CachePoisoning
+            | InvariantClass::CacheDeception
+    ) {
         controls.push(control(
             ComplianceFramework::Nist80053,
             "AU-12",
@@ -392,7 +461,17 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
             "Audit records are generated and protected for security-relevant events.",
         ));
     }
-    if matches!(class, InvariantClass::SsrfInternalReach | InvariantClass::SsrfCloudMetadata | InvariantClass::SsrfProtocolSmuggle | InvariantClass::HttpSmuggleClTe | InvariantClass::HttpSmuggleH2 | InvariantClass::HttpSmuggleChunkExt | InvariantClass::HttpSmuggleZeroCl | InvariantClass::HttpSmuggleExpect) {
+    if matches!(
+        class,
+        InvariantClass::SsrfInternalReach
+            | InvariantClass::SsrfCloudMetadata
+            | InvariantClass::SsrfProtocolSmuggle
+            | InvariantClass::HttpSmuggleClTe
+            | InvariantClass::HttpSmuggleH2
+            | InvariantClass::HttpSmuggleChunkExt
+            | InvariantClass::HttpSmuggleZeroCl
+            | InvariantClass::HttpSmuggleExpect
+    ) {
         controls.push(control(
             ComplianceFramework::Nist80053,
             "SC-7",
@@ -413,7 +492,13 @@ fn framework_controls_for_class(class: InvariantClass) -> Vec<ComplianceControl>
         "Management of technical vulnerabilities",
         "Information about technical vulnerabilities is obtained, evaluated, and timely action is taken.",
     ));
-    if matches!(class, InvariantClass::BolaIdor | InvariantClass::ApiMassEnum | InvariantClass::AuthNoneAlgorithm | InvariantClass::AuthHeaderSpoof) {
+    if matches!(
+        class,
+        InvariantClass::BolaIdor
+            | InvariantClass::ApiMassEnum
+            | InvariantClass::AuthNoneAlgorithm
+            | InvariantClass::AuthHeaderSpoof
+    ) {
         controls.push(control(
             ComplianceFramework::Iso27001,
             "ISO/IEC 27001:2022 Annex A 5.15",
@@ -432,7 +517,10 @@ pub fn compliance_mapping_for_class(class: InvariantClass) -> ComplianceMapping 
     }
 }
 
-fn remediation_for_framework(framework: ComplianceFramework, classes: &[InvariantClass]) -> Vec<String> {
+fn remediation_for_framework(
+    framework: ComplianceFramework,
+    classes: &[InvariantClass],
+) -> Vec<String> {
     let mut guidance = Vec::new();
     match framework {
         ComplianceFramework::Pci4 => {
@@ -446,7 +534,10 @@ fn remediation_for_framework(framework: ComplianceFramework, classes: &[Invarian
         }
         ComplianceFramework::Gdpr => {
             guidance.push("Prioritize fixes that prevent unauthorized personal-data disclosure (Art.25, Art.32).".to_owned());
-            guidance.push("Record technical safeguards and test outcomes as evidence of security-by-design.".to_owned());
+            guidance.push(
+                "Record technical safeguards and test outcomes as evidence of security-by-design."
+                    .to_owned(),
+            );
         }
         ComplianceFramework::Hipaa => {
             guidance.push("Document risk analysis updates for detected ePHI threats and retain mitigation decisions.".to_owned());
@@ -470,7 +561,12 @@ fn remediation_for_framework(framework: ComplianceFramework, classes: &[Invarian
         }
     }
 
-    if classes.iter().any(|c| matches!(c, InvariantClass::DependencyConfusion | InvariantClass::PostinstallInjection)) {
+    if classes.iter().any(|c| {
+        matches!(
+            c,
+            InvariantClass::DependencyConfusion | InvariantClass::PostinstallInjection
+        )
+    }) {
         guidance.push("For supply-chain classes, enforce package provenance and integrity verification in CI/CD.".to_owned());
     }
     guidance
@@ -520,7 +616,11 @@ pub fn compliance_report(classes: &[InvariantClass]) -> ComplianceReport {
                 if c.framework != framework {
                     continue;
                 }
-                let dedup_key = (c.control_id.clone(), c.description.clone(), c.requirement_text.clone());
+                let dedup_key = (
+                    c.control_id.clone(),
+                    c.description.clone(),
+                    c.requirement_text.clone(),
+                );
                 if seen.insert(dedup_key) {
                     controls.push(c.clone());
                 }
@@ -581,34 +681,72 @@ mod tests {
     #[test]
     fn sql_class_maps_to_a03_and_cwe_89() {
         let mapping = compliance_mapping_for_class(InvariantClass::SqlStringTermination);
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::OwaspTop10_2021 && c.control_id == "A03:2021"));
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::CweTop25 && c.control_id == "CWE-89"));
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::OwaspTop10_2021
+                    && c.control_id == "A03:2021")
+        );
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::CweTop25 && c.control_id == "CWE-89")
+        );
     }
 
     #[test]
     fn ssrf_class_maps_to_a10_and_sc7() {
         let mapping = compliance_mapping_for_class(InvariantClass::SsrfCloudMetadata);
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::OwaspTop10_2021 && c.control_id == "A10:2021"));
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::Nist80053 && c.control_id == "SC-7"));
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::OwaspTop10_2021
+                    && c.control_id == "A10:2021")
+        );
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::Nist80053 && c.control_id == "SC-7")
+        );
     }
 
     #[test]
     fn auth_none_maps_to_crypto_and_auth_frameworks() {
         let mapping = compliance_mapping_for_class(InvariantClass::AuthNoneAlgorithm);
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::OwaspTop10_2021 && c.control_id == "A02:2021"));
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::OwaspApiTop10 && c.control_id == "API2:2023"));
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::OwaspTop10_2021
+                    && c.control_id == "A02:2021")
+        );
+        assert!(
+            mapping
+                .controls
+                .iter()
+                .any(|c| c.framework == ComplianceFramework::OwaspApiTop10
+                    && c.control_id == "API2:2023")
+        );
     }
 
     #[test]
     fn pci_requirement_624_is_included() {
         let mapping = compliance_mapping_for_class(InvariantClass::XssTagInjection);
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::Pci4 && c.control_id == "PCI DSS 4.0 6.2.4"));
+        assert!(mapping.controls.iter().any(
+            |c| c.framework == ComplianceFramework::Pci4 && c.control_id == "PCI DSS 4.0 6.2.4"
+        ));
     }
 
     #[test]
     fn supply_chain_classes_include_vuln_patch_control() {
         let mapping = compliance_mapping_for_class(InvariantClass::DependencyConfusion);
-        assert!(mapping.controls.iter().any(|c| c.framework == ComplianceFramework::Pci4 && c.control_id == "PCI DSS 4.0 6.3.2"));
+        assert!(mapping.controls.iter().any(
+            |c| c.framework == ComplianceFramework::Pci4 && c.control_id == "PCI DSS 4.0 6.3.2"
+        ));
     }
 
     #[test]
@@ -631,14 +769,24 @@ mod tests {
             InvariantClass::SsrfCloudMetadata,
         ]);
         assert_eq!(report.framework_remediation.len(), 9);
-        assert!(report.framework_remediation.iter().all(|f| !f.remediation_guidance.is_empty()));
+        assert!(
+            report
+                .framework_remediation
+                .iter()
+                .all(|f| !f.remediation_guidance.is_empty())
+        );
     }
 
     #[test]
     fn audit_evidence_is_generated() {
         let report = compliance_report(&[InvariantClass::CrlfLogInjection]);
         assert!(!report.audit_evidence.is_empty());
-        assert!(report.audit_evidence.iter().any(|e| e.control_id == "A09:2021"));
+        assert!(
+            report
+                .audit_evidence
+                .iter()
+                .any(|e| e.control_id == "A09:2021")
+        );
     }
 
     #[test]
@@ -646,6 +794,11 @@ mod tests {
         let report = compliance_report(&[]);
         assert!(report.detected_classes.is_empty());
         assert_eq!(report.framework_remediation.len(), 9);
-        assert!(report.framework_remediation.iter().all(|f| !f.remediation_guidance.is_empty()));
+        assert!(
+            report
+                .framework_remediation
+                .iter()
+                .all(|f| !f.remediation_guidance.is_empty())
+        );
     }
 }

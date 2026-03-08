@@ -43,12 +43,12 @@ impl AttackPhase {
     fn ordinal(self) -> usize {
         match self {
             Self::Reconnaissance => 0,
-            Self::Weaponization  => 1,
-            Self::Delivery       => 2,
-            Self::Exploitation   => 3,
-            Self::Installation   => 4,
+            Self::Weaponization => 1,
+            Self::Delivery => 2,
+            Self::Exploitation => 3,
+            Self::Installation => 4,
             Self::CommandControl => 5,
-            Self::Exfiltration   => 6,
+            Self::Exfiltration => 6,
         }
     }
 
@@ -224,9 +224,11 @@ impl CampaignIntelligence {
 
         if !self.sessions.contains_key(&source) {
             if let Some(seed) = self.consume_dormant_seed(&source, now) {
-                self.sessions.insert(source.clone(), restore_session(&source, &seed, now));
+                self.sessions
+                    .insert(source.clone(), restore_session(&source, &seed, now));
             } else {
-                self.sessions.insert(source.clone(), create_session(&source, now));
+                self.sessions
+                    .insert(source.clone(), create_session(&source, now));
             }
         }
 
@@ -286,7 +288,9 @@ impl CampaignIntelligence {
         self.recent_signals.push(signal);
         if self.recent_signals.len() > self.max_signals {
             let half = self.max_signals / 2;
-            self.recent_signals = self.recent_signals.split_off(self.recent_signals.len() - half);
+            self.recent_signals = self
+                .recent_signals
+                .split_off(self.recent_signals.len() - half);
         }
 
         self.detect_campaigns();
@@ -295,7 +299,10 @@ impl CampaignIntelligence {
 
     /// Get the threat level for a source.
     pub fn get_threat_level(&self, source_hash: &str) -> f64 {
-        self.sessions.get(source_hash).map(|s| s.threat_level).unwrap_or(0.0)
+        self.sessions
+            .get(source_hash)
+            .map(|s| s.threat_level)
+            .unwrap_or(0.0)
     }
 
     /// Get the current attack phase for a source.
@@ -306,24 +313,33 @@ impl CampaignIntelligence {
     /// Check if a source is part of a known campaign.
     pub fn is_part_of_campaign(&self, source_hash: &str) -> Option<&Campaign> {
         let session = self.sessions.get(source_hash)?;
-        self.campaigns.iter().find(|c| c.fingerprints.contains(&session.fingerprint.hash))
+        self.campaigns
+            .iter()
+            .find(|c| c.fingerprints.contains(&session.fingerprint.hash))
     }
 
     /// Get all active campaigns within the detection window.
     pub fn get_active_campaigns(&self, now: u64) -> Vec<&Campaign> {
-        self.campaigns.iter()
+        self.campaigns
+            .iter()
             .filter(|c| now.saturating_sub(c.last_activity) < self.campaign_window_ms)
             .collect()
     }
 
     /// Cross-sensor signal: same payload detected at another sensor.
     pub fn record_cross_sensor_signal(&mut self, signal_type: &str, now: u64) {
-        let matching: Vec<&CampaignSignal> = self.recent_signals.iter()
-            .filter(|s| s.signal_type == signal_type && now.saturating_sub(s.timestamp) < self.campaign_window_ms)
+        let matching: Vec<&CampaignSignal> = self
+            .recent_signals
+            .iter()
+            .filter(|s| {
+                s.signal_type == signal_type
+                    && now.saturating_sub(s.timestamp) < self.campaign_window_ms
+            })
             .collect();
 
         if matching.len() >= 3 {
-            let source_set: HashSet<&str> = matching.iter().map(|s| s.source_hash.as_str()).collect();
+            let source_set: HashSet<&str> =
+                matching.iter().map(|s| s.source_hash.as_str()).collect();
             let path_set: HashSet<&str> = matching.iter().map(|s| s.path.as_str()).collect();
             let start = matching.iter().map(|s| s.timestamp).min().unwrap_or(now);
 
@@ -339,7 +355,9 @@ impl CampaignIntelligence {
                 severity: CampaignSeverity::High,
                 description: format!(
                     "Distributed {} campaign: {} attacks from {} sources",
-                    signal_type, matching.len(), source_set.len()
+                    signal_type,
+                    matching.len(),
+                    source_set.len()
                 ),
                 escalated: false,
             };
@@ -349,7 +367,9 @@ impl CampaignIntelligence {
 
     /// Get campaign statistics.
     pub fn get_stats(&self, now: u64) -> CampaignStats {
-        let highest = self.sessions.values()
+        let highest = self
+            .sessions
+            .values()
             .map(|s| s.threat_level)
             .fold(0.0_f64, f64::max);
 
@@ -371,15 +391,21 @@ impl CampaignIntelligence {
         self.detect_false_flag_campaigns();
 
         // Coordinated scans: same fingerprint, multiple IPs
-        let fp_snapshot: Vec<(String, Vec<String>)> = self.fingerprint_index.iter()
+        let fp_snapshot: Vec<(String, Vec<String>)> = self
+            .fingerprint_index
+            .iter()
             .filter(|(_, sources)| sources.len() >= 3)
             .map(|(hash, sources)| (hash.clone(), sources.iter().cloned().collect()))
             .collect();
 
         for (fp_hash, sources) in fp_snapshot {
-            let already_tracked = self.campaigns.iter()
-                .any(|c| c.campaign_type == CampaignType::CoordinatedScan && c.fingerprints.contains(&fp_hash));
-            if already_tracked { continue; }
+            let already_tracked = self.campaigns.iter().any(|c| {
+                c.campaign_type == CampaignType::CoordinatedScan
+                    && c.fingerprints.contains(&fp_hash)
+            });
+            if already_tracked {
+                continue;
+            }
 
             let mut attack_types = HashSet::new();
             let mut target_paths = HashSet::new();
@@ -397,14 +423,21 @@ impl CampaignIntelligence {
                 }
             }
 
-            let sev = if attack_types.iter().any(|t| t.starts_with("sql_") || t.starts_with("deser_")) {
+            let sev = if attack_types
+                .iter()
+                .any(|t| t.starts_with("sql_") || t.starts_with("deser_"))
+            {
                 CampaignSeverity::Critical
             } else {
                 CampaignSeverity::High
             };
 
             self.campaigns.push(Campaign {
-                id: format!("campaign-{}-{}", last_seen, &fp_hash[..fp_hash.len().min(8)]),
+                id: format!(
+                    "campaign-{}-{}",
+                    last_seen,
+                    &fp_hash[..fp_hash.len().min(8)]
+                ),
                 campaign_type: CampaignType::CoordinatedScan,
                 fingerprints: vec![fp_hash],
                 source_count: sources.len(),
@@ -413,32 +446,62 @@ impl CampaignIntelligence {
                 start_time: first_seen,
                 last_activity: last_seen,
                 severity: sev,
-                description: format!("Coordinated scan from {} sources with identical behavioral fingerprint", sources.len()),
+                description: format!(
+                    "Coordinated scan from {} sources with identical behavioral fingerprint",
+                    sources.len()
+                ),
                 escalated: false,
             });
         }
 
         // Brute force: high volume from single source
-        let brute_candidates: Vec<(String, String, usize, u64, u64, Vec<String>, Vec<String>)> = self.sessions.iter()
-            .filter_map(|(hash, session)| {
-                let now = session.last_seen;
-                let recent_count = session.signals.iter()
-                    .filter(|s| now.saturating_sub(s.timestamp) < self.campaign_window_ms)
-                    .count();
-                if recent_count >= 50 {
-                    let at: Vec<String> = session.signals.iter().map(|s| s.signal_type.clone()).collect::<HashSet<_>>().into_iter().collect();
-                    let tp: Vec<String> = session.signals.iter().map(|s| s.path.clone()).collect::<HashSet<_>>().into_iter().collect();
-                    Some((hash.clone(), session.fingerprint.hash.clone(), recent_count, session.first_seen, session.last_seen, at, tp))
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let brute_candidates: Vec<(String, String, usize, u64, u64, Vec<String>, Vec<String>)> =
+            self.sessions
+                .iter()
+                .filter_map(|(hash, session)| {
+                    let now = session.last_seen;
+                    let recent_count = session
+                        .signals
+                        .iter()
+                        .filter(|s| now.saturating_sub(s.timestamp) < self.campaign_window_ms)
+                        .count();
+                    if recent_count >= 50 {
+                        let at: Vec<String> = session
+                            .signals
+                            .iter()
+                            .map(|s| s.signal_type.clone())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        let tp: Vec<String> = session
+                            .signals
+                            .iter()
+                            .map(|s| s.path.clone())
+                            .collect::<HashSet<_>>()
+                            .into_iter()
+                            .collect();
+                        Some((
+                            hash.clone(),
+                            session.fingerprint.hash.clone(),
+                            recent_count,
+                            session.first_seen,
+                            session.last_seen,
+                            at,
+                            tp,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
 
         for (hash, fp_hash, count, first, last, attack_types, target_paths) in brute_candidates {
-            let already_tracked = self.campaigns.iter()
-                .any(|c| c.campaign_type == CampaignType::BruteForce && c.fingerprints.contains(&fp_hash));
-            if already_tracked { continue; }
+            let already_tracked = self.campaigns.iter().any(|c| {
+                c.campaign_type == CampaignType::BruteForce && c.fingerprints.contains(&fp_hash)
+            });
+            if already_tracked {
+                continue;
+            }
 
             self.campaigns.push(Campaign {
                 id: format!("campaign-{}-bf-{}", last, &hash[..hash.len().min(8)]),
@@ -450,7 +513,12 @@ impl CampaignIntelligence {
                 start_time: first,
                 last_activity: last,
                 severity: CampaignSeverity::High,
-                description: format!("Brute force: {} attacks from {} in {}s", count, &hash[..hash.len().min(8)], self.campaign_window_ms / 1000),
+                description: format!(
+                    "Brute force: {} attacks from {} in {}s",
+                    count,
+                    &hash[..hash.len().min(8)],
+                    self.campaign_window_ms / 1000
+                ),
                 escalated: false,
             });
         }
@@ -474,8 +542,16 @@ impl CampaignIntelligence {
                 continue;
             }
 
-            let high_conf = session.signals.iter().filter(|s| s.confidence >= 0.6).count();
-            let low_conf = session.signals.iter().filter(|s| s.confidence < 0.6).count();
+            let high_conf = session
+                .signals
+                .iter()
+                .filter(|s| s.confidence >= 0.6)
+                .count();
+            let low_conf = session
+                .signals
+                .iter()
+                .filter(|s| s.confidence < 0.6)
+                .count();
             if low_conf > high_conf {
                 continue;
             }
@@ -483,27 +559,37 @@ impl CampaignIntelligence {
             let already = self.campaigns.iter().any(|c| {
                 c.campaign_type == CampaignType::AdaptiveMutation
                     && c.fingerprints.len() == fingerprints.len()
-                    && c.fingerprints.iter().all(|fp| fingerprints.iter().any(|f| f == fp))
+                    && c.fingerprints
+                        .iter()
+                        .all(|fp| fingerprints.iter().any(|f| f == fp))
             });
             if already {
                 continue;
             }
 
-            let attack_types: Vec<String> = session.signals.iter()
+            let attack_types: Vec<String> = session
+                .signals
+                .iter()
                 .filter(|s| s.confidence >= 0.6)
                 .map(|s| s.signal_type.clone())
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
 
-            let target_paths: Vec<String> = session.signals.iter()
+            let target_paths: Vec<String> = session
+                .signals
+                .iter()
                 .map(|s| path_bucket(&s.path))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
 
             self.campaigns.push(Campaign {
-                id: format!("campaign-{}-adaptive-{}", now, &source[..source.len().min(8)]),
+                id: format!(
+                    "campaign-{}-adaptive-{}",
+                    now,
+                    &source[..source.len().min(8)]
+                ),
                 campaign_type: CampaignType::AdaptiveMutation,
                 fingerprints,
                 source_count: 1,
@@ -542,13 +628,18 @@ impl CampaignIntelligence {
                 continue;
             }
 
-            let resumed_path = session.signals
+            let resumed_path = session
+                .signals
                 .last()
                 .map(|s| path_bucket(&s.path))
                 .unwrap_or_else(|| "/".into());
 
             self.campaigns.push(Campaign {
-                id: format!("campaign-{}-resurgence-{}", now, &source[..source.len().min(6)]),
+                id: format!(
+                    "campaign-{}-resurgence-{}",
+                    now,
+                    &source[..source.len().min(6)]
+                ),
                 campaign_type: CampaignType::DormantResurgence,
                 fingerprints: vec![session.fingerprint.hash.clone()],
                 source_count: 1,
@@ -556,8 +647,16 @@ impl CampaignIntelligence {
                 target_paths: vec![resumed_path],
                 start_time: session.first_seen,
                 last_activity: session.last_seen,
-                severity: if session.threat_level >= 65.0 { CampaignSeverity::Critical } else { CampaignSeverity::High },
-                description: format!("Dormant campaign resumed for {} after {}ms", source, now.saturating_sub(resumed)),
+                severity: if session.threat_level >= 65.0 {
+                    CampaignSeverity::Critical
+                } else {
+                    CampaignSeverity::High
+                },
+                description: format!(
+                    "Dormant campaign resumed for {} after {}ms",
+                    source,
+                    now.saturating_sub(resumed)
+                ),
                 escalated: true,
             });
 
@@ -577,20 +676,28 @@ impl CampaignIntelligence {
                 continue;
             }
 
-            let already_tracked = self.campaigns.iter()
-                .any(|c| c.campaign_type == CampaignType::FalseFlagCampaign && c.fingerprints.contains(&session.fingerprint.hash));
+            let already_tracked = self.campaigns.iter().any(|c| {
+                c.campaign_type == CampaignType::FalseFlagCampaign
+                    && c.fingerprints.contains(&session.fingerprint.hash)
+            });
             if already_tracked {
                 continue;
             }
 
-            let target_paths = session.signals.iter()
+            let target_paths = session
+                .signals
+                .iter()
                 .map(|s| path_bucket(&s.path))
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
 
             self.campaigns.push(Campaign {
-                id: format!("campaign-{}-false-{}", session.last_seen, &source[..source.len().min(8)]),
+                id: format!(
+                    "campaign-{}-false-{}",
+                    session.last_seen,
+                    &source[..source.len().min(8)]
+                ),
                 campaign_type: CampaignType::FalseFlagCampaign,
                 fingerprints: vec![session.fingerprint.hash.clone()],
                 source_count: 1,
@@ -599,7 +706,11 @@ impl CampaignIntelligence {
                 start_time: session.first_seen,
                 last_activity: session.last_seen,
                 severity: CampaignSeverity::Low,
-                description: format!("False-flag pattern for {}: {:.0}% low-confidence signals", source, false_ratio * 100.0),
+                description: format!(
+                    "False-flag pattern for {}: {:.0}% low-confidence signals",
+                    source,
+                    false_ratio * 100.0
+                ),
                 escalated: false,
             });
         }
@@ -611,7 +722,8 @@ impl CampaignIntelligence {
                 sources.remove(source);
             }
         }
-        self.fingerprint_index.retain(|_, sources| !sources.is_empty());
+        self.fingerprint_index
+            .retain(|_, sources| !sources.is_empty());
 
         if !new_hash.is_empty() {
             self.fingerprint_index
@@ -622,7 +734,9 @@ impl CampaignIntelligence {
     }
 
     fn consume_dormant_seed(&mut self, source: &str, now: u64) -> Option<DormantCampaignSeed> {
-        if self.dormant_sessions.get(source)
+        if self
+            .dormant_sessions
+            .get(source)
             .is_some_and(|seed| now.saturating_sub(seed.last_seen) > self.dormant_window_ms)
         {
             self.dormant_sessions.remove(source);
@@ -634,13 +748,17 @@ impl CampaignIntelligence {
 
     fn archive_dormant_session(&mut self, source: &str) {
         if let Some(session) = self.sessions.remove(source) {
-            let attack_signatures: Vec<String> = session.signals.iter()
+            let attack_signatures: Vec<String> = session
+                .signals
+                .iter()
                 .map(|s| s.signal_type.clone())
                 .collect::<HashSet<_>>()
                 .into_iter()
                 .collect();
 
-            let path_buckets: Vec<String> = session.signals.iter()
+            let path_buckets: Vec<String> = session
+                .signals
+                .iter()
                 .map(|s| path_bucket(&s.path))
                 .collect::<HashSet<_>>()
                 .into_iter()
@@ -660,7 +778,8 @@ impl CampaignIntelligence {
             for sources in self.fingerprint_index.values_mut() {
                 sources.remove(source);
             }
-            self.fingerprint_index.retain(|_, sources| !sources.is_empty());
+            self.fingerprint_index
+                .retain(|_, sources| !sources.is_empty());
         }
     }
 
@@ -668,7 +787,9 @@ impl CampaignIntelligence {
         let now = self.recent_signals.last().map(|s| s.timestamp).unwrap_or(0);
         let timeout = self.session_timeout_ms;
 
-        let stale: Vec<String> = self.sessions.iter()
+        let stale: Vec<String> = self
+            .sessions
+            .iter()
             .filter(|(_, s)| now.saturating_sub(s.last_seen) > timeout)
             .map(|(h, _)| h.clone())
             .collect();
@@ -769,19 +890,24 @@ fn path_bucket(path: &str) -> String {
 // ── Fingerprint Construction ──────────────────────────────────────
 
 fn update_fingerprint(session: &mut AttackerSession) {
-    if session.signals.len() < 2 { return; }
+    if session.signals.len() < 2 {
+        return;
+    }
 
     let signals = &session.signals;
 
     // Timing distribution
-    let intervals: Vec<f64> = signals.windows(2)
+    let intervals: Vec<f64> = signals
+        .windows(2)
         .map(|w| (w[1].timestamp as f64) - (w[0].timestamp as f64))
         .collect();
 
     let avg_interval = intervals.iter().sum::<f64>() / intervals.len() as f64;
-    let variance = intervals.iter()
+    let variance = intervals
+        .iter()
         .map(|v| (v - avg_interval).powi(2))
-        .sum::<f64>() / intervals.len() as f64;
+        .sum::<f64>()
+        / intervals.len() as f64;
     let std_dev = variance.sqrt();
 
     // Encoding preferences (sorted by frequency)
@@ -789,9 +915,11 @@ fn update_fingerprint(session: &mut AttackerSession) {
     for s in signals {
         *encoding_counts.entry(s.encoding).or_insert(0) += 1;
     }
-    let mut encoding_prefs: Vec<(EncodingPreference, usize)> = encoding_counts.into_iter().collect();
+    let mut encoding_prefs: Vec<(EncodingPreference, usize)> =
+        encoding_counts.into_iter().collect();
     encoding_prefs.sort_by(|a, b| b.1.cmp(&a.1));
-    let encoding_preferences: Vec<EncodingPreference> = encoding_prefs.into_iter().map(|(e, _)| e).collect();
+    let encoding_preferences: Vec<EncodingPreference> =
+        encoding_prefs.into_iter().map(|(e, _)| e).collect();
 
     // Technique ordering
     let technique_ordering: Vec<String> = signals.iter().map(|s| s.signal_type.clone()).collect();
@@ -800,18 +928,26 @@ fn update_fingerprint(session: &mut AttackerSession) {
     let evasion_level = calculate_evasion_level(signals);
 
     // Build fingerprint hash
-    let enc_str: Vec<&str> = encoding_preferences.iter().map(|e| match e {
-        EncodingPreference::Plain => "plain",
-        EncodingPreference::UrlSingle => "url1",
-        EncodingPreference::UrlDouble => "url2",
-        EncodingPreference::Unicode => "uni",
-        EncodingPreference::Hex => "hex",
-        EncodingPreference::HtmlEntity => "html",
-        EncodingPreference::Base64 => "b64",
-        EncodingPreference::Mixed => "mix",
-    }).collect();
+    let enc_str: Vec<&str> = encoding_preferences
+        .iter()
+        .map(|e| match e {
+            EncodingPreference::Plain => "plain",
+            EncodingPreference::UrlSingle => "url1",
+            EncodingPreference::UrlDouble => "url2",
+            EncodingPreference::Unicode => "uni",
+            EncodingPreference::Hex => "hex",
+            EncodingPreference::HtmlEntity => "html",
+            EncodingPreference::Base64 => "b64",
+            EncodingPreference::Mixed => "mix",
+        })
+        .collect();
 
-    let fp_data = format!("{}:{}:{}", (avg_interval / 100.0) as u64, enc_str.join(","), (evasion_level * 10.0) as u32);
+    let fp_data = format!(
+        "{}:{}:{}",
+        (avg_interval / 100.0) as u64,
+        enc_str.join(","),
+        (evasion_level * 10.0) as u32
+    );
     let hash = simple_hash(&fp_data);
 
     session.fingerprint = BehavioralFingerprint {
@@ -832,14 +968,27 @@ fn calculate_evasion_level(signals: &[CampaignSignal]) -> f64 {
     let encodings: Vec<EncodingPreference> = signals.iter().map(|s| s.encoding).collect();
     let unique: HashSet<EncodingPreference> = encodings.iter().copied().collect();
 
-    if unique.len() >= 3 { level += 0.3; }
-    else if unique.len() >= 2 { level += 0.15; }
+    if unique.len() >= 3 {
+        level += 0.3;
+    } else if unique.len() >= 2 {
+        level += 0.15;
+    }
 
-    if encodings.iter().any(|e| matches!(e, EncodingPreference::UrlDouble | EncodingPreference::Unicode | EncodingPreference::Base64)) {
+    if encodings.iter().any(|e| {
+        matches!(
+            e,
+            EncodingPreference::UrlDouble
+                | EncodingPreference::Unicode
+                | EncodingPreference::Base64
+        )
+    }) {
         level += 0.3;
     }
 
-    if encodings.iter().any(|e| matches!(e, EncodingPreference::Mixed)) {
+    if encodings
+        .iter()
+        .any(|e| matches!(e, EncodingPreference::Mixed))
+    {
         level += 0.4;
     }
 
@@ -860,22 +1009,31 @@ fn advance_phase_model(session: &mut AttackerSession, signal: &CampaignSignal) {
             timestamp: signal.timestamp,
             confidence: signal.confidence,
         });
-        session.threat_level = ((new_idx as f64) / (AttackPhase::COUNT as f64 - 1.0) * 100.0).min(100.0);
+        session.threat_level =
+            ((new_idx as f64) / (AttackPhase::COUNT as f64 - 1.0) * 100.0).min(100.0);
     } else {
         session.threat_level = (session.threat_level + signal.confidence * 5.0).min(100.0);
     }
 }
 
 fn classify_signal_phase(signal_type: &str) -> AttackPhase {
-    if signal_type.contains("scanner") || signal_type.contains("information_disclosure")
-        || signal_type.contains("enum") || signal_type == "graphql_introspection" {
+    if signal_type.contains("scanner")
+        || signal_type.contains("information_disclosure")
+        || signal_type.contains("enum")
+        || signal_type == "graphql_introspection"
+    {
         return AttackPhase::Reconnaissance;
     }
 
-    if signal_type.starts_with("sql_") || signal_type.starts_with("xss_")
-        || signal_type.starts_with("cmd_") || signal_type.starts_with("ssrf_")
-        || signal_type.starts_with("ssti_") || signal_type.starts_with("xxe_")
-        || signal_type.starts_with("deser_") || signal_type == "log_jndi" {
+    if signal_type.starts_with("sql_")
+        || signal_type.starts_with("xss_")
+        || signal_type.starts_with("cmd_")
+        || signal_type.starts_with("ssrf_")
+        || signal_type.starts_with("ssti_")
+        || signal_type.starts_with("xxe_")
+        || signal_type.starts_with("deser_")
+        || signal_type == "log_jndi"
+    {
         return AttackPhase::Delivery;
     }
 
@@ -906,7 +1064,12 @@ fn simple_hash(input: &str) -> String {
 mod tests {
     use super::*;
 
-    fn make_signal(sig_type: &str, ts: u64, source: &str, enc: EncodingPreference) -> CampaignSignal {
+    fn make_signal(
+        sig_type: &str,
+        ts: u64,
+        source: &str,
+        enc: EncodingPreference,
+    ) -> CampaignSignal {
         CampaignSignal {
             signal_type: sig_type.to_string(),
             timestamp: ts,
@@ -920,7 +1083,12 @@ mod tests {
     #[test]
     fn session_creation_on_first_signal() {
         let mut ci = CampaignIntelligence::new();
-        ci.record_signal(make_signal("sql_tautology", 1000, "src1", EncodingPreference::Plain));
+        ci.record_signal(make_signal(
+            "sql_tautology",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
         assert_eq!(ci.sessions.len(), 1);
         assert!(ci.get_threat_level("src1") >= 0.0);
     }
@@ -928,18 +1096,41 @@ mod tests {
     #[test]
     fn phase_advances_with_signals() {
         let mut ci = CampaignIntelligence::new();
-        ci.record_signal(make_signal("scanner_probe", 1000, "src1", EncodingPreference::Plain));
-        assert_eq!(ci.get_attack_phase("src1"), Some(AttackPhase::Reconnaissance));
+        ci.record_signal(make_signal(
+            "scanner_probe",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
+        assert_eq!(
+            ci.get_attack_phase("src1"),
+            Some(AttackPhase::Reconnaissance)
+        );
 
-        ci.record_signal(make_signal("sql_union", 2000, "src1", EncodingPreference::UrlSingle));
+        ci.record_signal(make_signal(
+            "sql_union",
+            2000,
+            "src1",
+            EncodingPreference::UrlSingle,
+        ));
         assert_eq!(ci.get_attack_phase("src1"), Some(AttackPhase::Delivery));
     }
 
     #[test]
     fn fingerprint_updates_after_two_signals() {
         let mut ci = CampaignIntelligence::new();
-        ci.record_signal(make_signal("sql_tautology", 1000, "src1", EncodingPreference::Plain));
-        ci.record_signal(make_signal("sql_union", 2000, "src1", EncodingPreference::UrlSingle));
+        ci.record_signal(make_signal(
+            "sql_tautology",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
+        ci.record_signal(make_signal(
+            "sql_union",
+            2000,
+            "src1",
+            EncodingPreference::UrlSingle,
+        ));
 
         let session = ci.sessions.get("src1").unwrap();
         assert_eq!(session.fingerprint.observations, 2);
@@ -955,7 +1146,10 @@ mod tests {
             make_signal("c", 300, "x", EncodingPreference::Base64),
         ];
         let level = calculate_evasion_level(&signals);
-        assert!(level >= 0.6, "3 encoding types + advanced encodings should yield high evasion: {level}");
+        assert!(
+            level >= 0.6,
+            "3 encoding types + advanced encodings should yield high evasion: {level}"
+        );
     }
 
     #[test]
@@ -963,14 +1157,29 @@ mod tests {
         let mut ci = CampaignIntelligence::new();
         // 3 sources with identical behavior → coordinated scan
         for src in &["src1", "src2", "src3"] {
-            ci.record_signal(make_signal("sql_tautology", 1000, src, EncodingPreference::Plain));
-            ci.record_signal(make_signal("sql_union", 2000, src, EncodingPreference::Plain));
+            ci.record_signal(make_signal(
+                "sql_tautology",
+                1000,
+                src,
+                EncodingPreference::Plain,
+            ));
+            ci.record_signal(make_signal(
+                "sql_union",
+                2000,
+                src,
+                EncodingPreference::Plain,
+            ));
         }
 
-        let campaigns: Vec<&Campaign> = ci.campaigns.iter()
+        let campaigns: Vec<&Campaign> = ci
+            .campaigns
+            .iter()
             .filter(|c| c.campaign_type == CampaignType::CoordinatedScan)
             .collect();
-        assert!(!campaigns.is_empty(), "should detect coordinated scan from 3 identical-fingerprint sources");
+        assert!(
+            !campaigns.is_empty(),
+            "should detect coordinated scan from 3 identical-fingerprint sources"
+        );
     }
 
     #[test]
@@ -978,22 +1187,42 @@ mod tests {
         let mut ci = CampaignIntelligence::new();
         // 50+ signals from single source within campaign window
         for i in 0..55 {
-            ci.record_signal(make_signal("auth_bypass", 1000 + i * 100, "bruter", EncodingPreference::Plain));
+            ci.record_signal(make_signal(
+                "auth_bypass",
+                1000 + i * 100,
+                "bruter",
+                EncodingPreference::Plain,
+            ));
         }
 
-        let bf_campaigns: Vec<&Campaign> = ci.campaigns.iter()
+        let bf_campaigns: Vec<&Campaign> = ci
+            .campaigns
+            .iter()
             .filter(|c| c.campaign_type == CampaignType::BruteForce)
             .collect();
-        assert!(!bf_campaigns.is_empty(), "should detect brute force from 55 signals");
+        assert!(
+            !bf_campaigns.is_empty(),
+            "should detect brute force from 55 signals"
+        );
     }
 
     #[test]
     fn threat_level_increases() {
         let mut ci = CampaignIntelligence::new();
-        ci.record_signal(make_signal("scanner_probe", 1000, "src1", EncodingPreference::Plain));
+        ci.record_signal(make_signal(
+            "scanner_probe",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
         let t1 = ci.get_threat_level("src1");
 
-        ci.record_signal(make_signal("sql_injection", 2000, "src1", EncodingPreference::UrlSingle));
+        ci.record_signal(make_signal(
+            "sql_injection",
+            2000,
+            "src1",
+            EncodingPreference::UrlSingle,
+        ));
         let t2 = ci.get_threat_level("src1");
 
         assert!(t2 > t1, "threat should increase with phase progression");
@@ -1002,8 +1231,18 @@ mod tests {
     #[test]
     fn stats_reflect_state() {
         let mut ci = CampaignIntelligence::new();
-        ci.record_signal(make_signal("xss_tag", 1000, "src1", EncodingPreference::Plain));
-        ci.record_signal(make_signal("xss_tag", 1500, "src2", EncodingPreference::Plain));
+        ci.record_signal(make_signal(
+            "xss_tag",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
+        ci.record_signal(make_signal(
+            "xss_tag",
+            1500,
+            "src2",
+            EncodingPreference::Plain,
+        ));
 
         let stats = ci.get_stats(2000);
         assert_eq!(stats.active_sessions, 2);
@@ -1014,23 +1253,52 @@ mod tests {
     fn cross_sensor_creates_distributed_campaign() {
         let mut ci = CampaignIntelligence::new();
         // Need 3+ matching signals in the window
-        ci.record_signal(make_signal("sql_tautology", 1000, "src1", EncodingPreference::Plain));
-        ci.record_signal(make_signal("sql_tautology", 1100, "src2", EncodingPreference::Plain));
-        ci.record_signal(make_signal("sql_tautology", 1200, "src3", EncodingPreference::Plain));
+        ci.record_signal(make_signal(
+            "sql_tautology",
+            1000,
+            "src1",
+            EncodingPreference::Plain,
+        ));
+        ci.record_signal(make_signal(
+            "sql_tautology",
+            1100,
+            "src2",
+            EncodingPreference::Plain,
+        ));
+        ci.record_signal(make_signal(
+            "sql_tautology",
+            1200,
+            "src3",
+            EncodingPreference::Plain,
+        ));
 
         ci.record_cross_sensor_signal("sql_tautology", 1300);
 
-        let dist_campaigns: Vec<&Campaign> = ci.campaigns.iter()
+        let dist_campaigns: Vec<&Campaign> = ci
+            .campaigns
+            .iter()
             .filter(|c| c.campaign_type == CampaignType::DistributedAttack)
             .collect();
-        assert!(!dist_campaigns.is_empty(), "should detect distributed campaign");
+        assert!(
+            !dist_campaigns.is_empty(),
+            "should detect distributed campaign"
+        );
     }
 
     #[test]
     fn classify_signal_phases() {
-        assert_eq!(classify_signal_phase("scanner_probe"), AttackPhase::Reconnaissance);
+        assert_eq!(
+            classify_signal_phase("scanner_probe"),
+            AttackPhase::Reconnaissance
+        );
         assert_eq!(classify_signal_phase("sql_union"), AttackPhase::Delivery);
-        assert_eq!(classify_signal_phase("auth_bypass"), AttackPhase::Exploitation);
-        assert_eq!(classify_signal_phase("webshell_upload"), AttackPhase::Installation);
+        assert_eq!(
+            classify_signal_phase("auth_bypass"),
+            AttackPhase::Exploitation
+        );
+        assert_eq!(
+            classify_signal_phase("webshell_upload"),
+            AttackPhase::Installation
+        );
     }
 }

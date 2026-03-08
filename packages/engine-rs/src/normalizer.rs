@@ -20,48 +20,91 @@ const MAX_URL_DECODE_LAYERS: usize = 8;
 
 fn decode_named_entity(name: &str) -> Option<char> {
     // Avoid `to_lowercase()` allocation for every candidate entity.
-    if name.eq_ignore_ascii_case("amp") { Some('&') }
-    else if name.eq_ignore_ascii_case("lt") { Some('<') }
-    else if name.eq_ignore_ascii_case("gt") { Some('>') }
-    else if name.eq_ignore_ascii_case("quot") { Some('"') }
-    else if name.eq_ignore_ascii_case("apos") { Some('\'') }
-    else if name.eq_ignore_ascii_case("nbsp") { Some(' ') }
-    else if name.eq_ignore_ascii_case("copy") { Some('\u{00a9}') }
-    else if name.eq_ignore_ascii_case("reg") { Some('\u{00ae}') }
-    else if name.eq_ignore_ascii_case("trade") { Some('\u{2122}') }
-    else if name.eq_ignore_ascii_case("euro") { Some('\u{20ac}') }
-    else if name.eq_ignore_ascii_case("tab") { Some('\t') }
-    else if name.eq_ignore_ascii_case("newline") { Some('\n') }
-    else if name.eq_ignore_ascii_case("excl") { Some('!') }
-    else if name.eq_ignore_ascii_case("num") { Some('#') }
-    else if name.eq_ignore_ascii_case("dollar") { Some('$') }
-    else if name.eq_ignore_ascii_case("percnt") { Some('%') }
-    else if name.eq_ignore_ascii_case("lpar") { Some('(') }
-    else if name.eq_ignore_ascii_case("rpar") { Some(')') }
-    else if name.eq_ignore_ascii_case("ast") { Some('*') }
-    else if name.eq_ignore_ascii_case("plus") { Some('+') }
-    else if name.eq_ignore_ascii_case("comma") { Some(',') }
-    else if name.eq_ignore_ascii_case("period") { Some('.') }
-    else if name.eq_ignore_ascii_case("sol") { Some('/') }
-    else if name.eq_ignore_ascii_case("colon") { Some(':') }
-    else if name.eq_ignore_ascii_case("semi") { Some(';') }
-    else if name.eq_ignore_ascii_case("equals") { Some('=') }
-    else if name.eq_ignore_ascii_case("quest") { Some('?') }
-    else if name.eq_ignore_ascii_case("commat") { Some('@') }
-    else if name.eq_ignore_ascii_case("lsqb") { Some('[') }
-    else if name.eq_ignore_ascii_case("rsqb") { Some(']') }
-    else if name.eq_ignore_ascii_case("lbrace") { Some('{') }
-    else if name.eq_ignore_ascii_case("rbrace") { Some('}') }
-    else if name.eq_ignore_ascii_case("vert") { Some('|') }
-    else if name.eq_ignore_ascii_case("bsol") { Some('\\') }
-    else if name.eq_ignore_ascii_case("grave") { Some('`') }
-    else if name.eq_ignore_ascii_case("tilde") { Some('~') }
-    else if name.eq_ignore_ascii_case("times") { Some('\u{d7}') }
-    else if name.eq_ignore_ascii_case("divide") { Some('\u{f7}') }
-    else if name.eq_ignore_ascii_case("minus") { Some('-') }
-    else if name.eq_ignore_ascii_case("ndash") { Some('\u{2013}') }
-    else if name.eq_ignore_ascii_case("mdash") { Some('\u{2014}') }
-    else { None }
+    if name.eq_ignore_ascii_case("amp") {
+        Some('&')
+    } else if name.eq_ignore_ascii_case("lt") {
+        Some('<')
+    } else if name.eq_ignore_ascii_case("gt") {
+        Some('>')
+    } else if name.eq_ignore_ascii_case("quot") {
+        Some('"')
+    } else if name.eq_ignore_ascii_case("apos") {
+        Some('\'')
+    } else if name.eq_ignore_ascii_case("nbsp") {
+        Some(' ')
+    } else if name.eq_ignore_ascii_case("copy") {
+        Some('\u{00a9}')
+    } else if name.eq_ignore_ascii_case("reg") {
+        Some('\u{00ae}')
+    } else if name.eq_ignore_ascii_case("trade") {
+        Some('\u{2122}')
+    } else if name.eq_ignore_ascii_case("euro") {
+        Some('\u{20ac}')
+    } else if name.eq_ignore_ascii_case("tab") {
+        Some('\t')
+    } else if name.eq_ignore_ascii_case("newline") {
+        Some('\n')
+    } else if name.eq_ignore_ascii_case("excl") {
+        Some('!')
+    } else if name.eq_ignore_ascii_case("num") {
+        Some('#')
+    } else if name.eq_ignore_ascii_case("dollar") {
+        Some('$')
+    } else if name.eq_ignore_ascii_case("percnt") {
+        Some('%')
+    } else if name.eq_ignore_ascii_case("lpar") {
+        Some('(')
+    } else if name.eq_ignore_ascii_case("rpar") {
+        Some(')')
+    } else if name.eq_ignore_ascii_case("ast") {
+        Some('*')
+    } else if name.eq_ignore_ascii_case("plus") {
+        Some('+')
+    } else if name.eq_ignore_ascii_case("comma") {
+        Some(',')
+    } else if name.eq_ignore_ascii_case("period") {
+        Some('.')
+    } else if name.eq_ignore_ascii_case("sol") {
+        Some('/')
+    } else if name.eq_ignore_ascii_case("colon") {
+        Some(':')
+    } else if name.eq_ignore_ascii_case("semi") {
+        Some(';')
+    } else if name.eq_ignore_ascii_case("equals") {
+        Some('=')
+    } else if name.eq_ignore_ascii_case("quest") {
+        Some('?')
+    } else if name.eq_ignore_ascii_case("commat") {
+        Some('@')
+    } else if name.eq_ignore_ascii_case("lsqb") {
+        Some('[')
+    } else if name.eq_ignore_ascii_case("rsqb") {
+        Some(']')
+    } else if name.eq_ignore_ascii_case("lbrace") {
+        Some('{')
+    } else if name.eq_ignore_ascii_case("rbrace") {
+        Some('}')
+    } else if name.eq_ignore_ascii_case("vert") {
+        Some('|')
+    } else if name.eq_ignore_ascii_case("bsol") {
+        Some('\\')
+    } else if name.eq_ignore_ascii_case("grave") {
+        Some('`')
+    } else if name.eq_ignore_ascii_case("tilde") {
+        Some('~')
+    } else if name.eq_ignore_ascii_case("times") {
+        Some('\u{d7}')
+    } else if name.eq_ignore_ascii_case("divide") {
+        Some('\u{f7}')
+    } else if name.eq_ignore_ascii_case("minus") {
+        Some('-')
+    } else if name.eq_ignore_ascii_case("ndash") {
+        Some('\u{2013}')
+    } else if name.eq_ignore_ascii_case("mdash") {
+        Some('\u{2014}')
+    } else {
+        None
+    }
 }
 
 fn html_entity_codepoint(entity: &str) -> Option<u32> {
@@ -98,7 +141,9 @@ fn has_numeric_ampersand_chain(input: &str) -> bool {
         if let Some(end) = chars[i + 1..].iter().position(|&c| c == ';') {
             let entity = &chars[i + 1..i + 1 + end];
             let entity_str: String = entity.iter().collect();
-            if html_entity_codepoint(&entity_str) == Some('&' as u32) && chars.get(i + 1 + end + 1) == Some(&'#') {
+            if html_entity_codepoint(&entity_str) == Some('&' as u32)
+                && chars.get(i + 1 + end + 1) == Some(&'#')
+            {
                 return true;
             }
             i = i + 1 + end + 1;
@@ -201,9 +246,13 @@ fn decode_html_entities(input: &str) -> String {
                 let mut j = start;
                 while j < len && j < start + 7 {
                     if is_hex {
-                        if !chars[j].is_ascii_hexdigit() { break; }
+                        if !chars[j].is_ascii_hexdigit() {
+                            break;
+                        }
                     } else {
-                        if !chars[j].is_ascii_digit() { break; }
+                        if !chars[j].is_ascii_digit() {
+                            break;
+                        }
                     }
                     j += 1;
                 }
@@ -240,25 +289,43 @@ fn decode_html_entities(input: &str) -> String {
 fn is_zero_width_mark(ch: char) -> bool {
     matches!(
         ch,
-        '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' | '\u{180E}' | '\u{2060}'
-            | '\u{200E}' | '\u{200F}'
+        '\u{200B}'
+            | '\u{200C}'
+            | '\u{200D}'
+            | '\u{FEFF}'
+            | '\u{180E}'
+            | '\u{2060}'
+            | '\u{200E}'
+            | '\u{200F}'
     )
 }
 
 fn is_bidi_control(ch: char) -> bool {
     matches!(
         ch,
-        '\u{061C}' | '\u{202A}' | '\u{202B}' | '\u{202C}' | '\u{202D}' | '\u{202E}' |
-            '\u{2066}' | '\u{2067}' | '\u{2068}' | '\u{2069}'
-    ) || (ch >= '\u{2000}' && ch <= '\u{200F}'
-        && matches!(ch, '\u{200E}' | '\u{200F}'))
+        '\u{061C}'
+            | '\u{202A}'
+            | '\u{202B}'
+            | '\u{202C}'
+            | '\u{202D}'
+            | '\u{202E}'
+            | '\u{2066}'
+            | '\u{2067}'
+            | '\u{2068}'
+            | '\u{2069}'
+    ) || (ch >= '\u{2000}' && ch <= '\u{200F}' && matches!(ch, '\u{200E}' | '\u{200F}'))
 }
 
 fn is_invisible_unicode(ch: char) -> bool {
     is_zero_width_mark(ch)
         || is_bidi_control(ch)
         || (('\u{FE00}'..='\u{FE0F}').contains(&ch))
-        || (ch >= '\u{2000}' && ch <= '\u{200F}' && !matches!(ch, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{200E}' | '\u{200F}' | '\u{2060}'))
+        || (ch >= '\u{2000}'
+            && ch <= '\u{200F}'
+            && !matches!(
+                ch,
+                '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{200E}' | '\u{200F}' | '\u{2060}'
+            ))
 }
 
 fn strip_invisible_unicode(input: &str) -> (String, bool) {
@@ -319,7 +386,10 @@ fn punycode_decode(input: &str) -> Option<String> {
     };
 
     if encoded_start >= input.len() {
-        let decoded = output.into_iter().filter_map(char::from_u32).collect::<String>();
+        let decoded = output
+            .into_iter()
+            .filter_map(char::from_u32)
+            .collect::<String>();
         return Some(decoded);
     }
 
@@ -361,7 +431,8 @@ fn punycode_decode(input: &str) -> Option<String> {
         i = i.saturating_add(1);
     }
 
-    let decoded = output.into_iter()
+    let decoded = output
+        .into_iter()
         .map(|cp| char::from_u32(cp))
         .collect::<Option<String>>()?;
     Some(decoded)
@@ -541,9 +612,12 @@ fn decode_unicode_escapes(input: &str) -> String {
                     i += 1;
                 }
                 // \OOO (octal, 3 digits)
-                d @ b'0'..=b'3' if i + 3 < len
-                    && bytes[i + 2].is_ascii_digit() && bytes[i + 2] <= b'7'
-                    && bytes[i + 3].is_ascii_digit() && bytes[i + 3] <= b'7' =>
+                d @ b'0'..=b'3'
+                    if i + 3 < len
+                        && bytes[i + 2].is_ascii_digit()
+                        && bytes[i + 2] <= b'7'
+                        && bytes[i + 3].is_ascii_digit()
+                        && bytes[i + 3] <= b'7' =>
                 {
                     let oct = &input[i + 1..i + 4];
                     if let Ok(cp) = u8::from_str_radix(oct, 8) {
@@ -1117,7 +1191,9 @@ pub fn canonicalize(input: &str, options: &NormalizationOptions) -> Normalizatio
 /// Quick canonical form — just the string, no metadata.
 #[inline]
 pub fn quick_canonical(input: &str) -> String {
-    let (normalized, _) = sanitize_unicode_edge_cases(&canonicalize(input, &NormalizationOptions::default()).canonical);
+    let (normalized, _) = sanitize_unicode_edge_cases(
+        &canonicalize(input, &NormalizationOptions::default()).canonical,
+    );
     normalized
 }
 
@@ -1126,13 +1202,14 @@ pub fn quick_canonical(input: &str) -> String {
 pub fn detect_encoding_evasion(input: &str) -> EncodingEvasionResult {
     let result = canonicalize(input, &NormalizationOptions::default());
 
-    let is_normal_url = result.encodings_detected.len() == 1
-        && result.encodings_detected.contains("url_single");
+    let is_normal_url =
+        result.encodings_detected.len() == 1 && result.encodings_detected.contains("url_single");
 
     let is_evasion = result.encoding_depth >= 2 && !is_normal_url;
 
     let confidence = if is_evasion {
-        (0.60 + (result.encoding_depth as f64 - 1.0) * 0.10
+        (0.60
+            + (result.encoding_depth as f64 - 1.0) * 0.10
             + (result.encodings_detected.len() as f64 - 1.0) * 0.08)
             .min(0.95)
     } else {
@@ -1177,7 +1254,10 @@ mod tests {
 
     #[test]
     fn html_entity_decode() {
-        let r = canonicalize("&lt;script&gt;alert(1)&lt;/script&gt;", &NormalizationOptions::default());
+        let r = canonicalize(
+            "&lt;script&gt;alert(1)&lt;/script&gt;",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "<script>alert(1)</script>");
         assert!(r.encodings_detected.contains("html_entity"));
     }
@@ -1224,7 +1304,10 @@ mod tests {
     fn strip_invisible_unicode() {
         let r = canonicalize("pa\u{200b}ylo\u{200d}ad", &NormalizationOptions::default());
         assert_eq!(r.canonical, "payload");
-        assert!(r.encodings_detected.contains("unicode_edge_case") || r.encodings_detected.contains("invisible_unicode"));
+        assert!(
+            r.encodings_detected.contains("unicode_edge_case")
+                || r.encodings_detected.contains("invisible_unicode")
+        );
     }
 
     #[test]
@@ -1235,26 +1318,35 @@ mod tests {
 
     #[test]
     fn punycode_host_normalization() {
-        let r = canonicalize("https://xn--bcher-kva.example", &NormalizationOptions::default());
+        let r = canonicalize(
+            "https://xn--bcher-kva.example",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "https://bücher.example");
         assert!(r.encodings_detected.contains("punycode"));
     }
 
     #[test]
     fn case_fold() {
-        let r = canonicalize("UNION SELECT", &NormalizationOptions {
-            case_fold: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "UNION SELECT",
+            &NormalizationOptions {
+                case_fold: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "union select");
     }
 
     #[test]
     fn whitespace_normalize() {
-        let r = canonicalize("  hello   world  ", &NormalizationOptions {
-            normalize_ws: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "  hello   world  ",
+            &NormalizationOptions {
+                normalize_ws: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "hello world");
     }
 
@@ -1277,7 +1369,10 @@ mod tests {
     #[test]
     fn evasion_detection_single_url_normal() {
         let r = detect_encoding_evasion("%20hello%20world");
-        assert!(!r.is_evasion, "single URL encoding is normal HTTP transport");
+        assert!(
+            !r.is_evasion,
+            "single URL encoding is normal HTTP transport"
+        );
     }
 
     #[test]
@@ -1307,17 +1402,26 @@ mod tests {
 
     #[test]
     fn quick_canonical_normalizes_homoglyph_path() {
-        assert_eq!(quick_canonical("/admin/раураl/profile"), "/admin/paypal/profile");
+        assert_eq!(
+            quick_canonical("/admin/раураl/profile"),
+            "/admin/paypal/profile"
+        );
     }
 
     #[test]
     fn quick_canonical_normalizes_bidi_in_hostname() {
-        assert_eq!(quick_canonical("https://example\u{202E}com/@"), "https://examplecom/@");
+        assert_eq!(
+            quick_canonical("https://example\u{202E}com/@"),
+            "https://examplecom/@"
+        );
     }
 
     #[test]
     fn quick_canonical_normalizes_homoglyph_hostname() {
-        assert_eq!(quick_canonical("https://раураl.com/account"), "https://paypal.com/account");
+        assert_eq!(
+            quick_canonical("https://раураl.com/account"),
+            "https://paypal.com/account"
+        );
     }
 
     #[test]
@@ -1362,7 +1466,10 @@ mod tests {
 
     #[test]
     fn overlong_utf8_four_byte_lt_gt() {
-        let r = canonicalize("%F0%80%80%BCscript%F0%80%80%BE", &NormalizationOptions::default());
+        let r = canonicalize(
+            "%F0%80%80%BCscript%F0%80%80%BE",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "<script>");
     }
 
@@ -1401,50 +1508,68 @@ mod tests {
 
     #[test]
     fn quad_url_encoded_path_traversal_decodes_fully() {
-        let r = canonicalize("%2525252e%2525252e%25252fetc%25252fpasswd", &NormalizationOptions::default());
+        let r = canonicalize(
+            "%2525252e%2525252e%25252fetc%25252fpasswd",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "../etc/passwd");
         assert!(r.encoding_depth >= 4);
     }
 
     #[test]
     fn case_fold_turkish_dotless_i() {
-        let r = canonicalize("UN\u{0131}ON SELECT", &NormalizationOptions {
-            case_fold: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "UN\u{0131}ON SELECT",
+            &NormalizationOptions {
+                case_fold: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "union select");
     }
 
     #[test]
     fn case_fold_turkish_capital_i_with_dot() {
-        let r = canonicalize("UN\u{0130}ON SELECT", &NormalizationOptions {
-            case_fold: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "UN\u{0130}ON SELECT",
+            &NormalizationOptions {
+                case_fold: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "union select");
     }
 
     #[test]
     fn case_fold_sharp_s_to_ss() {
-        let r = canonicalize("PA\u{00DF}WORD", &NormalizationOptions {
-            case_fold: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "PA\u{00DF}WORD",
+            &NormalizationOptions {
+                case_fold: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "password");
     }
 
     #[test]
     fn case_fold_final_sigma_to_sigma() {
-        let r = canonicalize("UNI\u{03C2}ON", &NormalizationOptions {
-            case_fold: true,
-            ..Default::default()
-        });
+        let r = canonicalize(
+            "UNI\u{03C2}ON",
+            &NormalizationOptions {
+                case_fold: true,
+                ..Default::default()
+            },
+        );
         assert_eq!(r.canonical, "uniσon");
     }
 
     #[test]
     fn mixed_chain_url_encoded_numeric_entity() {
-        let r = canonicalize("%26%2360%3bscript%26%2362%3b", &NormalizationOptions::default());
+        let r = canonicalize(
+            "%26%2360%3bscript%26%2362%3b",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "<script>");
     }
 
@@ -1456,13 +1581,19 @@ mod tests {
 
     #[test]
     fn mixed_chain_double_url_then_unicode_escape() {
-        let r = canonicalize("%255Cu003cscript%255Cu003e", &NormalizationOptions::default());
+        let r = canonicalize(
+            "%255Cu003cscript%255Cu003e",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "<script>");
     }
 
     #[test]
     fn mixed_chain_url_html_and_unicode() {
-        let r = canonicalize("%26lt%3b%5Cu0078%5Cu0079%26gt%3b", &NormalizationOptions::default());
+        let r = canonicalize(
+            "%26lt%3b%5Cu0078%5Cu0079%26gt%3b",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "<xy>");
     }
 
@@ -1488,7 +1619,10 @@ mod tests {
     fn strips_utf8_bom_char() {
         let r = canonicalize("\u{FEFF}<script>", &NormalizationOptions::default());
         assert_eq!(r.canonical, "<script>");
-        assert!(r.encodings_detected.contains("bom") || r.encodings_detected.contains("invisible_unicode"));
+        assert!(
+            r.encodings_detected.contains("bom")
+                || r.encodings_detected.contains("invisible_unicode")
+        );
     }
 
     #[test]
@@ -1534,7 +1668,10 @@ mod tests {
 
     #[test]
     fn strips_multiple_variation_selectors() {
-        let r = canonicalize("a\u{FE0E}l\u{FE0F}e\u{FE00}rt", &NormalizationOptions::default());
+        let r = canonicalize(
+            "a\u{FE0E}l\u{FE0F}e\u{FE00}rt",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "alert");
     }
 
@@ -1684,7 +1821,10 @@ mod tests {
 
     #[test]
     fn html_entity_double_decode_guard_blocking_numeric_ampersand_chain() {
-        let r = canonicalize("&#x26;#x3C;script&#x26;#x3E;", &NormalizationOptions::default());
+        let r = canonicalize(
+            "&#x26;#x3C;script&#x26;#x3E;",
+            &NormalizationOptions::default(),
+        );
         assert_eq!(r.canonical, "&#x3C;script&#x3E;");
         assert!(!r.canonical.contains('<'));
         assert!(!r.canonical.contains('>'));
@@ -1730,18 +1870,17 @@ mod tests {
         ];
         for input in cases {
             let r = canonicalize(input, &NormalizationOptions::default());
-            assert!(r.encodings_detected.contains("overlong_utf8"), "input={input}");
+            assert!(
+                r.encodings_detected.contains("overlong_utf8"),
+                "input={input}"
+            );
             assert_ne!(r.canonical, "");
         }
     }
 
     #[test]
     fn charset_like_multibyte_bytes_do_not_spawn_false_html() {
-        let cases = [
-            "%8E%A0%8E%AE",
-            "%8F%E3%81%82",
-            "%A1%5C%9F",
-        ];
+        let cases = ["%8E%A0%8E%AE", "%8F%E3%81%82", "%A1%5C%9F"];
         for input in cases {
             let r = canonicalize(input, &NormalizationOptions::default());
             assert!(!r.canonical.contains('<') && !r.canonical.contains('>'));
@@ -1782,9 +1921,12 @@ mod tests {
             ("\u{03B1}\u{03B5}\u{03BF}\u{03B9}\u{03C5}\u{03C3}", "aeoiys"),
             ("\u{03A7}\u{03C5}\u{03A5}\u{03A3}", "XyYS"),
             ("\u{03B8}\u{03B5}\u{03C1}\u{03C3}\u{03B5}", "hepse"),
-            ("/\u{0412}\u{0435}\u{0440}\u{043D}\u{0430}\u{0441}", "/VepHac"),
+            (
+                "/\u{0412}\u{0435}\u{0440}\u{043D}\u{0430}\u{0441}",
+                "/VepHac",
+            ),
             ("admin\u{0430}\u{03BF}\u{03B7}\u{03BC}", "adminaohm"),
-        ("sc\u{03BF}\u{03B9}\u{0440}", "scoip"),
+            ("sc\u{03BF}\u{03B9}\u{0440}", "scoip"),
         ];
         for (input, expected) in cases {
             let r = canonicalize(input, &NormalizationOptions::default());

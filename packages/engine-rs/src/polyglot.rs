@@ -17,19 +17,22 @@ use std::collections::HashSet;
 pub fn class_to_domain(class: &InvariantClass) -> &'static str {
     use InvariantClass::*;
     match class {
-        SqlTautology | SqlStringTermination | SqlUnionExtraction
-        | SqlStackedExecution | SqlTimeOracle | SqlErrorOracle
-        | SqlCommentTruncation | JsonSqlBypass => "sql",
+        SqlTautology | SqlStringTermination | SqlUnionExtraction | SqlStackedExecution
+        | SqlTimeOracle | SqlErrorOracle | SqlCommentTruncation | JsonSqlBypass => "sql",
 
-        XssTagInjection | XssAttributeEscape | XssEventHandler
-        | XssProtocolHandler | XssTemplateExpression => "xss",
+        XssTagInjection
+        | XssAttributeEscape
+        | XssEventHandler
+        | XssProtocolHandler
+        | XssTemplateExpression => "xss",
 
         CmdSeparator | CmdSubstitution | CmdArgumentInjection => "cmdi",
 
         SsrfInternalReach | SsrfCloudMetadata | SsrfProtocolSmuggle | OastInteraction => "ssrf",
 
-        PathDotdotEscape | PathNullTerminate | PathEncodingBypass
-        | PathNormalizationBypass => "path",
+        PathDotdotEscape | PathNullTerminate | PathEncodingBypass | PathNormalizationBypass => {
+            "path"
+        }
 
         SstiJinjaTwig | SstiElExpression => "ssti",
 
@@ -37,8 +40,8 @@ pub fn class_to_domain(class: &InvariantClass) -> &'static str {
 
         DeserJavaGadget | DeserPhpObject | DeserPythonPickle => "deser",
 
-        AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse
-        | JwtKidInjection | JwtJwkEmbedding | JwtConfusion => "auth",
+        AuthNoneAlgorithm | AuthHeaderSpoof | CorsOriginAbuse | JwtKidInjection
+        | JwtJwkEmbedding | JwtConfusion => "auth",
 
         NosqlOperatorInjection | NosqlJsInjection => "nosql",
 
@@ -50,8 +53,8 @@ pub fn class_to_domain(class: &InvariantClass) -> &'static str {
 
         CrlfHeaderInjection | CrlfLogInjection => "crlf",
 
-        HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt
-        | HttpSmuggleZeroCl | HttpSmuggleExpect => "smuggle",
+        HttpSmuggleClTe | HttpSmuggleH2 | HttpSmuggleChunkExt | HttpSmuggleZeroCl
+        | HttpSmuggleExpect => "smuggle",
 
         OpenRedirectBypass => "redirect",
 
@@ -143,8 +146,18 @@ fn has_magic_prefix(bytes: &[u8], magic: &[u8]) -> bool {
 
 fn is_likely_javascript(lower: &str) -> bool {
     let js_tokens = [
-        "function(", "=>", "document.", "window.", "eval(", "fetch(", "xmlhttprequest",
-        "onerror=", "onload=", "settimeout(", "setinterval(", "<script",
+        "function(",
+        "=>",
+        "document.",
+        "window.",
+        "eval(",
+        "fetch(",
+        "xmlhttprequest",
+        "onerror=",
+        "onload=",
+        "settimeout(",
+        "setinterval(",
+        "<script",
     ];
     js_tokens.iter().filter(|t| lower.contains(**t)).count() >= 2
 }
@@ -155,7 +168,10 @@ fn eicar_detect(input: &str) -> bool {
     if upper.contains("X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*") {
         return true;
     }
-    let compact = upper.replace("%2B", "+").replace("%24", "$").replace("%21", "!");
+    let compact = upper
+        .replace("%2B", "+")
+        .replace("%24", "$")
+        .replace("%21", "!");
     compact.contains("EICAR-STANDARD-ANTIVIRUS-TEST-FILE")
 }
 
@@ -221,7 +237,11 @@ pub fn detect_polyglot_structure(input: &[u8]) -> PolyglotStructure {
     if is_jpeg && is_js {
         indicators.push("jpeg_javascript_dual_validity".to_string());
     }
-    if is_pdf && (lower.contains("/javascript") || lower.contains("/js ") || lower.contains("/openaction")) {
+    if is_pdf
+        && (lower.contains("/javascript")
+            || lower.contains("/js ")
+            || lower.contains("/openaction"))
+    {
         indicators.push("pdf_embedded_javascript".to_string());
     }
     if (is_html && is_svg) || (is_svg && is_xml && is_js) {
@@ -230,9 +250,15 @@ pub fn detect_polyglot_structure(input: &[u8]) -> PolyglotStructure {
 
     // Multiple format signatures appearing in the header region is a strong polyglot indicator.
     let magic_hits = [
-        (head.windows(3).any(|w| w == [0xFF, 0xD8, 0xFF]), "jpeg_magic"),
+        (
+            head.windows(3).any(|w| w == [0xFF, 0xD8, 0xFF]),
+            "jpeg_magic",
+        ),
         (head_text.contains("%pdf-"), "pdf_magic"),
-        (head_text.contains("gif89a") || head_text.contains("gif87a"), "gif_magic"),
+        (
+            head_text.contains("gif89a") || head_text.contains("gif87a"),
+            "gif_magic",
+        ),
         (head.windows(4).any(|w| w == b"PK\x03\x04"), "zip_magic"),
     ];
     let magic_count = magic_hits.iter().filter(|(hit, _)| *hit).count();
@@ -262,10 +288,7 @@ pub fn detect_polyglot_structure(input: &[u8]) -> PolyglotStructure {
     }
 
     let detail = if is_polyglot {
-        format!(
-            "Structural polyglot indicators: {}",
-            indicators.join(", ")
-        )
+        format!("Structural polyglot indicators: {}", indicators.join(", "))
     } else {
         "No structural polyglot indicators".to_string()
     };
@@ -339,7 +362,10 @@ pub fn analyze_polyglot(detected_classes: &[InvariantClass]) -> PolyglotDetectio
 }
 
 /// Analyze polyglot behavior using both class-level domains and raw payload structure.
-pub fn analyze_polyglot_input(detected_classes: &[InvariantClass], input: &str) -> PolyglotDetection {
+pub fn analyze_polyglot_input(
+    detected_classes: &[InvariantClass],
+    input: &str,
+) -> PolyglotDetection {
     let class_based = analyze_polyglot(detected_classes);
     let structural = detect_polyglot_structure(input.as_bytes());
 
@@ -427,15 +453,26 @@ mod tests {
         let payload = b"\xFF\xD8\xFF\xE0JFIF\x00<script>fetch('https://evil')</script>";
         let result = detect_polyglot_structure(payload);
         assert!(result.is_polyglot);
-        assert!(result.indicators.iter().any(|i| i == "jpeg_javascript_dual_validity"));
+        assert!(
+            result
+                .indicators
+                .iter()
+                .any(|i| i == "jpeg_javascript_dual_validity")
+        );
     }
 
     #[test]
     fn detects_pdf_javascript_polyglot_structure() {
-        let payload = b"%PDF-1.7\n1 0 obj\n<< /OpenAction << /S /JavaScript /JS (app.alert('x')) >> >>";
+        let payload =
+            b"%PDF-1.7\n1 0 obj\n<< /OpenAction << /S /JavaScript /JS (app.alert('x')) >> >>";
         let result = detect_polyglot_structure(payload);
         assert!(result.is_polyglot);
-        assert!(result.indicators.iter().any(|i| i == "pdf_embedded_javascript"));
+        assert!(
+            result
+                .indicators
+                .iter()
+                .any(|i| i == "pdf_embedded_javascript")
+        );
     }
 
     #[test]
@@ -448,7 +485,10 @@ mod tests {
 
     #[test]
     fn combines_class_and_structure_polyglot() {
-        let classes = vec![InvariantClass::SqlUnionExtraction, InvariantClass::CmdSeparator];
+        let classes = vec![
+            InvariantClass::SqlUnionExtraction,
+            InvariantClass::CmdSeparator,
+        ];
         let payload = "\u{FFFD}\u{FFFD}\u{FFFD}<svg><script>alert(1)</script></svg>";
         let result = analyze_polyglot_input(&classes, payload);
         assert!(result.is_polyglot);

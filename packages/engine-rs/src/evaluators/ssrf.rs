@@ -430,7 +430,9 @@ fn parse_request_target_host(
         }
     }
 
-    if request.target.starts_with('/') && let Some(host) = host_header {
+    if request.target.starts_with('/')
+        && let Some(host) = host_header
+    {
         return Some(host.to_owned());
     }
 
@@ -553,16 +555,17 @@ fn detect_protocol_smuggle_in_params(input: &str, dets: &mut Vec<L2Detection>) {
 fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2Detection>) {
     static FRAGMENT_AT_RE: std::sync::LazyLock<Regex> =
         std::sync::LazyLock::new(|| Regex::new(r"(?i)^https?://[^/\s?#]+#@([^/\s?#]+)").unwrap());
-    static FRAGMENT_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-        Regex::new(r"(?i)#.*([a-z][a-z0-9+.-]*://[^\\s#]+)").unwrap()
-    });
+    static FRAGMENT_URL_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?i)#.*([a-z][a-z0-9+.-]*://[^\\s#]+)").unwrap());
     static URL_AT_HOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(r"(?i)[a-z][a-z0-9+.-]*://[^/\s?#]*://[^@\s?#]*@").unwrap()
     });
 
     if let Some(pos) = decoded.find("://") {
         let remainder = &decoded[pos + 3..];
-        let boundary = remainder.find(['/', '?', '#', '\\']).unwrap_or(remainder.len());
+        let boundary = remainder
+            .find(['/', '?', '#', '\\'])
+            .unwrap_or(remainder.len());
         let boundary_sep = boundary
             .checked_add(pos + 3)
             .and_then(|idx| decoded[idx..].chars().next())
@@ -572,7 +575,10 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
                 confidence: 0.84,
-                detail: format!("Backslash in URL authority used for parser confusion: {}", authority),
+                detail: format!(
+                    "Backslash in URL authority used for parser confusion: {}",
+                    authority
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -620,7 +626,8 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: decoded.to_owned(),
-                    interpretation: "Some parsers can treat URL fragments as redirect or path targets".into(),
+                    interpretation:
+                        "Some parsers can treat URL fragments as redirect or path targets".into(),
                     offset: 0,
                     property: "Fragments should not be interpreted as request targets".into(),
                 }],
@@ -651,7 +658,10 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
                 confidence: 0.88,
-                detail: format!("Embedded URL-like userinfo in authority: {}", parsed.authority),
+                detail: format!(
+                    "Embedded URL-like userinfo in authority: {}",
+                    parsed.authority
+                ),
                 position: 0,
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
@@ -678,8 +688,8 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
             evidence: vec![ProofEvidence {
                 operation: EvidenceOperation::PayloadInject,
                 matched_input: parsed.authority.clone(),
-                interpretation:
-                    "Ambiguous authority section can bypass naive host extractors".into(),
+                interpretation: "Ambiguous authority section can bypass naive host extractors"
+                    .into(),
                 offset: 0,
                 property: "Authority must be strictly validated to avoid parser confusion".into(),
             }],
@@ -717,8 +727,9 @@ fn is_dns_rebind_target(host: &str) -> Option<String> {
 }
 
 fn detect_redirect_chain_targets(input: &str, dets: &mut Vec<L2Detection>) {
-    static REDIRECT_STATUS_RE: std::sync::LazyLock<Regex> =
-        std::sync::LazyLock::new(|| Regex::new(r"(?im)^\s*HTTP/\d+\.\d+\s+(301|302|307|308)\s").unwrap());
+    static REDIRECT_STATUS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?im)^\s*HTTP/\d+\.\d+\s+(301|302|307|308)\s").unwrap()
+    });
     static REDIRECT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
         Regex::new(
             r"(?i)(?:^|[&?])(url|uri|next|redirect|return|return_url|continue|target|to|dest|callback|goto|path|callback_url)\s*=\s*([^&\s#]+)",
@@ -766,12 +777,16 @@ fn detect_redirect_chain_targets(input: &str, dets: &mut Vec<L2Detection>) {
                     dets.push(L2Detection {
                         detection_type: "internal_reach".into(),
                         confidence: 0.95,
-                        detail: format!("Redirect response target is internal: {}", parsed.hostname),
+                        detail: format!(
+                            "Redirect response target is internal: {}",
+                            parsed.hostname
+                        ),
                         position: start,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: raw_target.to_owned(),
-                            interpretation: "HTTP 3xx redirect to internal target can escalate SSRF".into(),
+                            interpretation:
+                                "HTTP 3xx redirect to internal target can escalate SSRF".into(),
                             offset: start,
                             property: "SSRF checks must revalidate targets after redirects".into(),
                         }],
@@ -781,14 +796,18 @@ fn detect_redirect_chain_targets(input: &str, dets: &mut Vec<L2Detection>) {
                 dets.push(L2Detection {
                     detection_type: "cloud_metadata".into(),
                     confidence: 0.97,
-                    detail: format!("Redirect response targets metadata hostname: {}", parsed.hostname),
+                    detail: format!(
+                        "Redirect response targets metadata hostname: {}",
+                        parsed.hostname
+                    ),
                     position: start,
                     evidence: vec![ProofEvidence {
                         operation: EvidenceOperation::PayloadInject,
                         matched_input: raw_target.to_owned(),
                         interpretation: "HTTP 3xx redirect to metadata endpoint".into(),
                         offset: start,
-                        property: "SSRF checks must revalidate metadata targets after redirects".into(),
+                        property: "SSRF checks must revalidate metadata targets after redirects"
+                            .into(),
                     }],
                 });
             }
@@ -966,7 +985,8 @@ fn detect_cloud_metadata_context(
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: input.to_owned(),
-                    interpretation: "AWS EC2 metadata token workflow can expose instance credentials".into(),
+                    interpretation:
+                        "AWS EC2 metadata token workflow can expose instance credentials".into(),
                     offset: 0,
                     property: "Block AWS IMDSv2 token acquisition in SSRF contexts".into(),
                 }],
@@ -985,7 +1005,9 @@ fn detect_cloud_metadata_context(
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: input.to_owned(),
-                    interpretation: "GCP metadata requires special header but still indicates metadata probing".into(),
+                    interpretation:
+                        "GCP metadata requires special header but still indicates metadata probing"
+                            .into(),
                     offset: 0,
                     property: "Block metadata.google.internal requests in SSRF flow".into(),
                 }],
@@ -1037,7 +1059,8 @@ fn detect_cloud_metadata_context(
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: input.to_owned(),
-                    interpretation: "DigitalOcean metadata namespace can leak instance identity secrets".into(),
+                    interpretation:
+                        "DigitalOcean metadata namespace can leak instance identity secrets".into(),
                     offset: 0,
                     property: "Block DigitalOcean metadata path access".into(),
                 }],
@@ -1128,9 +1151,9 @@ impl L2Evaluator for SsrfEvaluator {
             .as_ref()
             .and_then(|_| extract_header_value(&decoded, "Host"));
         let parsed = parse_url(&decoded).or_else(|| parse_url(&decoded.replace('\\', "/")));
-        let request_host = request_line
-            .as_ref()
-            .and_then(|request| parse_request_target_host(request, parsed.as_ref(), request_host_header.as_deref()));
+        let request_host = request_line.as_ref().and_then(|request| {
+            parse_request_target_host(request, parsed.as_ref(), request_host_header.as_deref())
+        });
         let request_path = request_line
             .as_ref()
             .map(|request| extract_request_path(request, parsed.as_ref()));
@@ -1149,10 +1172,12 @@ impl L2Evaluator for SsrfEvaluator {
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: decoded.to_owned(),
-                            interpretation: "Direct file path to Kubernetes service account token".into(),
-                            offset: 0,
-                            property: "Disallow file access to mounted Kubernetes service account tokens"
+                            interpretation: "Direct file path to Kubernetes service account token"
                                 .into(),
+                            offset: 0,
+                            property:
+                                "Disallow file access to mounted Kubernetes service account tokens"
+                                    .into(),
                         }],
                     });
                 }
@@ -1216,7 +1241,8 @@ impl L2Evaluator for SsrfEvaluator {
                     matched_input: parsed.path.clone(),
                     interpretation: "Direct file path to Kubernetes service account token".into(),
                     offset: 0,
-                    property: "Disallow file access to mounted Kubernetes service account tokens".into(),
+                    property: "Disallow file access to mounted Kubernetes service account tokens"
+                        .into(),
                 }],
             });
         }
@@ -1287,7 +1313,10 @@ impl L2Evaluator for SsrfEvaluator {
         // Localhost hostname
         let h = &parsed.hostname;
         let (unicode_host, unicode_host_changed) = normalize_unicode_dotlike_host(h);
-        if unicode_host_changed && unicode_host != *h && (unicode_host == "127.0.0.1" || unicode_host == "localhost") {
+        if unicode_host_changed
+            && unicode_host != *h
+            && (unicode_host == "127.0.0.1" || unicode_host == "localhost")
+        {
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
                 confidence: 0.9,
@@ -1296,7 +1325,8 @@ impl L2Evaluator for SsrfEvaluator {
                 evidence: vec![ProofEvidence {
                     operation: EvidenceOperation::PayloadInject,
                     matched_input: h.clone(),
-                    interpretation: "Unicode host normalization can map to local/loopback-like targets".into(),
+                    interpretation:
+                        "Unicode host normalization can map to local/loopback-like targets".into(),
                     offset: 0,
                     property: "Host normalization should be applied before allowlist checks".into(),
                 }],
@@ -1327,12 +1357,18 @@ impl L2Evaluator for SsrfEvaluator {
                     dets.push(L2Detection {
                         detection_type: "internal_reach".into(),
                         confidence: 0.92,
-                        detail: format!("DNS rebinding resolves to internal range: {} → {}", h, rebound_ip),
+                        detail: format!(
+                            "DNS rebinding resolves to internal range: {} → {}",
+                            h, rebound_ip
+                        ),
                         position: 0,
                         evidence: vec![ProofEvidence {
                             operation: EvidenceOperation::PayloadInject,
                             matched_input: h.clone(),
-                            interpretation: format!("DNS rebinding endpoint resolves to {}", rebound_ip),
+                            interpretation: format!(
+                                "DNS rebinding endpoint resolves to {}",
+                                rebound_ip
+                            ),
                             offset: 0,
                             property:
                                 "Server-side requests must not reach internal/private IP ranges"
@@ -1498,7 +1534,9 @@ impl L2Evaluator for SsrfEvaluator {
                     false
                 }
             });
-            if punycode_embeds_internal || (normalized != *h && host_looks_internal_name(&normalized)) {
+            if punycode_embeds_internal
+                || (normalized != *h && host_looks_internal_name(&normalized))
+            {
                 dets.push(L2Detection {
                     detection_type: "internal_reach".into(),
                     confidence: 0.87,
