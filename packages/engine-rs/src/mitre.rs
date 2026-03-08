@@ -366,6 +366,16 @@ static T1565: MitreTechnique = MitreTechnique {
     name: "Data Manipulation",
     tactic: Impact,
 };
+static T1565_002: MitreTechnique = MitreTechnique {
+    id: "T1565.002",
+    name: "Stored Data Manipulation",
+    tactic: Impact,
+};
+static T1090_001: MitreTechnique = MitreTechnique {
+    id: "T1090.001",
+    name: "Internal Proxy",
+    tactic: CommandAndControl,
+};
 static T1530: MitreTechnique = MitreTechnique {
     id: "T1530",
     name: "Data from Cloud Storage",
@@ -478,7 +488,7 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     },
     ClassMapping {
         class: InvariantClass::PathNullTerminate,
-        techniques: &[&T1083],
+        techniques: &[&T1083, &T1190],
         rationale: "Null byte truncates filename extensions to bypass filters",
     },
     ClassMapping {
@@ -488,7 +498,7 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     },
     ClassMapping {
         class: InvariantClass::PathNormalizationBypass,
-        techniques: &[&T1083],
+        techniques: &[&T1083, &T1190],
         rationale: "Path normalization differences between parser and filesystem",
     },
     // SSRF (3)
@@ -504,7 +514,7 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     },
     ClassMapping {
         class: InvariantClass::SsrfProtocolSmuggle,
-        techniques: &[&T1071],
+        techniques: &[&T1071, &T1090_001],
         rationale: "Protocol smuggling accesses non-HTTP internal services",
     },
     // SSTI (2)
@@ -548,7 +558,7 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     },
     ClassMapping {
         class: InvariantClass::CorsOriginAbuse,
-        techniques: &[&T1189],
+        techniques: &[&T1189, &T1539],
         rationale: "CORS misconfiguration allows cross-origin credential theft",
     },
     ClassMapping {
@@ -591,22 +601,22 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     },
     ClassMapping {
         class: InvariantClass::HttpSmuggleH2,
-        techniques: &[&T1557],
+        techniques: &[&T1557, &T1090_001],
         rationale: "H2.CL downgrade attack exploits HTTP/2 to HTTP/1.1 conversion",
     },
     ClassMapping {
         class: InvariantClass::HttpSmuggleChunkExt,
-        techniques: &[&T1557, &T1190],
+        techniques: &[&T1557, &T1190, &T1090_001],
         rationale: "Chunk extension smuggling exploits HTTP/1.1 chunked encoding",
     },
     ClassMapping {
         class: InvariantClass::HttpSmuggleZeroCl,
-        techniques: &[&T1557],
+        techniques: &[&T1557, &T1090_001],
         rationale: "Zero Content-Length smuggling exploits edge cases in body parsing",
     },
     ClassMapping {
         class: InvariantClass::HttpSmuggleExpect,
-        techniques: &[&T1557],
+        techniques: &[&T1557, &T1090_001],
         rationale: "Expect header smuggling exploits 100-Continue handling",
     },
     // Log4Shell (1)
@@ -729,7 +739,7 @@ static INVARIANT_MITRE_MAP: &[ClassMapping] = &[
     // Cache (2)
     ClassMapping {
         class: InvariantClass::CachePoisoning,
-        techniques: &[&T1557, &T1565],
+        techniques: &[&T1557, &T1565, &T1565_002],
         rationale: "Cache poisoning serves malicious content via unkeyed headers",
     },
     ClassMapping {
@@ -1074,8 +1084,8 @@ mod tests {
         let mapped_classes: std::collections::HashSet<_> =
             INVARIANT_MITRE_MAP.iter().map(|m| m.class).collect();
         assert!(
-            mapped_classes.len() >= 60,
-            "Expected at least 60 mapped classes, got {}",
+            mapped_classes.len() >= 66,
+            "Expected at least 66 mapped classes, got {}",
             mapped_classes.len()
         );
     }

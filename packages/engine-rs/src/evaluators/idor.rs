@@ -930,6 +930,94 @@ fn detect_horizontal_privilege(
     None
 }
 
+fn detect_wildcard_bulk_id_abuse(decoded: &str) -> Option<L2EvalResult> {
+    static WILDCARD_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)/(?:api/)?v\d+/[a-z]+/(?:\*|all|bulk|everyone|any)(?:/|$|\?)").unwrap()
+    });
+
+    let Some(m) = WILDCARD_ID_RE.find(decoded) else {
+        return None;
+    };
+
+    Some(L2Detection {
+        detection_type: "idor_wildcard_id".into(),
+        confidence: 0.82,
+        detail: "Wildcard/bulk resource identifier suggests horizontal privilege escalation probe"
+            .into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: preview(decoded, m.start()),
+            interpretation: "Special resource selectors like '*' or 'all' can bypass per-object checks when authorization is weak".into(),
+            offset: m.start(),
+            property: "Bulk selectors must enforce the same object-level authorization as single-resource access".into(),
+        }],
+    })
+}
+
+fn uuid_v1_components(value: &str) -> Option<(u64, String, String)> {
+    let parts: Vec<&str> = value.split('-').collect();
+    if parts.len() != 5 {
+        return None;
+    }
+    if parts[2].len() != 4 || !parts[2].starts_with('1') {
+        return None;
+    }
+
+    let time_low = u64::from_str_radix(parts[0], 16).ok()?;
+    let time_mid = u64::from_str_radix(parts[1], 16).ok()?;
+    let time_hi_and_version = u64::from_str_radix(parts[2], 16).ok()?;
+    let timestamp = ((time_hi_and_version & 0x0FFF) << 48) | (time_mid << 32) | time_low;
+
+    Some((
+        timestamp,
+        parts[3].to_ascii_lowercase(),
+        parts[4].to_ascii_lowercase(),
+    ))
+}
+
+fn detect_uuidv1_prediction(decoded: &str) -> Option<L2EvalResult> {
+    static UUIDV1_PAIR_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)([0-9a-f]{8}-[0-9a-f]{4}-1[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})[\s,&]{1,5}([0-9a-f]{8}-[0-9a-f]{4}-1[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})").unwrap()
+    });
+
+    for caps in UUIDV1_PAIR_RE.captures_iter(decoded) {
+        let Some(left) = caps.get(1) else {
+            continue;
+        };
+        let Some(right) = caps.get(2) else {
+            continue;
+        };
+
+        let left_uuid = left.as_str().to_ascii_lowercase();
+        let right_uuid = right.as_str().to_ascii_lowercase();
+        let Some((left_ts, left_clock, left_node)) = uuid_v1_components(&left_uuid) else {
+            continue;
+        };
+        let Some((right_ts, right_clock, right_node)) = uuid_v1_components(&right_uuid) else {
+            continue;
+        };
+
+        if left_clock == right_clock && left_node == right_node && left_ts != right_ts {
+            return Some(L2Detection {
+                detection_type: "idor_uuidv1_prediction".into(),
+                confidence: 0.79,
+                detail: "Multiple UUIDv1 identifiers differ primarily by timestamp bits, suggesting prediction".into(),
+                position: left.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: format!("{},{}", left_uuid, right_uuid),
+                    interpretation: "Near-related UUIDv1 values with identical node/clock components indicate timestamp-driven ID prediction attempts".into(),
+                    offset: left.start(),
+                    property: "Object identifiers should be non-predictable and authorization-checked independently of ID entropy".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
+
 fn detect_encoded_reference(
     path_encoded: &[EncodedCandidate],
     param_encoded: &[EncodedCandidate],
@@ -993,6 +1081,12 @@ pub fn evaluate_idor(input: &str) -> Option<L2EvalResult> {
     if let Some(d) = detect_horizontal_privilege(&path_ids, &param_ids) {
         detections.push(d);
     }
+    if let Some(d) = detect_wildcard_bulk_id_abuse(&decoded) {
+        detections.push(d);
+    }
+    if let Some(d) = detect_uuidv1_prediction(&decoded) {
+        detections.push(d);
+    }
     if let Some(d) = detect_encoded_reference(&path_encoded, &param_encoded) {
         detections.push(d);
     }
@@ -1036,7 +1130,9 @@ impl L2Evaluator for IdorEvaluator {
             | "idor_param_id_tamper"
             | "idor_predictable_path"
             | "idor_horizontal_privilege"
-            | "idor_graphql_node_id" => Some(InvariantClass::BolaIdor),
+            | "idor_graphql_node_id"
+            | "idor_wildcard_id"
+            | "idor_uuidv1_prediction" => Some(InvariantClass::BolaIdor),
             _ => None,
         }
     }
@@ -1175,5 +1271,22 @@ mod tests {
             eval.map_class(batch[0].detection_type.as_str()),
             Some(InvariantClass::ApiMassEnum)
         );
+    }
+
+    #[test]
+    fn detects_wildcard_bulk_id_abuse() {
+        let input = "GET /api/v2/users/all?active=true HTTP/1.1";
+        let result = evaluate_idor(input).unwrap();
+        assert_eq!(result.detection_type, "idor_wildcard_id");
+        assert!((result.confidence - 0.82).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn detects_uuidv1_prediction_attempt() {
+        let input =
+            "f81d4fae-7dec-11d0-a765-00a0c91e6bf6, f81d4faf-7dec-11d0-a765-00a0c91e6bf6";
+        let result = evaluate_idor(input).unwrap();
+        assert_eq!(result.detection_type, "idor_uuidv1_prediction");
+        assert!((result.confidence - 0.79).abs() < f64::EPSILON);
     }
 }

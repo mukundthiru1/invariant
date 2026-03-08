@@ -462,6 +462,66 @@ static COMPOSITION_RULES: std::sync::LazyLock<Vec<CompositionRule>> =
                 derived_class: InvariantClass::XxeEntityExpansion,
                 always_complete: true,
             },
+            // XSS + CORS origin abuse → stored CORS-poisoned XSS
+            CompositionRule {
+                a: InvariantClass::XssTagInjection,
+                b: InvariantClass::CorsOriginAbuse,
+                completer: None,
+                escape: Some(EscapeOperation::ContextBreak),
+                payload: PayloadOperation::TagInject,
+                repair: RepairOperation::TagClose,
+                repair_complete: None,
+                context: InputContext::Html,
+                confidence: 0.88,
+                confidence_complete: None,
+                derived_class: InvariantClass::XssTagInjection,
+                always_complete: true,
+            },
+            // Prototype pollution + command separator → prototype pollution gadget chain
+            CompositionRule {
+                a: InvariantClass::ProtoPollution,
+                b: InvariantClass::CmdSeparator,
+                completer: None,
+                escape: None,
+                payload: PayloadOperation::ProtoPollute,
+                repair: RepairOperation::None,
+                repair_complete: None,
+                context: InputContext::Json,
+                confidence: 0.91,
+                confidence_complete: None,
+                derived_class: InvariantClass::ProtoPollutionGadget,
+                always_complete: true,
+            },
+            // SSRF internal reach + cloud metadata → full cloud credential exfil
+            CompositionRule {
+                a: InvariantClass::SsrfInternalReach,
+                b: InvariantClass::SsrfCloudMetadata,
+                completer: None,
+                escape: Some(EscapeOperation::EncodingBypass),
+                payload: PayloadOperation::PathEscape,
+                repair: RepairOperation::None,
+                repair_complete: None,
+                context: InputContext::Url,
+                confidence: 0.94,
+                confidence_complete: None,
+                derived_class: InvariantClass::SsrfCloudMetadata,
+                always_complete: true,
+            },
+            // SQLi + path traversal → database file read via infile/outfile
+            CompositionRule {
+                a: InvariantClass::SqlStringTermination,
+                b: InvariantClass::PathDotdotEscape,
+                completer: None,
+                escape: Some(EscapeOperation::StringTerminate),
+                payload: PayloadOperation::PathEscape,
+                repair: RepairOperation::NaturalEnd,
+                repair_complete: None,
+                context: InputContext::Sql,
+                confidence: 0.90,
+                confidence_complete: None,
+                derived_class: InvariantClass::SqlStackedExecution,
+                always_complete: false,
+            },
         ]
     });
 
@@ -1780,6 +1840,26 @@ mod tests {
             .fold(0.0_f64, f64::max)
     }
 
+    fn synthetic_match(class: InvariantClass) -> InvariantMatch {
+        InvariantMatch {
+            class,
+            confidence: 0.9,
+            category: class.category(),
+            severity: class.default_severity(),
+            is_novel_variant: false,
+            description: "synthetic".to_owned(),
+            detection_levels: DetectionLevels {
+                l1: true,
+                l2: false,
+                l3: false,
+                convergent: false,
+            },
+            l2_evidence: None,
+            proof: None,
+            cve_enrichment: None,
+        }
+    }
+
     #[test]
     fn engine_creates_and_detects() {
         let engine = InvariantEngine::new();
@@ -1869,6 +1949,54 @@ mod tests {
             assert!(
                 !result.compositions.is_empty(),
                 "Should have compositions when both classes match"
+            );
+        }
+    }
+
+    #[test]
+    fn new_composition_rules_elevate_confidence_for_required_pairs() {
+        let engine = InvariantEngine::new();
+        let cases = [
+            (
+                InvariantClass::XssTagInjection,
+                InvariantClass::CorsOriginAbuse,
+                InvariantClass::XssTagInjection,
+            ),
+            (
+                InvariantClass::ProtoPollution,
+                InvariantClass::CmdSeparator,
+                InvariantClass::ProtoPollutionGadget,
+            ),
+            (
+                InvariantClass::SsrfInternalReach,
+                InvariantClass::SsrfCloudMetadata,
+                InvariantClass::SsrfCloudMetadata,
+            ),
+            (
+                InvariantClass::SqlStringTermination,
+                InvariantClass::PathDotdotEscape,
+                InvariantClass::SqlStackedExecution,
+            ),
+        ];
+
+        for (a, b, derived_class) in cases {
+            let matches = vec![synthetic_match(a), synthetic_match(b)];
+            let compositions = engine.detect_compositions(&matches);
+            let composition = compositions
+                .iter()
+                .find(|c| c.derived_class == derived_class)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "Expected composition for pair {:?}+{:?} -> {:?}",
+                        a, b, derived_class
+                    )
+                });
+            assert!(
+                composition.confidence >= 0.88,
+                "Expected elevated confidence >= 0.88 for {:?}+{:?}, got {}",
+                a,
+                b,
+                composition.confidence
             );
         }
     }

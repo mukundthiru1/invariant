@@ -16,8 +16,10 @@ function safeFromCodePoint(cp: number): string {
 }
 
 export function safeDecode(input: string): string {
-    try { return decodeURIComponent(input) }
-    catch { return input }
+    // Catch IIS-style %uXXXX encoding bypass before standard decodeURIComponent
+    const normalized = input.replace(/%(u[0-9a-fA-F]{4})/gi, match => String.fromCharCode(parseInt(match.slice(2), 16)))
+    try { return decodeURIComponent(normalized) }
+    catch { return normalized }
 }
 
 export function deepDecode(input: string, depth = 0): string {
@@ -25,6 +27,9 @@ export function deepDecode(input: string, depth = 0): string {
     if (input.length > MAX_INPUT_SIZE) input = input.slice(0, MAX_INPUT_SIZE)
 
     let decoded = input
+
+    // Catch IIS-style %uXXXX encoding bypass before URL decode
+    decoded = decoded.replace(/%(u[0-9a-fA-F]{4})/gi, match => String.fromCharCode(parseInt(match.slice(2), 16)))
 
     // URL decode
     try {
@@ -43,6 +48,13 @@ export function deepDecode(input: string, depth = 0): string {
         .replace(/&lt;/gi, '<')
         .replace(/&gt;/gi, '>')
         .replace(/&amp;/gi, '&')
+
+    // Mixed encoding bypass: Catch URL-encoded HTML entities (e.g., %26lt%3b -> &lt; -> <)
+    // Third pass URL decode after HTML entity decode
+    try {
+        const pass3 = decodeURIComponent(decoded)
+        if (pass3 !== decoded) decoded = pass3
+    } catch { /* invalid encoding, keep original */ }
 
     // Unicode escapes (4 hex = BMP; clamp for safety)
     decoded = decoded.replace(/\\u([0-9a-f]{4})/gi, (_, hex: string) =>
@@ -70,7 +82,22 @@ export function deepDecode(input: string, depth = 0): string {
     // e.g. "../../../etc/passwd%00.png" passes extension checks but reads /etc/passwd
     decoded = decoded.replace(/\0/g, '')
 
+    // Normalize overlong UTF-8 sequences used in bypasses
+    decoded = normalizeOverlongUtf8(decoded)
+
     return decoded
+}
+
+/**
+ * Detects and normalizes common overlong UTF-8 bypass sequences.
+ * Replaces sequences like %c0%ae with their ASCII equivalents.
+ */
+function normalizeOverlongUtf8(s: string): string {
+    return s
+        .replace(/%c0%ae/gi, '.')
+        .replace(/%c0%af/gi, '/')
+        .replace(/%e0%80%ae/gi, '.')
+        .replace(/%c1%9c/gi, '\\')
 }
 
 

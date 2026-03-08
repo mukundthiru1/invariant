@@ -223,6 +223,61 @@ export function createInvariantHandler(options: HandlerOptions = {}) {
             }
 
             const allMatches = detections.flatMap(d => d.matches)
+            const signalsConfig = config.signals
+
+            if (signalsConfig?.ingestUrl && detections.length > 0) {
+                const ingestUrl = signalsConfig.ingestUrl
+                const batchSize = signalsConfig.batchSize || 1
+                const sensorToken = signalsConfig.sensorToken
+                const ip = request.headers.get('x-forwarded-for') ?? request.headers.get('x-real-ip') ?? 'unknown'
+                const ua = request.headers.get('user-agent') ?? 'unknown'
+                
+                // Fire-and-forget telemetry upload
+                ;(async () => {
+                    let sourceHash = 'unknown'
+                    try {
+                        if (globalThis.crypto?.subtle) {
+                            const data = new TextEncoder().encode(`${ip}|${ua}`)
+                            const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data)
+                            const hashArray = Array.from(new Uint8Array(hashBuffer))
+                            sourceHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
+                        }
+                    } catch {}
+
+                    const payload = {
+                        timestamp: new Date().toISOString(),
+                        source_hash: sourceHash,
+                        detections: detections.slice(0, batchSize).map(d => ({
+                            class: d.matches[0]?.class || 'unknown',
+                            confidence: d.matches[0]?.confidence || 0,
+                            surface: d.surface,
+                            key: d.key
+                        }))
+                    }
+
+                    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+                    if (sensorToken) {
+                        headers['Authorization'] = `Bearer ${sensorToken}`
+                    }
+
+                    const abortController = new AbortController()
+                    const timeout = setTimeout(() => abortController.abort(), 5000)
+
+                    try {
+                        await fetch(ingestUrl, {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify(payload),
+                            signal: abortController.signal as any
+                        })
+                    } catch {
+                        // Fail silently
+                    } finally {
+                        clearTimeout(timeout)
+                    }
+                })()
+            }
+
             const shouldBlock = allMatches.length > 0 && engine.shouldBlock(allMatches)
 
             if (shouldBlock && mode === 'enforce') {

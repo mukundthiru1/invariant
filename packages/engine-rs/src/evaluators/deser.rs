@@ -402,6 +402,66 @@ impl L2Evaluator for DeserEvaluator {
                 m.as_str(), m.start()));
         }
 
+        // 1. Python pickle RCE
+        static NEW_PICKLE_B64: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?:KGNvcHlfcmVn|Y3N5c3RlbQo|Y29weV9yZWc|[A-Za-z0-9+/]{10,}={0,2})").unwrap()
+        });
+        static NEW_PICKLE_RAW: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\x80[\x02-\x05][cR(S'V]").unwrap()
+        });
+        if let Some(m) = NEW_PICKLE_B64.find(&decoded) {
+            dets.push(mk("python_pickle_rce_pattern", 0.88, "Python pickle RCE (base64)", "Serialized Python pickle objects with code execution opcodes", "Pickle objects must not be accepted from untrusted sources", m.as_str(), m.start()));
+        }
+        if let Some(m) = NEW_PICKLE_RAW.find(&decoded) {
+            dets.push(mk("python_pickle_rce_pattern", 0.88, "Python pickle RCE (raw)", "Serialized Python pickle objects with code execution opcodes", "Pickle objects must not be accepted from untrusted sources", m.as_str(), m.start()));
+        }
+
+        // 2. Ruby Marshal.load
+        static NEW_RUBY_B64: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"BAhb").unwrap()
+        });
+        static NEW_RUBY_HEX: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\x04\x08[IB:\[{]").unwrap()
+        });
+        if let Some(m) = NEW_RUBY_B64.find(&decoded) {
+            dets.push(mk("ruby_marshal_load_pattern", 0.85, "Ruby Marshal.load (base64)", "Ruby serialized objects starting with Marshal magic bytes", "Ruby Marshal must not be accepted from untrusted sources", m.as_str(), m.start()));
+        }
+        if let Some(m) = NEW_RUBY_HEX.find(&decoded) {
+            dets.push(mk("ruby_marshal_load_pattern", 0.87, "Ruby Marshal.load (hex)", "Ruby serialized objects starting with Marshal magic bytes", "Ruby Marshal must not be accepted from untrusted sources", m.as_str(), m.start()));
+        }
+
+        // 3. YAML unsafe.load RCE
+        static NEW_YAML_RCE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)!!(?:python/object[:/]|ruby/object:|map:java\.lang\.|map:org\.springframework\.|javax\.script|com\.sun\.|org\.apache\.commons)").unwrap()
+        });
+        if let Some(m) = NEW_YAML_RCE.find(&decoded) {
+            dets.push(mk("yaml_unsafe_load_rce", 0.91, "YAML unsafe.load RCE", "YAML tags that execute code", "YAML parsing must use safe loading", m.as_str(), m.start()));
+        }
+
+        // 4. Node.js undefsafe/lodash merge via __proto__
+        static NEW_NODE_PROTO: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"[{,]\s*['"]__proto__['"]\s*:\s*\{[^}]*\}"#).unwrap()
+        });
+        if let Some(m) = NEW_NODE_PROTO.find(&decoded) {
+            dets.push(mk("nodejs_proto_merge", 0.87, "Node.js merge via __proto__", "JSON payloads with __proto__ key used to exploit merge utilities", "Prototype pollution must be prevented in merge operations", m.as_str(), m.start()));
+        }
+
+        // 5. Kryo/Hessian Java serialization
+        static NEW_KRYO_HESSIAN: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?:H2s|aGVzc2lhbg|\xca\xfe\xba\xbe|H2c[A-Za-z0-9+/=]{6,})").unwrap()
+        });
+        if let Some(m) = NEW_KRYO_HESSIAN.find(&decoded) {
+            dets.push(mk("kryo_hessian_serialization", 0.85, "Kryo/Hessian Java serialization", "Hessian2 magic bytes and Kryo serialization prefix", "Untrusted Java serialization formats must be blocked", m.as_str(), m.start()));
+        }
+
+        // 6. PHP unserialize with object gadget chains
+        static NEW_PHP_GADGET: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"O:\d+:['"][A-Za-z_\\][A-Za-z0-9_\\]*['"]:\d+:\{"#).unwrap()
+        });
+        if let Some(m) = NEW_PHP_GADGET.find(&decoded) {
+            dets.push(mk("php_unserialize_gadget_chain", 0.88, "PHP unserialize with object gadget chains", "PHP serialized object strings with complex gadget chains", "Untrusted PHP unserialization must be avoided", m.as_str(), m.start()));
+        }
+
         dets
     }
 
@@ -415,13 +475,16 @@ impl L2Evaluator for DeserEvaluator {
             | "ruby_marshal_payload"
             | "ruby_marshal_magic_bytes"
             | "java_kryo_serial"
-            | "java_hessian_serial" => Some(InvariantClass::DeserJavaGadget),
+            | "java_hessian_serial"
+            | "ruby_marshal_load_pattern"
+            | "kryo_hessian_serialization" => Some(InvariantClass::DeserJavaGadget),
             "php_object"
             | "php_pop_chain"
             | "php_base64_serial"
             | "php_magic_method_chain"
             | "php_phar_deser"
-            | "php_gadget_object_chain" => Some(InvariantClass::DeserPhpObject),
+            | "php_gadget_object_chain"
+            | "php_unserialize_gadget_chain" => Some(InvariantClass::DeserPhpObject),
             "python_pickle"
             | "python_reduce"
             | "python_pickle_base64"
@@ -432,7 +495,10 @@ impl L2Evaluator for DeserEvaluator {
             | "dotnet_viewstate_binaryformatter"
             | "yaml_deser"
             | "yaml_language_tag_deser"
-            | "node_unserialize_gadget" => Some(InvariantClass::DeserPythonPickle),
+            | "node_unserialize_gadget"
+            | "python_pickle_rce_pattern"
+            | "yaml_unsafe_load_rce"
+            | "nodejs_proto_merge" => Some(InvariantClass::DeserPythonPickle),
             _ => None,
         }
     }
@@ -629,5 +695,53 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "java_hessian_serial")
         );
+    }
+
+    #[test]
+    fn detects_new_python_pickle_rce() {
+        let eval = DeserEvaluator;
+        let b64 = eval.detect("KGNvcHlfcmVn");
+        let raw = eval.detect("\u{0080}\x02c");
+        assert!(b64.iter().any(|d| d.detection_type == "python_pickle_rce_pattern"));
+        assert!(raw.iter().any(|d| d.detection_type == "python_pickle_rce_pattern"));
+    }
+
+    #[test]
+    fn detects_new_ruby_marshal_load() {
+        let eval = DeserEvaluator;
+        let b64 = eval.detect("BAhb");
+        let hex = eval.detect("\x04\x08[");
+        assert!(b64.iter().any(|d| d.detection_type == "ruby_marshal_load_pattern"));
+        assert!(hex.iter().any(|d| d.detection_type == "ruby_marshal_load_pattern"));
+    }
+
+    #[test]
+    fn detects_new_yaml_unsafe_load() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("!!python/object/apply:os.system");
+        assert!(dets.iter().any(|d| d.detection_type == "yaml_unsafe_load_rce"));
+    }
+
+    #[test]
+    fn detects_new_nodejs_proto_merge() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("{\"__proto__\": {\"admin\": true}}");
+        assert!(dets.iter().any(|d| d.detection_type == "nodejs_proto_merge"));
+    }
+
+    #[test]
+    fn detects_new_kryo_hessian() {
+        let eval = DeserEvaluator;
+        let hessian = eval.detect("H2s");
+        let kryo = eval.detect("\u{00ca}\u{00fe}\u{00ba}\u{00be}");
+        assert!(hessian.iter().any(|d| d.detection_type == "kryo_hessian_serialization"));
+        assert!(kryo.iter().any(|d| d.detection_type == "kryo_hessian_serialization"));
+    }
+
+    #[test]
+    fn detects_new_php_unserialize_gadget() {
+        let eval = DeserEvaluator;
+        let dets = eval.detect("O:12:\"My\\Namespace\":1:{");
+        assert!(dets.iter().any(|d| d.detection_type == "php_unserialize_gadget_chain"));
     }
 }

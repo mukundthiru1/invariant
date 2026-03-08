@@ -459,6 +459,52 @@ impl XssEvaluator {
             .map(|m| (m.start(), m.as_str().to_string()))
     }
 
+    fn detect_iframe_srcdoc_xss(input: &str) -> Option<(usize, String)> {
+        static IFRAME_SRCDOC_RE: OnceLock<Regex> = OnceLock::new();
+        let re = IFRAME_SRCDOC_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?i)<iframe[^>]*\bsrcdoc\s*=\s*['\"][^'\"]*(?:script|javascript|onerror|onload)[^'\"]*['\"]"#,
+            )
+            .unwrap()
+        });
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_meta_refresh_data_uri_xss(input: &str) -> Option<(usize, String)> {
+        static META_REFRESH_RE: OnceLock<Regex> = OnceLock::new();
+        let re = META_REFRESH_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?i)<meta[^>]*http-equiv\s*=\s*['\"]?refresh['\"]?[^>]*content\s*=\s*['\"][^'\"]*(?:javascript:|data:text/html)[^'\"]*['\"]"#,
+            )
+            .unwrap()
+        });
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_base_href_javascript(input: &str) -> Option<(usize, String)> {
+        static BASE_HREF_RE: OnceLock<Regex> = OnceLock::new();
+        let re = BASE_HREF_RE
+            .get_or_init(|| Regex::new(r#"(?i)<base[^>]*\bhref\s*=\s*['\"]?javascript:"#).unwrap());
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_form_action_javascript(input: &str) -> Option<(usize, String)> {
+        static FORM_ACTION_RE: OnceLock<Regex> = OnceLock::new();
+        let re = FORM_ACTION_RE
+            .get_or_init(|| Regex::new(r#"(?i)<form[^>]*\baction\s*=\s*['\"]?javascript:"#).unwrap());
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_legacy_css_expression_injection(input: &str) -> Option<(usize, String)> {
+        static LEGACY_CSS_RE: OnceLock<Regex> = OnceLock::new();
+        let re = LEGACY_CSS_RE.get_or_init(|| {
+            Regex::new(r#"(?is)(?:expression\s*\(|behavior\s*:\s*url\s*\(|-moz-binding)"#).unwrap()
+        });
+        let normalized = Self::normalized_xss_view(input);
+        re.find(&normalized)
+            .map(|m| (m.start(), m.as_str().to_string()))
+    }
+
     fn detect_svg_data_uri_payload(input: &str) -> Option<(usize, String)> {
         let normalized = Self::normalized_xss_view(input);
         let lower = normalized.to_lowercase();
@@ -729,6 +775,102 @@ impl L2Evaluator for XssEvaluator {
                     interpretation: "Legacy/quirks CSS execution vectors can evaluate script in style contexts".into(),
                     offset: position,
                     property: "User input in CSS/style contexts must not introduce executable CSS primitives".into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_iframe_srcdoc_xss(input) {
+            detections.push(L2Detection {
+                detection_type: "tag_injection".into(),
+                confidence: 0.87,
+                detail: "HTML5 iframe srcdoc script-capable payload".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched,
+                    interpretation:
+                        "iframe srcdoc embeds HTML/JS content that can execute in document context"
+                            .into(),
+                    offset: position,
+                    property: "User input must not control iframe srcdoc with executable content"
+                        .into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_meta_refresh_data_uri_xss(input) {
+            detections.push(L2Detection {
+                detection_type: "protocol_handler".into(),
+                confidence: 0.88,
+                detail: "Meta refresh redirects to executable javascript/data:text/html URI".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched,
+                    interpretation:
+                        "Meta refresh content points at executable URI schemes that can trigger script"
+                            .into(),
+                    offset: position,
+                    property:
+                        "HTML refresh directives must not include executable URI destinations".into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_base_href_javascript(input) {
+            detections.push(L2Detection {
+                detection_type: "protocol_handler".into(),
+                confidence: 0.91,
+                detail: "Base tag javascript: href can hijack relative URL resolution".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched,
+                    interpretation:
+                        "A javascript: base href can redirect relative links/forms into script execution"
+                            .into(),
+                    offset: position,
+                    property:
+                        "Base URL declarations derived from user input must not use executable schemes"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_form_action_javascript(input) {
+            detections.push(L2Detection {
+                detection_type: "protocol_handler".into(),
+                confidence: 0.89,
+                detail: "Form action uses javascript: protocol".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched,
+                    interpretation:
+                        "Form submissions can trigger javascript: execution when action is attacker-controlled"
+                            .into(),
+                    offset: position,
+                    property:
+                        "Form action attributes must not use executable protocol handlers".into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_legacy_css_expression_injection(input) {
+            detections.push(L2Detection {
+                detection_type: "tag_injection".into(),
+                confidence: 0.85,
+                detail: "Legacy CSS expression/behavior/-moz-binding execution primitive".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: matched,
+                    interpretation:
+                        "Legacy CSS execution syntax may evaluate script in style contexts".into(),
+                    offset: position,
+                    property:
+                        "User-controlled CSS must not include executable legacy expression primitives"
+                            .into(),
                 }],
             });
         }
@@ -1185,6 +1327,37 @@ mod tests {
     }
 
     #[test]
+    fn iframe_srcdoc_xss() {
+        let eval = XssEvaluator;
+        let dets =
+            eval.detect("<iframe srcdoc=\"<img src=x onerror=alert(1)>\"></iframe>");
+        assert!(has_type(&dets, "tag_injection"));
+    }
+
+    #[test]
+    fn meta_refresh_data_uri_xss() {
+        let eval = XssEvaluator;
+        let dets = eval.detect(
+            "<meta http-equiv=\"refresh\" content=\"0;url=data:text/html,<script>alert(1)</script>\">",
+        );
+        assert!(has_type(&dets, "protocol_handler"));
+    }
+
+    #[test]
+    fn base_href_javascript_xss() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<base href=javascript:alert(1)//>");
+        assert!(has_type(&dets, "protocol_handler"));
+    }
+
+    #[test]
+    fn form_action_javascript_xss() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<form action=javascript:alert(1)><input type=submit></form>");
+        assert!(has_type(&dets, "protocol_handler"));
+    }
+
+    #[test]
     fn data_uri_html_base64() {
         let eval = XssEvaluator;
         let dets = eval
@@ -1318,6 +1491,13 @@ mod tests {
     fn css_javascript_url_payload() {
         let eval = XssEvaluator;
         let dets = eval.detect("<style>body{background:url(javascript:alert(1))}</style>");
+        assert!(has_type(&dets, "tag_injection"));
+    }
+
+    #[test]
+    fn css_legacy_expression_injection() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<div style=\"left:expression(alert(1));behavior:url(x)\">");
         assert!(has_type(&dets, "tag_injection"));
     }
 

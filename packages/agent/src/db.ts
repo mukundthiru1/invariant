@@ -53,6 +53,7 @@ export interface Signal {
     invariant_classes: string
     is_novel: boolean
     timestamp: string
+    uploaded_at?: string | null
 }
 
 export interface Asset {
@@ -110,7 +111,8 @@ CREATE TABLE IF NOT EXISTS signals (
     invariant_classes TEXT NOT NULL DEFAULT '[]',
     is_novel INTEGER NOT NULL DEFAULT 0,
     latency_ms REAL,
-    timestamp TEXT NOT NULL DEFAULT (datetime('now'))
+    timestamp TEXT NOT NULL DEFAULT (datetime('now')),
+    uploaded_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS assets (
@@ -180,6 +182,7 @@ export class InvariantDB {
         this.db.pragma('synchronous = NORMAL')
         this.db.pragma('foreign_keys = ON')
         this.db.exec(SCHEMA)
+        try { this.db.exec('ALTER TABLE signals ADD COLUMN uploaded_at TEXT') } catch {}
     }
 
     // ── Findings ─────────────────────────────────────────────────
@@ -276,14 +279,26 @@ export class InvariantDB {
 
     insertSignal(signal: Omit<Signal, 'id'>): number {
         const stmt = this.db.prepare(`
-            INSERT INTO signals (type, subtype, severity, action, path, method, source_hash, invariant_classes, is_novel, timestamp)
-            VALUES (@type, @subtype, @severity, @action, @path, @method, @source_hash, @invariant_classes, @is_novel, @timestamp)
+            INSERT INTO signals (type, subtype, severity, action, path, method, source_hash, invariant_classes, is_novel, timestamp, uploaded_at)
+            VALUES (@type, @subtype, @severity, @action, @path, @method, @source_hash, @invariant_classes, @is_novel, @timestamp, @uploaded_at)
         `)
         const result = stmt.run({
             ...signal,
             is_novel: signal.is_novel ? 1 : 0,
+            uploaded_at: signal.uploaded_at ?? null,
         })
         return Number(result.lastInsertRowid)
+    }
+
+    getUnuploadedSignals(limit = 100): Signal[] {
+        return this.db.prepare('SELECT * FROM signals WHERE uploaded_at IS NULL ORDER BY timestamp ASC LIMIT ?').all(limit) as Signal[]
+    }
+
+    markSignalsUploaded(ids: number[]): void {
+        if (ids.length === 0) return
+        const now = new Date().toISOString()
+        const placeholders = ids.map(() => '?').join(',')
+        this.db.prepare(`UPDATE signals SET uploaded_at = ? WHERE id IN (${placeholders})`).run(now, ...ids)
     }
 
     getSignals(limit = 100): Signal[] {

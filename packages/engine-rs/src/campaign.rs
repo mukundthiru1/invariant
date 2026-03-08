@@ -13,6 +13,8 @@
 //!      escalates defense posture automatically.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
+use crate::types::InvariantClass;
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -181,6 +183,11 @@ pub struct CampaignIntelligence {
     dormant_sessions: HashMap<String, DormantCampaignSeed>,
     dormant_window_ms: u64,
     adaptive_mutation_window_ms: u64,
+    class_signals: HashMap<String, HashSet<String>>,
+    temporal_bursts: HashMap<(String, u64), HashSet<String>>,
+    emitted_coordinated: HashSet<String>,
+    pub class_probe_map: HashMap<InvariantClass, Vec<(String, Instant)>>,
+    pub burst_counters: HashMap<(InvariantClass, u64), HashSet<String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +214,11 @@ impl CampaignIntelligence {
             dormant_sessions: HashMap::new(),
             dormant_window_ms: 86_400_000,
             adaptive_mutation_window_ms: 3_000_000,
+            class_signals: HashMap::new(),
+            temporal_bursts: HashMap::new(),
+            emitted_coordinated: HashSet::new(),
+            class_probe_map: HashMap::new(),
+            burst_counters: HashMap::new(),
         }
     }
 
@@ -215,6 +227,81 @@ impl CampaignIntelligence {
     pub fn record_signal(&mut self, signal: CampaignSignal) {
         let source = signal.source_hash.clone();
         let now = signal.timestamp;
+        let class = signal.signal_type.clone();
+
+        let mut synthetic_signals = Vec::new();
+
+        if source != "meta_distributed" {
+            if let Ok(inv_class) = serde_json::from_str::<InvariantClass>(&format!("\"{}\"", class)) {
+                let probes = self.class_probe_map.entry(inv_class).or_insert_with(Vec::new);
+                probes.push((source.clone(), Instant::now()));
+                
+                let now_inst = Instant::now();
+                let window = std::time::Duration::from_millis(self.campaign_window_ms);
+                probes.retain(|(_, ts)| now_inst.checked_duration_since(*ts).unwrap_or(std::time::Duration::ZERO) <= window);
+                
+                let unique_sources: HashSet<String> = probes.iter().map(|(s, _)| s.clone()).collect();
+                if unique_sources.len() >= 5 {
+                    let source_count = unique_sources.len() as f64;
+                    let conf = (0.78 + (0.005 * (source_count - 5.0))).min(0.92);
+                    synthetic_signals.push(CampaignSignal {
+                        signal_type: "distributed_class_probe".to_string(),
+                        timestamp: now,
+                        confidence: conf,
+                        path: signal.path.clone(),
+                        source_hash: "meta_distributed".to_string(),
+                        encoding: signal.encoding.clone(),
+                    });
+                }
+                
+                let current_bucket = now / 300_000;
+                let burst_entry = self.burst_counters.entry((inv_class, current_bucket)).or_insert_with(HashSet::new);
+                burst_entry.insert(source.clone());
+                
+                if burst_entry.len() > 20 {
+                    synthetic_signals.push(CampaignSignal {
+                        signal_type: "temporal_class_burst".to_string(),
+                        timestamp: now,
+                        confidence: 0.82,
+                        path: signal.path.clone(),
+                        source_hash: "meta_distributed".to_string(),
+                        encoding: signal.encoding.clone(),
+                    });
+                    burst_entry.clear();
+                }
+                
+                self.burst_counters.retain(|(_, bucket), _| *bucket >= current_bucket.saturating_sub(2));
+            }
+
+            let class_entry = self.class_signals.entry(class.clone()).or_insert_with(HashSet::new);
+            let was_below_5 = class_entry.len() < 5;
+            class_entry.insert(source.clone());
+            if was_below_5 && class_entry.len() >= 5 {
+                synthetic_signals.push(CampaignSignal {
+                    signal_type: "distributed_class_probe".to_string(),
+                    timestamp: now,
+                    confidence: 1.0,
+                    path: signal.path.clone(),
+                    source_hash: "meta_distributed".to_string(),
+                    encoding: signal.encoding.clone(),
+                });
+            }
+
+            let window_5m = now / 300_000;
+            let burst_entry = self.temporal_bursts.entry((class.clone(), window_5m)).or_insert_with(HashSet::new);
+            burst_entry.insert(source.clone());
+            if burst_entry.len() > 20 {
+                synthetic_signals.push(CampaignSignal {
+                    signal_type: "temporal_burst".to_string(),
+                    timestamp: now,
+                    confidence: 0.80,
+                    path: signal.path.clone(),
+                    source_hash: "meta_distributed".to_string(),
+                    encoding: signal.encoding.clone(),
+                });
+                self.temporal_bursts.remove(&(class.clone(), window_5m));
+            }
+        }
 
         if let Some(session) = self.sessions.get(&source) {
             if now.saturating_sub(session.last_seen) > self.session_timeout_ms {
@@ -295,6 +382,10 @@ impl CampaignIntelligence {
 
         self.detect_campaigns();
         self.prune_stale_sessions();
+
+        for syn in synthetic_signals {
+            self.record_signal(syn);
+        }
     }
 
     /// Get the threat level for a source.
@@ -397,6 +488,29 @@ impl CampaignIntelligence {
         self.detect_adaptive_mutation_campaigns(now);
         self.detect_dormant_resurgence_campaigns(now);
         self.detect_false_flag_campaigns();
+
+        // Secondary path: >= 10 sources with 1 signal each, same class
+        let mut single_signal_classes: HashMap<String, Vec<String>> = HashMap::new();
+        for (src, session) in self.sessions.iter() {
+            if session.signals.len() == 1 {
+                let class = session.signals[0].signal_type.clone();
+                single_signal_classes.entry(class).or_default().push(src.clone());
+            }
+        }
+        
+        for (class, sources) in single_signal_classes {
+            if sources.len() >= 10 && !self.emitted_coordinated.contains(&class) {
+                self.emitted_coordinated.insert(class.clone());
+                self.recent_signals.push(CampaignSignal {
+                    signal_type: "distributed_coordinated_scan".to_string(),
+                    timestamp: self.recent_signals.last().map(|s| s.timestamp).unwrap_or(0),
+                    confidence: 0.72,
+                    path: "".to_string(),
+                    source_hash: "meta_distributed".to_string(),
+                    encoding: EncodingPreference::Plain,
+                });
+            }
+        }
 
         // Coordinated scans: same fingerprint, multiple IPs
         let fp_snapshot: Vec<(String, Vec<String>)> = self
@@ -1308,5 +1422,126 @@ mod tests {
             classify_signal_phase("webshell_upload"),
             AttackPhase::Installation
         );
+    }
+
+    #[test]
+    fn distributed_class_probe_detected() {
+        let mut ci = CampaignIntelligence::new();
+        for i in 0..50 {
+            ci.record_signal(make_signal(
+                "sql_tautology",
+                1000,
+                &format!("src_{}", i),
+                EncodingPreference::Plain,
+            ));
+        }
+        let has_probe = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "distributed_class_probe");
+        assert!(
+            has_probe,
+            "should emit distributed_class_probe for 50 distributed signals"
+        );
+    }
+
+    #[test]
+    fn temporal_burst_detected() {
+        let mut ci = CampaignIntelligence::new();
+        for i in 0..25 {
+            ci.record_signal(make_signal(
+                "xss_tag",
+                2000,
+                &format!("burst_{}", i),
+                EncodingPreference::Plain,
+            ));
+        }
+        let has_burst = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "temporal_burst" && s.confidence == 0.80);
+        assert!(
+            has_burst,
+            "should emit temporal_burst for >20 signals within 5m"
+        );
+    }
+
+    #[test]
+    fn single_source_heavy_scanning_no_distributed_alert() {
+        let mut ci = CampaignIntelligence::new();
+        for i in 0..50 {
+            ci.record_signal(make_signal(
+                "sql_tautology",
+                1000 + i as u64,
+                "single_src",
+                EncodingPreference::Plain,
+            ));
+        }
+        let has_probe = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "distributed_class_probe");
+        assert!(
+            !has_probe,
+            "single source should not trigger distributed class probe"
+        );
+    }
+
+    #[test]
+    fn test_distributed_class_probe_detected_properly() {
+        let mut ci = CampaignIntelligence::new();
+        for i in 0..8 {
+            ci.record_signal(make_signal(
+                "sql_tautology",
+                1000 + i,
+                &format!("src_new_{}", i),
+                EncodingPreference::Plain,
+            ));
+        }
+        let has_probe = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "distributed_class_probe");
+        assert!(has_probe, "should detect distributed_class_probe with 8 unique sources");
+    }
+
+    #[test]
+    fn test_single_source_multiple_signals_no_distributed_campaign() {
+        let mut ci = CampaignIntelligence::new();
+        for i in 0..20 {
+            ci.record_signal(make_signal(
+                "sql_tautology",
+                1000 + i,
+                "single_attacker_new",
+                EncodingPreference::Plain,
+            ));
+        }
+        // It shouldn't trigger the class level distributed detection (since there's only 1 source)
+        // Note: the old string hash logic in `detect_campaigns` or `class_signals` might trigger if sources hit 5, 
+        // but here there is only 1 source.
+        let has_probe = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "distributed_class_probe");
+        assert!(!has_probe, "single source should not trigger distributed_class_probe");
+    }
+
+    #[test]
+    fn test_temporal_burst_detected_for_same_class() {
+        let mut ci = CampaignIntelligence::new();
+        // 25 sources in same 5-minute window
+        for i in 0..25 {
+            ci.record_signal(make_signal(
+                "xss_tag_injection",
+                2000,
+                &format!("burst_src_new_{}", i),
+                EncodingPreference::Plain,
+            ));
+        }
+        let has_burst = ci
+            .recent_signals
+            .iter()
+            .any(|s| s.signal_type == "temporal_class_burst");
+        assert!(has_burst, "should detect temporal_class_burst with 25 sources");
     }
 }

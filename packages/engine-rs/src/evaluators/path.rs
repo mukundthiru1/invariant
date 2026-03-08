@@ -53,6 +53,21 @@ static CASE_VARIATION_TRAVERSAL_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\.\.[\\/]|%2e%2e(?:%2f|%5c)").unwrap());
 static PATH_TRUNCATION_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\\/])[^\\/\s]{260,}(?:[\\/]|$)"#).unwrap());
+static PHP_FILTER_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)php://filter/(?:read|write|string|convert)=[^/]*/resource=").unwrap()
+});
+static PHP_STREAM_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)php://(?:input|output|memory|temp|stdin|stdout|stderr)").unwrap()
+});
+static DATA_URI_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)data://(?:text/plain|application/octet-stream)(?:;base64)?,[^&]*").unwrap()
+});
+static PHAR_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)phar://[^\s&?#]+\.(?:phar|zip|tar|gz|jpg|png|gif|pdf)").unwrap()
+});
+static ZIP_WRAPPER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)zip://[^#]*#").unwrap());
+static EXPECT_WRAPPER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)expect://").unwrap());
 
 impl L2Evaluator for PathTraversalEvaluator {
     fn id(&self) -> &'static str {
@@ -216,6 +231,114 @@ impl L2Evaluator for PathTraversalEvaluator {
             });
         }
 
+        // PHP stream/filter wrappers used in LFI exploitation chains
+        if let Some(m) = PHP_FILTER_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_php_filter_wrapper".into(),
+                confidence: 0.91,
+                detail: format!("PHP filter wrapper path in input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "PHP filter wrapper can expose or transform local file contents".into(),
+                    offset: m.start(),
+                    property: "Path input must not include PHP wrappers in file path context"
+                        .into(),
+                }],
+            });
+        }
+
+        if let Some(m) = PHP_STREAM_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_php_stream_wrapper".into(),
+                confidence: 0.89,
+                detail: format!("PHP stream wrapper path in input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "PHP stream wrappers can redirect reads/writes beyond intended files"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Path input must not use PHP input/output or memory stream wrappers".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = DATA_URI_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_data_uri_wrapper".into(),
+                confidence: 0.88,
+                detail: format!("Data URI wrapper in file path context: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Data URI wrappers can inject inline payloads where file paths are expected"
+                            .into(),
+                    offset: m.start(),
+                    property: "Path input must resolve to local file paths, not data URIs".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = PHAR_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_phar_wrapper".into(),
+                confidence: 0.93,
+                detail: format!("PHAR wrapper path in input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "PHAR wrappers can trigger deserialization side effects via file APIs".into(),
+                    offset: m.start(),
+                    property: "Path input must not include PHAR archive wrappers".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = ZIP_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_zip_wrapper".into(),
+                confidence: 0.87,
+                detail: format!("ZIP wrapper path in input: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "ZIP wrappers can access internal archive members through path parsing"
+                            .into(),
+                    offset: m.start(),
+                    property: "Path input must not include archive wrapper schemes".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = EXPECT_WRAPPER_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_expect_wrapper".into(),
+                confidence: 0.94,
+                detail: format!("Expect wrapper in file path context: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Expect wrapper can execute commands when interpreted as a file path".into(),
+                    offset: m.start(),
+                    property: "Path input must not include command-executing wrapper schemes".into(),
+                }],
+            });
+        }
+
         // Count traversal tokens
         let traversal_count = tokens
             .iter()
@@ -302,7 +425,13 @@ impl L2Evaluator for PathTraversalEvaluator {
             "path_url_injection"
             | "path_double_url_encoded"
             | "path_case_variation_bypass"
-            | "path_overlong_component" => Some(InvariantClass::PathEncodingBypass),
+            | "path_overlong_component"
+            | "path_php_filter_wrapper"
+            | "path_php_stream_wrapper"
+            | "path_data_uri_wrapper"
+            | "path_phar_wrapper"
+            | "path_zip_wrapper"
+            | "path_expect_wrapper" => Some(InvariantClass::PathEncodingBypass),
             _ => None,
         }
     }
@@ -445,6 +574,60 @@ mod tests {
     }
 
     #[test]
+    fn detects_php_filter_wrapper_lfi_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("php://filter/read=convert.base64-encode/resource=/etc/passwd");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_php_filter_wrapper")
+        );
+    }
+
+    #[test]
+    fn detects_php_stream_wrapper_lfi_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("php://input");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_php_stream_wrapper")
+        );
+    }
+
+    #[test]
+    fn detects_data_uri_wrapper_lfi_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("data://text/plain;base64,PD9waHAgcGhwaW5mbygpOz8+");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_data_uri_wrapper")
+        );
+    }
+
+    #[test]
+    fn detects_phar_wrapper_deserialization_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("phar://uploads/avatar.jpg");
+        assert!(dets.iter().any(|d| d.detection_type == "path_phar_wrapper"));
+    }
+
+    #[test]
+    fn detects_zip_wrapper_lfi_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("zip://archive.zip#payload.php");
+        assert!(dets.iter().any(|d| d.detection_type == "path_zip_wrapper"));
+    }
+
+    #[test]
+    fn detects_expect_wrapper_lfi_payload() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("expect://id");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_expect_wrapper")
+        );
+    }
+
+    #[test]
     fn maps_path_case_variation_and_overlong_to_encoding_bypass_class() {
         let eval = PathTraversalEvaluator;
         assert_eq!(
@@ -453,6 +636,30 @@ mod tests {
         );
         assert_eq!(
             eval.map_class("path_overlong_component"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_php_filter_wrapper"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_php_stream_wrapper"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_data_uri_wrapper"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_phar_wrapper"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_zip_wrapper"),
+            Some(InvariantClass::PathEncodingBypass)
+        );
+        assert_eq!(
+            eval.map_class("path_expect_wrapper"),
             Some(InvariantClass::PathEncodingBypass)
         );
     }

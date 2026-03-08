@@ -73,6 +73,7 @@ pub fn class_to_domain(class: &InvariantClass) -> &'static str {
         BolaIdor | ApiMassEnum => "api",
 
         RegexDos => "redos",
+        _ => "other",
     }
 }
 

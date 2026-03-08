@@ -250,6 +250,91 @@ impl L2Evaluator for SstiEvaluator {
             });
         }
 
+        // Jinja2 block-tag SSTI without {{ }} expressions.
+        static JINJA_BLOCK_TAG_SSTI_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"\{%-?\s*(?:for|if|set|import|from|with|block|macro|call|filter|extends|include|raw|autoescape|recursive|do)\s+[^%]*(?:popen|subprocess|os|system|exec|eval|compile|__class__|__base__|__mro__|__subclasses__)").unwrap()
+            });
+        if let Some(m) = JINJA_BLOCK_TAG_SSTI_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_jinja_block_tag".into(),
+                confidence: 0.88,
+                detail: format!("Jinja2 block tag SSTI directive: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Jinja2 control block embeds execution or object-traversal primitives".into(),
+                    offset: m.start(),
+                    property: "Template control blocks from user input must not include dangerous directives".into(),
+                }],
+            });
+        }
+
+        // Jinja2 attr filter bypass: |attr('__class__') style access.
+        static JINJA_ATTR_FILTER_BYPASS_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"\{\{[^}]*\|\s*attr\s*\(['"][^'"]*(?:__class__|__base__|__mro__|__subclasses__|__builtins__|__import__|__globals__|__code__|func_code|__func__|im_func)[^'"]*['"]\s*\)"#).unwrap()
+            });
+        if let Some(m) = JINJA_ATTR_FILTER_BYPASS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_jinja_attr_filter_bypass".into(),
+                confidence: 0.92,
+                detail: format!("Jinja2 attr-filter sandbox bypass: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Attribute filter resolves restricted internals to bypass sandboxing".into(),
+                    offset: m.start(),
+                    property: "Template filters from user input must not access sensitive object attributes".into(),
+                }],
+            });
+        }
+
+        // Twig map/filter chain sandbox bypass gadgets.
+        static TWIG_MAP_FILTER_CHAIN_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r#"(?i)\[\s*['"](?:system|exec|popen|passthru|shell_exec|proc_open|assert)['"]\s*\]\s*\|\s*(?:map|filter|reduce|merge)"#).unwrap()
+            });
+        if let Some(m) = TWIG_MAP_FILTER_CHAIN_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_twig_map_filter_chain".into(),
+                confidence: 0.91,
+                detail: format!("Twig map/filter gadget chain: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Twig functional filter chain coerces dangerous callable execution".into(),
+                    offset: m.start(),
+                    property: "Template filters from user input must not compose callable execution chains".into(),
+                }],
+            });
+        }
+
+        // Comment-stripping / double-parse bypass patterns that hide {{ ... }} payloads.
+        static TEMPLATE_COMMENT_STRIP_BYPASS_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?:\{#[^#]*\{\{|\{%-?\s*comment\s*-?%\}[^{]*\{\{|<!--[^<]*\{\{)")
+                    .unwrap()
+            });
+        if let Some(m) = TEMPLATE_COMMENT_STRIP_BYPASS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssti_template_comment_bypass".into(),
+                confidence: 0.79,
+                detail: format!("Template comment-stripping bypass marker: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Template comment context can hide payloads that re-emerge after parser transformations".into(),
+                    offset: m.start(),
+                    property: "User input must not rely on template comment contexts to smuggle expressions".into(),
+                }],
+            });
+        }
+
         // Jinja2 class traversal gadget enumeration
         static jinja_class_chain: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"''\.__class__\.__mro__\[\s*2\s*\]\.__subclasses__\(\)").unwrap()
@@ -474,6 +559,10 @@ impl L2Evaluator for SstiEvaluator {
             "ssti_spel_runtime" | "ssti_el_injection" => Some(InvariantClass::SstiElExpression),
             "ssti_mako_rce"
             | "ssti_twig_escape"
+            | "ssti_jinja_block_tag"
+            | "ssti_jinja_attr_filter_bypass"
+            | "ssti_twig_map_filter_chain"
+            | "ssti_template_comment_bypass"
             | "ssti_jinja_class_chain"
             | "ssti_smarty_php"
             | "ssti_smarty_writefile"
@@ -631,5 +720,41 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "ssti_mako_module_block")
         );
+    }
+
+    #[test]
+    fn detects_jinja_block_tag_ssti_with_confidence_threshold() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("{% for x in os.popen('id').read() %}{{ x }}{% endfor %}");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "ssti_jinja_block_tag" && d.confidence > 0.75
+        }));
+    }
+
+    #[test]
+    fn detects_jinja_attr_filter_bypass_with_confidence_threshold() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("{{ request|attr('__class__') }}");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "ssti_jinja_attr_filter_bypass" && d.confidence > 0.75
+        }));
+    }
+
+    #[test]
+    fn detects_twig_map_filter_chain_with_confidence_threshold() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("{{ ['system']|map('trim') }}");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "ssti_twig_map_filter_chain" && d.confidence > 0.75
+        }));
+    }
+
+    #[test]
+    fn detects_template_comment_stripping_bypass_with_confidence_threshold() {
+        let eval = SstiEvaluator;
+        let dets = eval.detect("{# hidden {{ cycler.__init__.__globals__ }} #}");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "ssti_template_comment_bypass" && d.confidence > 0.75
+        }));
     }
 }

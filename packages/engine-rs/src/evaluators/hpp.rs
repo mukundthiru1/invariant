@@ -459,7 +459,7 @@ impl L2Evaluator for HppEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "http_parameter_pollution" => Some(InvariantClass::ApiMassEnum),
+            "http_parameter_pollution" => Some(InvariantClass::HttpParameterPollution),
             _ => None,
         }
     }
@@ -625,7 +625,7 @@ mod tests {
         let eval = HppEvaluator;
         assert_eq!(
             eval.map_class("http_parameter_pollution"),
-            Some(InvariantClass::ApiMassEnum)
+            Some(InvariantClass::HttpParameterPollution)
         );
     }
 }

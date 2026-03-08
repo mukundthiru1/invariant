@@ -1467,6 +1467,122 @@ impl CmdInjectionEvaluator {
             });
         }
     }
+
+    fn detect_additional_evasion_patterns(&self, raw_input: &str, dets: &mut Vec<L2Detection>) {
+        static SHELLSHOCK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\(\)\s*\{\s*:;\s*\}").unwrap()
+        });
+        static BLIND_TIMING_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:;|\|\||&&|\$\()\s*(?:sleep\b(?:\s+\d+(?:\.\d+)?)?|ping\s+-c\s+\d+\b|timeout\b(?:\s+\d+)?|wait\b)").unwrap()
+        });
+        static SOURCE_SCRIPT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?:;|\|\||&&|\$\()\s*(?:\.|source)\s+[/~][\w/.-]+\.sh").unwrap()
+        });
+        static PROCESS_SUB_LFI_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:<|>)\(\s*(?:cat|curl|wget|nc|bash|sh|python|perl|ruby)\b")
+                .unwrap()
+        });
+        static HERE_STRING_INJECTION_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r#"<<<\s*['"]?[^'"]{3,}"#).unwrap());
+
+        for m in SHELLSHOCK_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "shellshock_function_injection".into(),
+                confidence: 0.95,
+                detail: "Shellshock Bash function-definition injection pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Bash function preamble matches classic Shellshock injection primitive"
+                            .into(),
+                    offset: m.start(),
+                    property: "User input must not contain Shellshock function-definition payloads"
+                        .into(),
+                }],
+            });
+        }
+
+        for m in BLIND_TIMING_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "blind_timing_injection".into(),
+                confidence: 0.87,
+                detail: "Blind timing command injection sequence detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Command separator chained to timing primitive enables blind probing"
+                            .into(),
+                    offset: m.start(),
+                    property: "User input must not chain shell separators with timing commands"
+                        .into(),
+                }],
+            });
+        }
+
+        for m in SOURCE_SCRIPT_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "sourced_script_injection".into(),
+                confidence: 0.88,
+                detail: "Separator-chained shell script sourcing pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Input chains command boundary into dot/source execution of script path"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not source attacker-influenced shell scripts in command chains"
+                            .into(),
+                }],
+            });
+        }
+
+        for m in PROCESS_SUB_LFI_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "process_substitution_lfi".into(),
+                confidence: 0.85,
+                detail: "Process substitution command/file access pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Process substitution executes nested command and exposes stream as pseudo-file"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not use process substitution for command chaining or file access"
+                            .into(),
+                }],
+            });
+        }
+
+        for m in HERE_STRING_INJECTION_RE.find_iter(raw_input) {
+            dets.push(L2Detection {
+                detection_type: "here_string_injection".into(),
+                confidence: 0.76,
+                detail: "Here-string inline data injection pattern detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Here-string injects attacker-controlled inline data into command stdin"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not contain here-string operators with attacker-controlled payloads"
+                            .into(),
+                }],
+            });
+        }
+    }
 }
 
 impl L2Evaluator for CmdInjectionEvaluator {
@@ -1515,6 +1631,7 @@ impl L2Evaluator for CmdInjectionEvaluator {
         self.detect_cloud_shell_patterns(&decoded, &mut dets);
         self.detect_wsl_bypass(&decoded, &mut dets);
         self.detect_blind_cmdi_dns(&decoded, &mut dets);
+        self.detect_additional_evasion_patterns(&decoded, &mut dets);
 
         // Sensitive file boost
         for file in SENSITIVE_FILES {
@@ -1580,7 +1697,13 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "cloud_gcp_cloud_shell"
             | "cloud_azure_cloud_shell"
             | "wsl_bash_bypass"
-            | "blind_cmdi_dns" => Some(InvariantClass::CmdArgumentInjection),
+            | "blind_cmdi_dns"
+            | "shellshock_function_injection"
+            | "sourced_script_injection" => Some(InvariantClass::CmdArgumentInjection),
+            "blind_timing_injection" | "here_string_injection" => {
+                Some(InvariantClass::CmdSeparator)
+            }
+            "process_substitution_lfi" => Some(InvariantClass::CmdSubstitution),
             _ => None,
         }
     }
@@ -2292,5 +2415,55 @@ mod tests {
         let eval = CmdInjectionEvaluator;
         let dets = eval.detect("curl http://example.com");
         assert!(!dets.iter().any(|d| d.detection_type == "blind_cmdi_dns"));
+    }
+
+    #[test]
+    fn detect_shellshock_function_injection() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("() { :;}; /bin/bash -c whoami");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "shellshock_function_injection")
+        );
+    }
+
+    #[test]
+    fn detect_blind_timing_injection_sleep_chain() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("user=foo; sleep 5");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "blind_timing_injection")
+        );
+    }
+
+    #[test]
+    fn detect_sourced_script_injection() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("ok && source /tmp/payload.sh");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "sourced_script_injection")
+        );
+    }
+
+    #[test]
+    fn detect_process_substitution_lfi() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("diff <(cat /etc/passwd) /tmp/safe.txt");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "process_substitution_lfi")
+        );
+    }
+
+    #[test]
+    fn detect_here_string_injection() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("grep root <<< attacker_payload");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "here_string_injection")
+        );
     }
 }

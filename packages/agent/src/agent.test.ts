@@ -352,3 +352,40 @@ describe('Config Auditor', async () => {
         expect(result.findings).toBe(0)
     })
 })
+
+// ── Telemetry Upload Tests ───────────────────────────────────────
+
+describe('Agent Telemetry Upload', () => {
+    let db: InvariantDB
+
+    beforeEach(() => {
+        db = new InvariantDB(':memory:')
+    })
+
+    afterEach(() => {
+        db.close()
+    })
+
+    it('retrieves unuploaded signals and marks them as uploaded', () => {
+        const now = new Date().toISOString()
+        const id1 = db.insertSignal({
+            type: 'sqli', subtype: null, severity: 'high', action: 'monitored',
+            path: '/test1', method: 'GET', source_hash: null, invariant_classes: '[]',
+            is_novel: false, timestamp: now, uploaded_at: null,
+        })
+        const id2 = db.insertSignal({
+            type: 'sqli', subtype: null, severity: 'high', action: 'monitored',
+            path: '/test2', method: 'GET', source_hash: null, invariant_classes: '[]',
+            is_novel: false, timestamp: now, uploaded_at: null,
+        })
+
+        let unuploaded = db.getUnuploadedSignals()
+        expect(unuploaded.length).toBe(2)
+
+        db.markSignalsUploaded([id1])
+
+        unuploaded = db.getUnuploadedSignals()
+        expect(unuploaded.length).toBe(1)
+        expect(unuploaded[0].id).toBe(id2)
+    })
+})

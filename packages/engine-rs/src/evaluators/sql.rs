@@ -1478,6 +1478,263 @@ impl SqlStructuralEvaluator {
         detections
     }
 
+    fn detect_postgres_escape_string_keywords(&self, input: &str) -> Vec<L2Detection> {
+        static PG_ESCAPE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"E'(?:\\x[0-9a-fA-F]{2}|\\u[0-9a-fA-F]{4}|\\[0-9]{3})+'"#).unwrap()
+        });
+        const SUSPICIOUS: &[&str] = &[
+            "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "EXECUTE", "XP_",
+            "SP_",
+        ];
+
+        let mut detections = Vec::new();
+        for m in PG_ESCAPE_RE.find_iter(input) {
+            let full = m.as_str();
+            let inner = &full[2..full.len() - 1];
+            let bytes = inner.as_bytes();
+            let mut i = 0usize;
+            let mut decoded = String::new();
+
+            while i < bytes.len() {
+                if bytes[i] != b'\\' || i + 1 >= bytes.len() {
+                    i += 1;
+                    continue;
+                }
+                match bytes[i + 1] as char {
+                    'x' | 'X' if i + 3 < bytes.len() => {
+                        let hex = &inner[i + 2..i + 4];
+                        if let Ok(v) = u8::from_str_radix(hex, 16) {
+                            decoded.push(v as char);
+                        }
+                        i += 4;
+                    }
+                    'u' | 'U' if i + 5 < bytes.len() => {
+                        let hex = &inner[i + 2..i + 6];
+                        if let Ok(v) = u32::from_str_radix(hex, 16)
+                            && let Some(ch) = char::from_u32(v)
+                        {
+                            decoded.push(ch);
+                        }
+                        i += 6;
+                    }
+                    d if d.is_ascii_digit() && i + 3 < bytes.len() => {
+                        let oct = &inner[i + 1..i + 4];
+                        if let Ok(v) = u8::from_str_radix(oct, 8) {
+                            decoded.push(v as char);
+                        }
+                        i += 4;
+                    }
+                    _ => i += 2,
+                }
+            }
+
+            let decoded_upper = decoded.to_uppercase();
+            if SUSPICIOUS.iter().any(|kw| decoded_upper.contains(kw)) {
+                detections.push(L2Detection {
+                    detection_type: "postgres_escape_keyword".into(),
+                    confidence: 0.88,
+                    detail: format!(
+                        "PostgreSQL E'' escaped string decodes to SQL keyword-bearing text: {}",
+                        decoded
+                    ),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::EncodingDecode,
+                        matched_input: full.to_owned(),
+                        interpretation: format!(
+                            "PostgreSQL escape string decoding reveals SQL payload text: {}",
+                            decoded
+                        ),
+                        offset: m.start(),
+                        property: "User input must not smuggle executable SQL keywords through escaped string literals".into(),
+                    }],
+                });
+            }
+        }
+        detections
+    }
+
+    fn detect_mysql_binary_literal_identifiers(&self, input: &str) -> Vec<L2Detection> {
+        static MYSQL_BINARY_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"\b0b[01]{8,}\b").unwrap());
+        const SUSPICIOUS: &[&str] = &[
+            "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "EXECUTE", "XP_",
+            "SP_",
+        ];
+
+        let mut detections = Vec::new();
+        for m in MYSQL_BINARY_RE.find_iter(input) {
+            let bits = &m.as_str()[2..];
+            let mut decoded = String::new();
+            for chunk in bits.as_bytes().chunks(8) {
+                if chunk.len() != 8 {
+                    break;
+                }
+                let Ok(bit_str) = std::str::from_utf8(chunk) else {
+                    continue;
+                };
+                if let Ok(v) = u8::from_str_radix(bit_str, 2) {
+                    let ch = v as char;
+                    if ch.is_ascii_graphic() || ch == ' ' || ch == '_' {
+                        decoded.push(ch);
+                    }
+                }
+            }
+
+            let decoded_upper = decoded.to_uppercase();
+            let detail = if SUSPICIOUS.iter().any(|kw| decoded_upper.contains(kw)) {
+                format!(
+                    "MySQL binary literal decodes to SQL keyword-bearing text: {}",
+                    decoded
+                )
+            } else {
+                "MySQL binary literal (0b...) used in SQL payload context".into()
+            };
+
+            detections.push(L2Detection {
+                detection_type: "mysql_binary_literal".into(),
+                confidence: 0.75,
+                detail,
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: if decoded.is_empty() {
+                        "Input uses MySQL binary numeric syntax that can encode SQL character codes".into()
+                    } else {
+                        format!("Binary literal decodes to: {}", decoded)
+                    },
+                    offset: m.start(),
+                    property: "User input must not construct executable SQL keywords through binary literals".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_oracle_q_quote_keyword_strings(&self, input: &str) -> Vec<L2Detection> {
+        static ORACLE_Q_QUOTE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\bq'[\[{(<][^']*(?:union|select|insert|update|delete|drop|exec|execute|xp_)[^']*[\]}>)]").unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in ORACLE_Q_QUOTE_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "oracle_q_quote_keyword".into(),
+                confidence: 0.89,
+                detail: "Oracle q-quoted alternative string contains SQL keyword payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input uses Oracle q-quoted delimiters to carry SQL keywords while bypassing quote filters".into(),
+                    offset: m.start(),
+                    property: "User input must not hide executable SQL keywords in alternative quoted literals".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_mssql_bracketed_identifier_abuse(&self, input: &str) -> Vec<L2Detection> {
+        static MSSQL_BRACKET_ID_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\[(?:select|union|insert|update|delete|exec|execute|xp_\w+|sp_\w+)\]")
+                .unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in MSSQL_BRACKET_ID_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "mssql_bracket_identifier_abuse".into(),
+                confidence: 0.87,
+                detail: "SQL Server bracketed identifier wraps executable keyword/procedure name".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input abuses MSSQL [identifier] escaping around SQL keywords or dangerous procedures".into(),
+                    offset: m.start(),
+                    property: "User input must not introduce executable SQL keywords through bracketed identifier abuse".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_mysql_pipe_concatenation_bypass(&self, input: &str) -> Vec<L2Detection> {
+        static MYSQL_PIPE_CONCAT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"'[a-z]'\s*\|\|\s*'[a-z]'").unwrap());
+
+        let mut detections = Vec::new();
+        for m in MYSQL_PIPE_CONCAT_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "mysql_pipe_concat_bypass".into(),
+                confidence: 0.72,
+                detail: "MySQL pipe concatenation of single-character strings detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Input concatenates character literals with || to construct keyword fragments".into(),
+                    offset: m.start(),
+                    property: "User input must not construct executable SQL keywords via character-wise concatenation".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_unicode_normalization_sqli(&self, input: &str) -> Vec<L2Detection> {
+        static FULLWIDTH_WORD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"[\u{FF21}-\u{FF3A}\u{FF41}-\u{FF5A}]{2,}").unwrap()
+        });
+        const SUSPICIOUS: &[&str] = &[
+            "UNION", "SELECT", "INSERT", "UPDATE", "DELETE", "DROP", "EXEC", "EXECUTE", "XP_",
+            "SP_",
+        ];
+
+        let mut detections = Vec::new();
+        if !FULLWIDTH_WORD_RE.is_match(input) {
+            return detections;
+        }
+
+        let normalized: String = input
+            .chars()
+            .map(|c| {
+                let code = c as u32;
+                if (0xFF01..=0xFF5E).contains(&code) {
+                    char::from_u32(code - 0xFEE0).unwrap_or(c)
+                } else {
+                    c
+                }
+            })
+            .collect();
+
+        let normalized_upper = normalized.to_uppercase();
+        if SUSPICIOUS
+            .iter()
+            .any(|kw| normalized_upper.contains(kw))
+        {
+            detections.push(L2Detection {
+                detection_type: "unicode_normalization_sqli".into(),
+                confidence: 0.85,
+                detail: "Full-width Unicode text normalizes to SQL keyword-bearing payload".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: input.to_owned(),
+                    interpretation: format!(
+                        "Unicode normalization reveals SQL payload text: {}",
+                        extract_context(&normalized, 0, 80)
+                    ),
+                    offset: 0,
+                    property: "Input must not use Unicode normalization effects to bypass SQL keyword filtering".into(),
+                }],
+            });
+        }
+        detections
+    }
+
     fn detect_unicode_smuggling(&self, input: &str) -> Vec<L2Detection> {
         static FULLWIDTH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"[\u{FF21}-\u{FF5A}\u{FF41}-\u{FF5A}]").unwrap()
@@ -2201,6 +2458,42 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            for det in self.detect_postgres_escape_string_keywords(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_mysql_binary_literal_identifiers(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_oracle_q_quote_keyword_strings(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_mssql_bracketed_identifier_abuse(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_mysql_pipe_concatenation_bypass(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_unicode_normalization_sqli(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
             for det in self.detect_unicode_smuggling(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
                 if seen.insert(key) {
@@ -2344,6 +2637,12 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "cte_injection" => Some(InvariantClass::SqlUnionExtraction),
             "db_specific_primitive" => Some(InvariantClass::SqlStackedExecution),
             "alt_whitespace_bypass" => Some(InvariantClass::SqlStringTermination),
+            "postgres_escape_keyword" => Some(InvariantClass::SqlUnionExtraction),
+            "mysql_binary_literal" => Some(InvariantClass::SqlUnionExtraction),
+            "oracle_q_quote_keyword" => Some(InvariantClass::SqlUnionExtraction),
+            "mssql_bracket_identifier_abuse" => Some(InvariantClass::SqlUnionExtraction),
+            "mysql_pipe_concat_bypass" => Some(InvariantClass::SqlUnionExtraction),
+            "unicode_normalization_sqli" => Some(InvariantClass::SqlStringTermination),
             "unicode_smuggling" => Some(InvariantClass::SqlStringTermination),
             "scientific_tautology" => Some(InvariantClass::SqlTautology),
             "backtick_keyword_bypass" => Some(InvariantClass::SqlUnionExtraction),
@@ -3147,5 +3446,59 @@ mod tests {
                 .iter()
                 .any(|d| d.detection_type == "mysql_versioned_comment")
         );
+    }
+
+    #[test]
+    fn detect_postgres_e_escape_keyword_sequence() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect(r#"E'\x55\x4e\x49\x4f\x4e\x20\x53\x45\x4c\x45\x43\x54'"#);
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "postgres_escape_keyword" && d.confidence > 0.7
+        }));
+    }
+
+    #[test]
+    fn detect_mysql_binary_literal_keyword_construction() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("0b0101010101001110010010010100111101001110");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "mysql_binary_literal" && d.confidence > 0.7
+        }));
+    }
+
+    #[test]
+    fn detect_oracle_q_quote_keyword_payload() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("q'[UNION SELECT username FROM users]'");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "oracle_q_quote_keyword" && d.confidence > 0.7
+        }));
+    }
+
+    #[test]
+    fn detect_mssql_bracketed_identifier_keyword_abuse() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("[xp_cmdshell]");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "mssql_bracket_identifier_abuse" && d.confidence > 0.7
+        }));
+    }
+
+    #[test]
+    fn detect_mysql_pipe_concat_keyword_builder() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("'u'||'n'||'i'||'o'||'n'");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "mysql_pipe_concat_bypass" && d.confidence > 0.7
+        }));
+    }
+
+    #[test]
+    fn detect_unicode_normalization_keyword_smuggling() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("ＵＮＩＯＮ ＳＥＬＥＣＴ");
+        assert!(dets.iter().any(|d| {
+            d.detection_type == "unicode_normalization_sqli" && d.confidence > 0.7
+        }));
     }
 }

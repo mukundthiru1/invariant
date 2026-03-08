@@ -455,6 +455,58 @@ impl L2Evaluator for ApiAbuseEvaluator {
             });
         }
 
+        // Undocumented endpoint probing for sensitive/debug surfaces
+        static UNDOCUMENTED_ENDPOINT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)(?:^|/)(?:swagger(?:-ui)?|api-docs?|openapi|graphiql|\.env|\.git/|config\.(?:php|json|yaml|yml|ini)|actuator/|debug(?:\.php)?|phpinfo\.php|server-status|jmx/|metrics/?|health/?\?.*verbose|admin/api|management/|_profiler/|__debug__)(?:/|\?|$)").unwrap()
+            });
+        if let Some(m) = UNDOCUMENTED_ENDPOINT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "undocumented_endpoint_probe".into(),
+                confidence: 0.78,
+                detail: "Request targets undocumented or sensitive debug/management endpoint".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Discovery probing against debug/management endpoints often precedes abuse of unintended API surface".into(),
+                    offset: m.start(),
+                    property: "Disable or restrict internal/debug endpoints and ensure non-production disclosure controls".into(),
+                }],
+            });
+        }
+
+        // API version disclosure in infrastructure headers
+        static VERSION_DISCLOSURE_HEADER_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?im)^\s*(?:Server|X-Powered-By)\s*:\s*([^\r\n]+)").unwrap()
+            });
+        static VERSION_DISCLOSURE_VALUE_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)(?:express/(?:3\.[0-9]|4\.[0-9]{1,2})|php/[0-9]+\.[0-9]+|apache/[12]\.[0-9]|nginx/1\.[0-9]\.[0-9]|tomcat/[0-9]|spring-boot/[0-9]|struts/[0-9]|django/[0-9])").unwrap()
+            });
+        for caps in VERSION_DISCLOSURE_HEADER_RE.captures_iter(&decoded) {
+            let Some(value) = caps.get(1) else {
+                continue;
+            };
+            if let Some(version_match) = VERSION_DISCLOSURE_VALUE_RE.find(value.as_str()) {
+                dets.push(L2Detection {
+                    detection_type: "version_disclosure".into(),
+                    confidence: 0.72,
+                    detail: "Response header discloses framework/server version information".into(),
+                    position: value.start() + version_match.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::SemanticEval,
+                        matched_input: value.as_str().to_owned(),
+                        interpretation: "Disclosed platform versions increase exploitability by enabling targeted vulnerability mapping".into(),
+                        offset: value.start() + version_match.start(),
+                        property: "Server and framework version headers should be suppressed or normalized in production".into(),
+                    }],
+                });
+                break;
+            }
+        }
+
         dets
     }
 
@@ -469,7 +521,9 @@ impl L2Evaluator for ApiAbuseEvaluator {
             | "api_jwt_claim_manipulation"
             | "api_method_tampering"
             | "api_ssrf_param_internal"
-            | "api_excessive_scope" => Some(InvariantClass::ApiMassEnum),
+            | "api_excessive_scope"
+            | "undocumented_endpoint_probe"
+            | "version_disclosure" => Some(InvariantClass::ApiMassEnum),
             "api_idor_pattern" => Some(InvariantClass::BolaIdor),
             _ => None,
         }
@@ -617,5 +671,24 @@ Content-Type: application/json
             dets.iter()
                 .any(|d| d.detection_type == "api_excessive_scope")
         );
+    }
+
+    #[test]
+    fn detects_undocumented_endpoint_probe() {
+        let eval = ApiAbuseEvaluator;
+        let input = "GET /swagger-ui?format=openapi HTTP/1.1";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "undocumented_endpoint_probe")
+        );
+    }
+
+    #[test]
+    fn detects_version_disclosure_in_headers() {
+        let eval = ApiAbuseEvaluator;
+        let input = "HTTP/1.1 200 OK\r\nServer: nginx/1.9.9\r\nX-Powered-By: Express/4.16\r\n\r\n";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "version_disclosure"));
     }
 }

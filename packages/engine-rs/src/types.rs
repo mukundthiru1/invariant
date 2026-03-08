@@ -22,7 +22,7 @@ use std::fmt;
 /// which produces compile errors everywhere the class must be handled
 /// (match arms, serialization, MITRE mapping, chain definitions).
 ///
-/// 66 classes across 17 categories.
+/// 67 classes across 17 categories.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -141,12 +141,53 @@ pub enum InvariantClass {
     CachePoisoning,
     CacheDeception,
 
-    // API Abuse (2)
+    // API Abuse (3)
     BolaIdor,
     ApiMassEnum,
+    HttpParameterPollution,
 
     // OAST (1)
     OastInteraction,
+
+    // Host Header (1)
+    HostHeaderInjection,
+
+    // Email Injection (1)
+    EmailHeaderInjection,
+
+    // File Upload (1)
+    MaliciousUpload,
+
+    // Unicode Attacks (1)
+    UnicodeBypass,
+
+    // XPath Injection (1)
+    XpathInjection,
+
+    // DNS (1)
+    DnsRebinding,
+
+    // Server-Side Includes (1)
+    SsiInjection,
+
+    // OAuth (1)
+    OauthFlowAbuse,
+
+    // SAML (1)
+    SamlBypass,
+
+    // Clickjacking (1)
+    ClickjackingVuln,
+
+    // Denial of Service (1)
+    DenialOfService,
+
+    // Type Confusion (2)
+    TypeJuggling,
+    TypeConfusion,
+
+    // Subdomain Takeover (1)
+    SubdomainTakeover,
 }
 
 impl InvariantClass {

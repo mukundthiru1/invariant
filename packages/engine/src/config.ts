@@ -44,6 +44,8 @@ export interface InvariantConfig {
         ingestUrl?: string
         /** Batch size before flush */
         batchSize?: number
+        /** Sensor token for authentication */
+        sensorToken?: string
     }
 
     /** Block thresholds per severity (override defaults) */
@@ -154,6 +156,7 @@ export function validateConfig(raw: unknown): InvariantConfig {
         config.signals = {}
         if (typeof s.ingestUrl === 'string') config.signals.ingestUrl = s.ingestUrl
         if (typeof s.batchSize === 'number') config.signals.batchSize = s.batchSize
+        if (typeof s.sensorToken === 'string') config.signals.sensorToken = s.sensorToken
     }
 
     // Thresholds

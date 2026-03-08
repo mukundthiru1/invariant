@@ -318,6 +318,54 @@ export class InvariantAgent {
         this.log(`Defense mode changed to: ${mode}`)
     }
 
+    /**
+     * Upload recent signals to a central server in batches.
+     * Marks uploaded signals in the database.
+     */
+    async uploadSignalsToServer(ingestUrl: string, sensorToken?: string): Promise<void> {
+        const signals = this.db.getUnuploadedSignals(100)
+        if (signals.length === 0) return
+
+        const batchSize = 50
+        for (let i = 0; i < signals.length; i += batchSize) {
+            const batch = signals.slice(i, i + batchSize)
+            const payload = {
+                timestamp: new Date().toISOString(),
+                source_hash: 'agent_batch',
+                detections: batch.map(s => ({
+                    class: s.type,
+                    confidence: 1.0,
+                    surface: 'agent_db',
+                    key: s.path
+                }))
+            }
+
+            const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+            if (sensorToken) {
+                headers['Authorization'] = `Bearer ${sensorToken}`
+            }
+
+            const abortController = new AbortController()
+            const timeout = setTimeout(() => abortController.abort(), 5000)
+
+            try {
+                await fetch(ingestUrl, {
+                    method: 'POST',
+                    headers,
+                    body: JSON.stringify(payload),
+                    signal: abortController.signal as any
+                })
+                
+                const ids = batch.map(s => s.id!).filter(id => id !== undefined)
+                this.db.markSignalsUploaded(ids)
+            } catch (err) {
+                // Fail silently
+            } finally {
+                clearTimeout(timeout)
+            }
+        }
+    }
+
     /** Get the database instance for direct access (dashboard uses this) */
     getDB(): InvariantDB {
         return this.db

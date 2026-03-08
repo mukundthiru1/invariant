@@ -9,12 +9,18 @@
 //! INVARIANT: This registry is the single source of truth for L2 routing.
 
 pub mod api_abuse;
+pub mod auth_header_spoof;
 pub mod cache;
+pub mod clickjacking;
 pub mod cmd;
 pub mod cors;
 pub mod crlf;
 pub mod deser;
+pub mod dns;
+pub mod dos;
+pub mod email_inject;
 pub mod graphql;
+pub mod host_header;
 pub mod hpp;
 pub mod http_smuggle;
 pub mod idor;
@@ -24,17 +30,25 @@ pub mod llm;
 pub mod log4shell;
 pub mod mass_assignment;
 pub mod nosql;
+pub mod oauth;
 pub mod oast;
 pub mod path;
 pub mod proto_pollution;
 pub mod race_condition;
 pub mod redirect;
 pub mod redos;
+pub mod saml;
 pub mod sql;
+pub mod ssi;
 pub mod ssrf;
 pub mod ssti;
+pub mod subdomain;
 pub mod supply_chain;
+pub mod type_juggle;
+pub mod unicode;
+pub mod upload;
 pub mod websocket;
+pub mod xpath;
 pub mod xss;
 pub mod xxe;
 
@@ -151,6 +165,8 @@ static WEBSOCKET_EVALUATOR: websocket::WebSocketEvaluator = websocket::WebSocket
 static JWT_EVALUATOR: jwt::JwtEvaluator = jwt::JwtEvaluator;
 static CACHE_EVALUATOR: cache::CacheEvaluator = cache::CacheEvaluator;
 static API_ABUSE_EVALUATOR: api_abuse::ApiAbuseEvaluator = api_abuse::ApiAbuseEvaluator;
+static AUTH_HEADER_SPOOF_EVALUATOR: auth_header_spoof::AuthHeaderSpoofEvaluator =
+    auth_header_spoof::AuthHeaderSpoofEvaluator;
 static IDOR_EVALUATOR: idor::IdorEvaluator = idor::IdorEvaluator;
 static HPP_EVALUATOR: hpp::HppEvaluator = hpp::HppEvaluator;
 static RACE_CONDITION_EVALUATOR: race_condition::RaceConditionEvaluator =
@@ -158,6 +174,19 @@ static RACE_CONDITION_EVALUATOR: race_condition::RaceConditionEvaluator =
 static REDOS_EVALUATOR: redos::RedosEvaluator = redos::RedosEvaluator;
 static OAST_EVALUATOR: oast::OastEvaluator = oast::OastEvaluator;
 static CORS_EVALUATOR: cors::CorsEvaluator = cors::CorsEvaluator;
+static HOST_HEADER_EVALUATOR: host_header::HostHeaderEvaluator = host_header::HostHeaderEvaluator;
+static EMAIL_INJECT_EVALUATOR: email_inject::EmailInjectEvaluator = email_inject::EmailInjectEvaluator;
+static UPLOAD_EVALUATOR: upload::UploadEvaluator = upload::UploadEvaluator;
+static UNICODE_EVALUATOR: unicode::UnicodeEvaluator = unicode::UnicodeEvaluator;
+static XPATH_EVALUATOR: xpath::XPathEvaluator = xpath::XPathEvaluator;
+static SSI_EVALUATOR: ssi::SsiEvaluator = ssi::SsiEvaluator;
+static DNS_EVALUATOR: dns::DnsEvaluator = dns::DnsEvaluator;
+static OAUTH_EVALUATOR: oauth::OAuthEvaluator = oauth::OAuthEvaluator;
+static SAML_EVALUATOR: saml::SamlEvaluator = saml::SamlEvaluator;
+static CLICKJACKING_EVALUATOR: clickjacking::ClickjackingEvaluator = clickjacking::ClickjackingEvaluator;
+static DOS_EVALUATOR: dos::DosEvaluator = dos::DosEvaluator;
+static TYPE_JUGGLE_EVALUATOR: type_juggle::TypeJuggleEvaluator = type_juggle::TypeJuggleEvaluator;
+static SUBDOMAIN_EVALUATOR: subdomain::SubdomainEvaluator = subdomain::SubdomainEvaluator;
 
 // Keep evaluator instances static to avoid per-request Box/Vec allocations on the L2 hot path.
 static EVALUATORS: LazyLock<Vec<&'static dyn L2Evaluator>> = LazyLock::new(|| {
@@ -186,12 +215,28 @@ static EVALUATORS: LazyLock<Vec<&'static dyn L2Evaluator>> = LazyLock::new(|| {
         &JWT_EVALUATOR,
         &CACHE_EVALUATOR,
         &API_ABUSE_EVALUATOR,
+        &AUTH_HEADER_SPOOF_EVALUATOR,
         &IDOR_EVALUATOR,
         &HPP_EVALUATOR,
+        // Race-condition L2 signals are routed to ApiMassEnum because practical
+        // exploit traces often manifest as BOLA/IDOR-style concurrent object access.
         &RACE_CONDITION_EVALUATOR,
         &REDOS_EVALUATOR,
         &OAST_EVALUATOR,
         &CORS_EVALUATOR,
+        &HOST_HEADER_EVALUATOR,
+        &EMAIL_INJECT_EVALUATOR,
+        &UPLOAD_EVALUATOR,
+        &UNICODE_EVALUATOR,
+        &XPATH_EVALUATOR,
+        &SSI_EVALUATOR,
+        &DNS_EVALUATOR,
+        &OAUTH_EVALUATOR,
+        &SAML_EVALUATOR,
+        &CLICKJACKING_EVALUATOR,
+        &DOS_EVALUATOR,
+        &TYPE_JUGGLE_EVALUATOR,
+        &SUBDOMAIN_EVALUATOR,
     ]
 });
 
@@ -236,6 +281,11 @@ fn should_run_evaluator(evaluator_id: &str, hints: &L2InputHints) -> bool {
         "crlf" | "http_smuggle" => hints.header_like,
         "graphql" => hints.graphql_like,
         "websocket" => hints.websocket_like || hints.header_like,
+        "host_header" | "email_inject" => hints.header_like,
+        "ssi" => hints.html_like || hints.xml_like,
+        "xpath" => hints.xml_like,
+        "dns" => hints.url_like,
+        "unicode" | "upload" | "clickjacking" | "dos" | "type_juggle" | "subdomain" | "oauth" | "saml" | "oast" => true,
         _ => true,
     }
 }
@@ -317,8 +367,8 @@ mod tests {
     fn registry_has_all_evaluators() {
         let evaluators = all_evaluators();
         assert!(
-            evaluators.len() >= 24,
-            "Expected at least 24 evaluators, got {}",
+            evaluators.len() >= 40,
+            "Expected at least 40 evaluators, got {}",
             evaluators.len()
         );
 

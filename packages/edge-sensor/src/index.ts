@@ -87,7 +87,7 @@ import { BehaviorTracker } from './layers/l2-behavior.js'
 import { classifyClient } from './layers/l3-fingerprint.js'
 import { detectTechnology } from './layers/l4-tech-detect.js'
 import { SignalBuffer } from './layers/signal-buffer.js'
-import { analyzeWebSocketUpgrade } from './layers/ws-interceptor.js'
+import { analyzeWebSocketUpgrade, analyzeWebSocketFrameBody } from './layers/ws-interceptor.js'
 
 // ── Encrypted Collective Intelligence ────────────────────────────
 // These modules implement the forward-secret, E2E-encrypted channel
@@ -157,6 +157,8 @@ const KV_KEY_IP_RULES = 'ip_rules'
 const KV_KEY_GEO_RULES = 'geo_rules'
 const KV_KEY_RATE_LIMITS = 'rate_limits'
 const KV_KEY_RESPONSE_HEADERS = 'response_headers'
+
+const inMemoryRateLimitFallback = new Map<string, { count: number, minute: number }>()
 
 const DEFAULT_RATE_LIMITS: RateLimitConfig = { requests_per_minute: 100, burst: 20 }
 const DEFAULT_SECURITY_HEADERS: HeaderConfig = {
@@ -409,7 +411,9 @@ function matchesAnyIpRule(ip: string, rules: string[]): boolean {
 }
 
 function matchesIpRule(ip: string, rule: string): boolean {
-    if (rule.includes('/')) return isIpInCidr(ip, rule)
+    if (rule.includes('/')) {
+        return ip.includes(':') ? isIpv6InCidr(ip, rule) : isIpInCidr(ip, rule)
+    }
     return ip === rule
 }
 
@@ -421,6 +425,44 @@ function isIpInCidr(ip: string, cidr: string): boolean {
     const baseNum = ipv4ToInt(baseIp)
     if (ipNum === null || baseNum === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) return false
     const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0
+    return (ipNum & mask) === (baseNum & mask)
+}
+
+function isIpv6InCidr(ip: string, cidr: string): boolean {
+    const [baseIp, prefixRaw] = cidr.split('/')
+    if (!baseIp || !prefixRaw) return false
+    const prefix = Number.parseInt(prefixRaw, 10)
+    
+    const ipToBigInt = (ipv6: string): bigint | null => {
+        let fullIp = ipv6
+        if (fullIp.includes('::')) {
+            const parts = fullIp.split('::')
+            if (parts.length > 2) return null
+            const left = parts[0] ? parts[0].split(':') : []
+            const right = parts[1] ? parts[1].split(':') : []
+            const missing = 8 - (left.length + right.length)
+            if (missing < 0) return null
+            fullIp = [...left, ...Array(missing).fill('0'), ...right].join(':')
+        }
+        
+        const segments = fullIp.split(':')
+        if (segments.length !== 8) return null
+        
+        let result = 0n
+        for (const segment of segments) {
+            if (!/^[0-9a-fA-F]{1,4}$/.test(segment)) return null
+            result = (result << 16n) | BigInt(parseInt(segment || '0', 16))
+        }
+        return result
+    }
+
+    const ipNum = ipToBigInt(ip)
+    const baseNum = ipToBigInt(baseIp)
+    
+    if (ipNum === null || baseNum === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 128) return false
+    
+    const mask = prefix === 0 ? 0n : ((1n << 128n) - 1n) << (128n - BigInt(prefix))
+    
     return (ipNum & mask) === (baseNum & mask)
 }
 
@@ -724,8 +766,38 @@ export default {
                     },
                 }))
             }
-        } catch {
-            // Rate limiting is fail-open on KV transient errors.
+        } catch (error) {
+            console.error(JSON.stringify({
+                error: 'INVARIANT_RATE_LIMIT_ERROR',
+                message: 'KV rate limit check failed, falling back to memory',
+                details: error instanceof Error ? error.message : String(error)
+            }))
+            
+            const currentMinute = Math.floor(Date.now() / 60000)
+            const fallbackKey = `${sourceIpForPolicy}`
+            const record = inMemoryRateLimitFallback.get(fallbackKey)
+            const fallbackLimit = typeof rateLimitsConfig === 'object' && rateLimitsConfig.requests_per_minute ? rateLimitsConfig.requests_per_minute : 100
+            
+            if (!record || record.minute !== currentMinute) {
+                inMemoryRateLimitFallback.set(fallbackKey, { count: 1, minute: currentMinute })
+            } else {
+                record.count++
+                if (record.count > fallbackLimit) {
+                    return withHeaders(new Response(JSON.stringify({
+                        error: 'Rate limit exceeded (fallback)',
+                        code: 'INVARIANT_RATE_LIMIT',
+                        limit: fallbackLimit,
+                        requests: record.count,
+                    }), {
+                        status: 429,
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Cache-Control': 'no-store',
+                            'Retry-After': '60',
+                        },
+                    }))
+                }
+            }
         }
 
         if (mode === 'off') return withHeaders(await fetch(request))
@@ -736,14 +808,62 @@ export default {
             if (wsUpgrade.shouldBlock) {
                 return withHeaders(blockResponse('high'))
             }
-            return withHeaders(await fetch(request))
+
+            const proxyResponse = await fetch(request)
+            const ws = proxyResponse.webSocket
+
+            if (ws) {
+                const [client, server] = Object.values(new WebSocketPair())
+
+                server.accept()
+                ws.accept()
+
+                server.addEventListener('message', event => {
+                    if (typeof event.data === 'string') {
+                        const matches = analyzeWebSocketFrameBody(event.data, engine)
+                        if (matches.length > 0) {
+                            server.close(1008, 'Policy Violation')
+                            ws.close(1008, 'Policy Violation')
+                            return
+                        }
+                    }
+                    ws.send(event.data)
+                })
+
+                ws.addEventListener('message', event => {
+                    server.send(event.data)
+                })
+
+                server.addEventListener('close', event => {
+                    ws.close(event.code, event.reason)
+                })
+
+                ws.addEventListener('close', event => {
+                    server.close(event.code, event.reason)
+                })
+
+                server.addEventListener('error', () => {
+                    ws.close(1011, 'Internal Error')
+                })
+
+                ws.addEventListener('error', () => {
+                    server.close(1011, 'Internal Error')
+                })
+
+                return withHeaders(new Response(null, {
+                    status: 101,
+                    webSocket: client
+                }))
+            }
+
+            return withHeaders(proxyResponse)
         }
 
         // Skip static assets — comprehensive list of non-executable formats
         // SECURITY (SAA-034): Also check for path traversal. An attacker requesting
         // /../../../etc/passwd.js bypasses all detection if we only check extension.
         const isStaticAsset = /\.(?:css|js|mjs|png|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|map|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|br|wasm)$/i.test(path)
-        const hasTraversal = /(?:\.\.|%2e%2e|%252e)/i.test(path)
+        const hasTraversal = /(?:\.\.|%2e%2e|%252e|\.\.%2f|%2f\.\.|%2f%2e%2e|\.\.%5c|%c0%ae|%c0%2e|%e0%40%ae|%00|\/\.\.\.\/|\/{2,})/i.test(path)
         if (isStaticAsset && !hasTraversal) {
             return withHeaders(await fetch(request))
         }

@@ -44,6 +44,32 @@ impl L2Evaluator for JwtEvaluator {
                 let header_lower = header.to_ascii_lowercase();
                 let mut has_asymmetric_hint =
                     header_lower.contains("\"x5c\"") || header_lower.contains("\"x5u\"");
+
+                // JKU header injection via attacker-controlled JWKS endpoint
+                static JKU_HEADER_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(
+                    || Regex::new(r#"(?i)"jku"\s*:\s*"(https?://[^"]+)""#).unwrap(),
+                );
+                for cap in JKU_HEADER_URL_RE.captures_iter(&header_norm) {
+                    let url = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+                    if !is_allowlisted_api_host(url) {
+                        dets.push(L2Detection {
+                            detection_type: "jwt_jku_header_injection".into(),
+                            confidence: 0.90,
+                            detail: "JWT header jku points to non-allowlisted external JWKS URL"
+                                .into(),
+                            position: m.start(),
+                            evidence: vec![ProofEvidence {
+                                operation: EvidenceOperation::PayloadInject,
+                                matched_input: url.to_owned(),
+                                interpretation:
+                                    "Attacker-controlled jku can redirect key retrieval to untrusted JWKS"
+                                        .into(),
+                                offset: m.start(),
+                                property: "JWT jku URLs must be strictly allowlisted".into(),
+                            }],
+                        });
+                    }
+                }
                 // Algorithm: none
                 static ALG_NONE_RE: std::sync::LazyLock<Regex> =
                     std::sync::LazyLock::new(|| Regex::new(r#"(?i)"alg"\s*:\s*"none""#).unwrap());
@@ -92,6 +118,32 @@ impl L2Evaluator for JwtEvaluator {
                                 "HMAC algorithm may sign with public RSA key as HMAC secret".into(),
                             offset: m.start(),
                             property: "JWT algorithm must match server-expected algorithm".into(),
+                        }],
+                    });
+                }
+
+                // RS256-to-HS256 confusion with asymmetric key material present in header
+                static RS_TO_HS_CONFUSION_RE: std::sync::LazyLock<Regex> =
+                    std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?is)"alg"\s*:\s*"HS256".*?"(?:x5c|x5u|n|e)""#).unwrap()
+                    });
+                if RS_TO_HS_CONFUSION_RE.is_match(&header) {
+                    dets.push(L2Detection {
+                        detection_type: "jwt_rs256_to_hs256_confusion".into(),
+                        confidence: 0.89,
+                        detail:
+                            "JWT uses HS256 while carrying asymmetric key material in header".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::TypeCoerce,
+                            matched_input: header[..header.len().min(120)].to_owned(),
+                            interpretation:
+                                "Public-key metadata in HS256 token indicates RS256/HS256 confusion attempt"
+                                    .into(),
+                            offset: m.start(),
+                            property:
+                                "JWT alg must not be switchable between asymmetric and HMAC modes"
+                                    .into(),
                         }],
                     });
                 }
@@ -204,10 +256,54 @@ impl L2Evaluator for JwtEvaluator {
                     }
                 }
 
+                // KID path traversal payloads in key-id lookup
+                static KID_PATH_TRAVERSAL_RE: std::sync::LazyLock<Regex> =
+                    std::sync::LazyLock::new(|| {
+                        Regex::new(r#"(?i)"kid"\s*:\s*"([^"]*(?:\.\.[\\/]|/etc/|/dev/|/proc/|\\x00|%00)[^"]*)""#).unwrap()
+                    });
+                if let Some(cap) = KID_PATH_TRAVERSAL_RE.captures(&header_norm) {
+                    let kid = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+                    dets.push(L2Detection {
+                        detection_type: "jwt_kid_path_traversal".into(),
+                        confidence: 0.91,
+                        detail: "JWT kid contains path traversal or null-byte lookup payload".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::TypeCoerce,
+                            matched_input: kid.to_owned(),
+                            interpretation:
+                                "Path/meta characters in kid can alter filesystem or key-store lookup"
+                                    .into(),
+                            offset: m.start(),
+                            property: "JWT kid must be constrained to a safe identifier format".into(),
+                        }],
+                    });
+                }
+
                 // Embedded JWK declaration
                 static JWK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
                     Regex::new(r#"(?s)"jwk"\s*:\s*\{([^}]*)\}"#).unwrap()
                 });
+                static EMBEDDED_JWK_RE: std::sync::LazyLock<Regex> =
+                    std::sync::LazyLock::new(|| Regex::new(r#"(?s)"jwk"\s*:\s*\{"#).unwrap());
+                if EMBEDDED_JWK_RE.is_match(&header) {
+                    dets.push(L2Detection {
+                        detection_type: "jwt_embedded_jwk_attacker_key".into(),
+                        confidence: 0.88,
+                        detail: "JWT header contains embedded jwk object".into(),
+                        position: m.start(),
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: header[..header.len().min(120)].to_owned(),
+                            interpretation:
+                                "Embedded JWK can inject attacker-selected signing key material".into(),
+                            offset: m.start(),
+                            property:
+                                "JWT verification keys must come from trusted server-side stores"
+                                    .into(),
+                        }],
+                    });
+                }
                 if let Some(cap) = JWK_RE.captures(&header) {
                     let jwk_body = cap.get(1).map(|m| m.as_str()).unwrap_or_default();
                     static KTY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -333,6 +429,26 @@ impl L2Evaluator for JwtEvaluator {
                     static CLAIM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
                         Regex::new(r#"(?i)"(iss|aud)"\s*:\s*"([^"]+)""#).unwrap()
                     });
+                    static NESTED_JWT_RE: std::sync::LazyLock<Regex> =
+                        std::sync::LazyLock::new(|| {
+                            Regex::new(r#""[^"]*"\s*:\s*"([A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,})""#).unwrap()
+                        });
+
+                    if let Some(cap) = NESTED_JWT_RE.captures(&payload_json) {
+                        dets.push(L2Detection {
+                            detection_type: "jwt_nested_bypass".into(),
+                            confidence: 0.78,
+                            detail: "JWT payload contains nested JWT token-like claim value".into(),
+                            position: m.start(),
+                            evidence: vec![ProofEvidence {
+                                operation: EvidenceOperation::SemanticEval,
+                                matched_input: cap.get(1).map(|x| x.as_str().to_owned()).unwrap_or_default(),
+                                interpretation: "Nested JWTs can bypass single-pass claim validation and trust boundaries".into(),
+                                offset: m.start(),
+                                property: "JWT claims must reject nested unsigned/untrusted token structures".into(),
+                            }],
+                        });
+                    }
 
                     if let Some(cap) = EXP_RE.captures(&payload_json) {
                         if let Some(exp) = cap.get(1).and_then(|m| m.as_str().parse::<i64>().ok()) {
@@ -435,10 +551,15 @@ impl L2Evaluator for JwtEvaluator {
             | "jwt_missing_signature"
             | "jwt_null_signature"
             | "jwt_crit_header_abuse"
+            | "jwt_rs256_to_hs256_confusion"
+            | "jwt_nested_bypass"
             | "jwt_claim_manipulation" => Some(InvariantClass::JwtConfusion),
             "jwt_key_injection" | "jwt_jku_injection" | "jwt_jwk_embedding"
-            | "jwt_jwk_symmetric" | "jwt_jku_ssrf" => Some(InvariantClass::JwtJwkEmbedding),
-            "jwt_kid_injection" | "jwt_kid_command_or_ssrf" => {
+            | "jwt_jwk_symmetric"
+            | "jwt_jku_ssrf"
+            | "jwt_jku_header_injection"
+            | "jwt_embedded_jwk_attacker_key" => Some(InvariantClass::JwtJwkEmbedding),
+            "jwt_kid_injection" | "jwt_kid_command_or_ssrf" | "jwt_kid_path_traversal" => {
                 Some(InvariantClass::JwtKidInjection)
             }
             _ => None,
@@ -504,11 +625,35 @@ mod tests {
     }
 
     #[test]
+    fn detects_jku_header_injection_confidence_threshold() {
+        let eval = JwtEvaluator;
+        let token = format!("{}.{}.c2ln", JWT_JKU_HEADER, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "jwt_jku_header_injection");
+        assert!(det.is_some());
+        assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
+    }
+
+    #[test]
     fn detects_jwt_kid_path_traversal_injection() {
         let eval = JwtEvaluator;
         let token = format!("{}.{}.c2ln", JWT_KID_PATH_HEADER, JWT_PAYLOAD);
         let dets = eval.detect(&token);
         assert!(dets.iter().any(|d| d.detection_type == "jwt_kid_injection"));
+    }
+
+    #[test]
+    fn detects_kid_path_traversal_confidence_threshold() {
+        let eval = JwtEvaluator;
+        let token = format!("{}.{}.c2ln", JWT_KID_PATH_HEADER, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "jwt_kid_path_traversal");
+        assert!(det.is_some());
+        assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
     }
 
     #[test]
@@ -535,6 +680,18 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "jwt_claim_manipulation")
         );
+    }
+
+    #[test]
+    fn detects_rs256_to_hs256_confusion_confidence_threshold() {
+        let eval = JwtEvaluator;
+        let token = format!("{}.{}.c2ln", JWT_HS256_RSA_JWK_HEADER, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "jwt_rs256_to_hs256_confusion");
+        assert!(det.is_some());
+        assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
     }
 
     #[test]
@@ -616,6 +773,30 @@ mod tests {
         assert!(jku.iter().any(|d| d.detection_type == "jwt_jku_ssrf"));
         assert!(jwk.iter().any(|d| d.detection_type == "jwt_jwk_symmetric"));
     }
+
+    #[test]
+    fn detects_embedded_jwk_attacker_key_confidence_threshold() {
+        let eval = JwtEvaluator;
+        let token = format!("{}.{}.c2ln", JWT_JWK_HEADER, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        let det = dets
+            .iter()
+            .find(|d| d.detection_type == "jwt_embedded_jwk_attacker_key");
+        assert!(det.is_some());
+        assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
+    }
+
+    #[test]
+    fn detects_nested_jwt_bypass_confidence_threshold() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let nested_payload = "eyJpbm5lciI6IkFBQUFBQUFBQUFBQUFBQUFBQUFBLkJCQkJCQkJCQkJCQkJCQkJCQkJCLkNDQ0NDQ0NDQ0MifQ";
+        let token = format!("{}.{}.c2ln", header, nested_payload);
+        let dets = eval.detect(&token);
+        let det = dets.iter().find(|d| d.detection_type == "jwt_nested_bypass");
+        assert!(det.is_some());
+        assert!(det.map(|d| d.confidence > 0.75).unwrap_or(false));
+    }
 }
 
 fn try_base64_decode_json(input: &str) -> Option<String> {
@@ -696,22 +877,35 @@ fn extract_internal_key_url(header_json: &str) -> Option<String> {
     None
 }
 
-fn is_internal_or_local_key_url(url: &str) -> bool {
+fn is_allowlisted_api_host(url: &str) -> bool {
+    static API_HOST_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?i)^api\.[a-z]+\.[a-z]+$").unwrap());
+    extract_url_host(url)
+        .map(|host| API_HOST_RE.is_match(&host))
+        .unwrap_or(false)
+}
+
+fn extract_url_host(url: &str) -> Option<String> {
     let lower = url.to_ascii_lowercase();
     let allowed_scheme = ["http://", "https://", "ftp://", "file://", "gopher://"];
-    let Some(scheme) = allowed_scheme.iter().find(|s| lower.starts_with(**s)) else {
-        return false;
-    };
+    let scheme = allowed_scheme.iter().find(|s| lower.starts_with(**s))?;
     let rest = &lower[scheme.len()..];
     let host = if let Some(stripped) = rest.strip_prefix('[') {
         stripped.split(']').next().unwrap_or("")
     } else {
         rest.split(['/', ':', '?', '#']).next().unwrap_or("")
     };
-
     if host.is_empty() {
-        return false;
+        None
+    } else {
+        Some(host.to_string())
     }
+}
+
+fn is_internal_or_local_key_url(url: &str) -> bool {
+    let Some(host) = extract_url_host(url) else {
+        return false;
+    };
     if host == "localhost" || host == "0.0.0.0" || host == "127.0.0.1" || host == "::1" {
         return true;
     }

@@ -6,6 +6,8 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 const MAX_JSON_ITEMS: usize = 100;
+const MAX_JSON_DEPTH: usize = 10;
+const MAX_MULTIPART_PARTS: usize = 50;
 const MAX_XML_ATTRS: usize = 200;
 const MAX_XML_TEXTS: usize = 200;
 const MAX_XML_CDATA: usize = 50;
@@ -69,6 +71,7 @@ pub struct Surface {
     pub entropy_profile: EntropyProfile,
     pub char_analysis: CharClassAnalysis,
     pub encoding: EncodingKind,
+    pub is_decoded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,7 +174,13 @@ pub fn decompose_request(request: &RawHttpRequest) -> RequestSurfaces {
     let start = Instant::now();
     let mut surfaces = Vec::new();
 
-    let path_without_query = request.path.split('?').next().unwrap_or(&request.path);
+    let (path_no_frag, fragment) = request.path.split_once('#').unwrap_or((&request.path, ""));
+    if !fragment.is_empty() {
+        let decoded_fragment = safe_url_decode(fragment);
+        surfaces.push(make_surface(SurfaceLocation::Fragment, "_fragment", &decoded_fragment));
+    }
+
+    let path_without_query = path_no_frag.split('?').next().unwrap_or(path_no_frag);
     let path_parts: Vec<&str> = path_without_query
         .split('/')
         .filter(|p| !p.is_empty())
@@ -246,6 +255,27 @@ pub fn decompose_request(request: &RawHttpRequest) -> RequestSurfaces {
         }
     }
 
+    let mut decoded_surfaces = Vec::new();
+    for s in &surfaces {
+        if s.encoding == EncodingKind::Base64Like
+            && matches!(
+                s.location,
+                SurfaceLocation::QueryValue | SurfaceLocation::FormField | SurfaceLocation::JsonValue
+            )
+        {
+            use base64::{engine::general_purpose::STANDARD, Engine as _};
+            let cleaned: String = s.raw.chars().filter(|c| !c.is_whitespace()).collect();
+            if let Ok(decoded_bytes) = STANDARD.decode(&cleaned) {
+                if let Ok(decoded_str) = String::from_utf8(decoded_bytes) {
+                    let mut new_surface = make_surface(s.location, &s.name, &decoded_str);
+                    new_surface.is_decoded = true;
+                    decoded_surfaces.push(new_surface);
+                }
+            }
+        }
+    }
+    surfaces.extend(decoded_surfaces);
+
     let cross_surface_payloads = detect_cross_surface_payloads(&surfaces);
     let payload_carrier = identify_payload_carrier(&surfaces);
 
@@ -297,6 +327,7 @@ fn make_surface(location: SurfaceLocation, name: &str, raw: &str) -> Surface {
         entropy_profile: profile,
         char_analysis,
         encoding,
+        is_decoded: false,
     }
 }
 
@@ -524,7 +555,8 @@ fn detect_encoding(input: &str) -> EncodingKind {
 }
 
 fn extract_query_string(path: &str) -> String {
-    path.split_once('?')
+    let path_no_frag = path.split_once('#').map(|(p, _)| p).unwrap_or(path);
+    path_no_frag.split_once('?')
         .map(|(_, q)| q.to_owned())
         .unwrap_or_default()
 }
@@ -561,12 +593,15 @@ fn parse_cookies(header: &str) -> Vec<(String, String)> {
 
 fn extract_json_surfaces(body: &str, surfaces: &mut Vec<Surface>) {
     match serde_json::from_str::<Value>(body) {
-        Ok(parsed) => walk_json(&parsed, "", surfaces),
+        Ok(parsed) => walk_json(&parsed, "", 0, surfaces),
         Err(_) => surfaces.push(make_surface(SurfaceLocation::JsonValue, "_body", body)),
     }
 }
 
-fn walk_json(value: &Value, path: &str, surfaces: &mut Vec<Surface>) {
+fn walk_json(value: &Value, path: &str, depth: usize, surfaces: &mut Vec<Surface>) {
+    if depth > MAX_JSON_DEPTH {
+        return;
+    }
     match value {
         Value::Null => {}
         Value::Bool(v) => surfaces.push(make_surface(
@@ -586,7 +621,7 @@ fn walk_json(value: &Value, path: &str, surfaces: &mut Vec<Surface>) {
         )),
         Value::Array(items) => {
             for (idx, item) in items.iter().take(MAX_JSON_ITEMS).enumerate() {
-                walk_json(item, &format!("{path}[{idx}]"), surfaces);
+                walk_json(item, &format!("{path}[{idx}]"), depth + 1, surfaces);
             }
         }
         Value::Object(map) => {
@@ -597,7 +632,7 @@ fn walk_json(value: &Value, path: &str, surfaces: &mut Vec<Surface>) {
                     format!("{path}.{key}")
                 };
                 surfaces.push(make_surface(SurfaceLocation::JsonKey, &full, key));
-                walk_json(val, &full, surfaces);
+                walk_json(val, &full, depth + 1, surfaces);
             }
         }
     }
@@ -610,7 +645,10 @@ fn extract_multipart_surfaces(body: &str, surfaces: &mut Vec<Surface>) {
         return;
     }
 
-    for part in body.split(&first_line) {
+    for (part_idx, part) in body.split(&first_line).enumerate() {
+        if part_idx > MAX_MULTIPART_PARTS {
+            break;
+        }
         if part.is_empty() || part == "--" || part == "--\r\n" {
             continue;
         }
@@ -1166,5 +1204,16 @@ mod tests {
         assert!(out.surface_count >= 3);
         assert!(out.processing_time_us >= 0.0);
         assert!(out.highest_entropy >= 0.0);
+    }
+
+    #[test]
+    fn base64_payloads_are_decoded() {
+        let mut r = req("/");
+        r.content_type = Some("application/json".into());
+        r.body = Some(r#"{"data":"PHNjcmlwdD5hbGVydCgxKTs8L3NjcmlwdD4="}"#.into());
+        let out = decompose_request(&r);
+        let decoded = out.surfaces.iter().find(|s| s.is_decoded).expect("should have decoded base64 surface");
+        assert_eq!(decoded.raw, "<script>alert(1);</script>");
+        assert_eq!(decoded.location, SurfaceLocation::JsonValue);
     }
 }

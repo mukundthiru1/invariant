@@ -31,7 +31,6 @@ const CLOUD_METADATA_HOSTNAMES: &[&str] = &[
 
 const AWS_IMDSV2_TOKEN_PATH: &str = "/latest/api/token";
 const AWS_IMDSV2_TOKEN_HEADER: &str = "x-aws-ec2-metadata-token-ttl-seconds";
-const AZURE_METADATA_API_VERSION: &str = "api-version=2021-02-01";
 const DIGITAL_OCEAN_METADATA_PREFIX: &str = "/metadata/v1/";
 const GCP_METADATA_FLAVOR_HEADER: &str = "metadata-flavor";
 const GCP_METADATA_FLAVOR_VALUE: &str = "google";
@@ -46,6 +45,10 @@ const CLOUD_METADATA_PATHS: &[&str] = &[
     "/metadata/instance?",
     "/metadata/instance/compute/",
     "/computeMetadata/v1",
+    "/openstack/latest/meta_data.json",
+    "/opc/v1/",
+    "/opc/v2/",
+    "api-version=",
 ];
 
 const DNS_REBINDING_SUFFIXES: &[&str] = &[".nip.io", ".xip.io", ".sslip.io", ".dnsfor.work"];
@@ -574,7 +577,7 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
         if authority.contains('\\') || boundary_sep == Some('\\') {
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
-                confidence: 0.84,
+                confidence: 0.92,
                 detail: format!(
                     "Backslash in URL authority used for parser confusion: {}",
                     authority
@@ -718,6 +721,25 @@ fn is_dns_rebind_target(host: &str) -> Option<String> {
         {
             let maybe = parse_ip_representation(prefix);
             if let Some(ip_num) = maybe {
+                return Some(ip_num_to_string(ip_num));
+            }
+        }
+    }
+
+    let localhost_domains = ["localtest.me", "lvh.me", "vcap.me", "lacolhost.com", "spoofed.burpcollaborator.net"];
+    for domain in &localhost_domains {
+        if h == *domain || h.ends_with(&format!(".{}", domain)) {
+            return Some("127.0.0.1".to_string());
+        }
+    }
+
+    static IP_SUBDOMAIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\b(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.[a-z]+\.[a-z]+").unwrap()
+    });
+    
+    if let Some(caps) = IP_SUBDOMAIN_RE.captures(&h) {
+        if let Some(ip_str) = caps.get(1) {
+            if let Some(ip_num) = parse_ip_representation(ip_str.as_str()) {
                 return Some(ip_num_to_string(ip_num));
             }
         }
@@ -1031,14 +1053,14 @@ fn detect_cloud_metadata_context(
         }
 
         if lowered_path.contains("/metadata/instance")
-            && lowered_path.contains(AZURE_METADATA_API_VERSION)
+            && lowered_path.contains("api-version=")
         {
             dets.push(L2Detection {
                 detection_type: "cloud_metadata".into(),
                 confidence: 0.99,
                 detail: format!(
-                    "Azure metadata request with API version {}: {}",
-                    AZURE_METADATA_API_VERSION, lowered_path
+                    "Azure metadata request with API version: {}",
+                    lowered_path
                 ),
                 position: 0,
                 evidence: vec![ProofEvidence {
@@ -1399,7 +1421,7 @@ impl L2Evaluator for SsrfEvaluator {
         if parsed.has_credentials {
             dets.push(L2Detection {
                 detection_type: "internal_reach".into(),
-                confidence: 0.85,
+                confidence: 0.90,
                 detail: format!(
                     "URL authority contains credentials prefix before host: {}",
                     parsed.authority
@@ -1943,5 +1965,59 @@ mod tests {
             dets.is_empty(),
             "Metadata-like subdomain should not match exact metadata hostname list"
         );
+    }
+
+    #[test]
+    fn alibaba_cloud_metadata_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://100.100.100.200/latest/meta-data/");
+        let detection = dets.iter().find(|d| d.detection_type == "cloud_metadata");
+        assert!(detection.is_some(), "Alibaba cloud metadata should be detected");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn huawei_cloud_metadata_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://169.254.169.254/openstack/latest/meta_data.json");
+        let detection = dets.iter().find(|d| d.detection_type == "cloud_metadata");
+        assert!(detection.is_some(), "Huawei cloud metadata should be detected");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn oracle_cloud_metadata_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://169.254.169.254/opc/v2/");
+        let detection = dets.iter().find(|d| d.detection_type == "cloud_metadata");
+        assert!(detection.is_some(), "Oracle cloud metadata should be detected");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn azure_metadata_any_api_version_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://169.254.169.254/metadata/instance?api-version=2023-11-01");
+        let detection = dets.iter().find(|d| d.detection_type == "cloud_metadata");
+        assert!(detection.is_some(), "Azure metadata with arbitrary API version should be detected");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn dns_rebind_localtest_me_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://localtest.me/admin");
+        let detection = dets.iter().find(|d| d.detection_type == "internal_reach");
+        assert!(detection.is_some(), "localtest.me should be detected as internal reach");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
+    }
+
+    #[test]
+    fn ip_subdomain_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://192.168.1.1.evil.com/admin");
+        let detection = dets.iter().find(|d| d.detection_type == "internal_reach");
+        assert!(detection.is_some(), "IP as subdomain should be detected as internal reach");
+        assert!(detection.unwrap().confidence > 0.85, "Confidence should be > 0.85");
     }
 }

@@ -154,3 +154,7 @@ export function analyzeWebSocketMessage(data: string): WebSocketMessageAnalysisR
         matches: [...deduped.values()],
     }
 }
+
+export function analyzeWebSocketFrameBody(body: string, engine: InvariantEngine): InvariantMatch[] {
+    return engine.detect(body, [])
+}

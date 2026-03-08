@@ -28,6 +28,24 @@ static ARRAY_INDEX_POLLUTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLoc
 static SYMBOL_HAS_INSTANCE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
     Regex::new(r#"(?is)(?:__proto__|prototype|constructor\s*[\[.]\s*prototype)[^\n\r;]{0,180}Symbol\s*\.\s*hasInstance"#).unwrap()
 });
+static SYMBOL_TOSTRINGTAG_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"(?i)(?:__proto__|prototype|Object\.getPrototypeOf[^)]*\))(?:[\[.](?:Symbol(?:\.toStringTag|\[Symbol\.toStringTag\])|\[['"]*Symbol\.toStringTag['"]*\]))"#).unwrap()
+});
+static VUE_OBSERVABLE_POLLUTION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)(?:__proto__|constructor\.prototype)[\[.](?:__ob__|__vue_set__|__reactiveGetter__|__reactiveSetter__|_isVue|__file__)"#,
+    )
+    .unwrap()
+});
+static DEEP_MERGE_RECURSIVE_PROTO_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"(?i)\{[^}]*(?:__proto__|\["__proto__"\]|\['__proto__'\])[^}]*:[^}]*\{[^}]*\}[^}]*\}"#)
+        .unwrap()
+});
+static UNDERSCORE_TEMPLATE_POLLUTION_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?i)_\.template\([^)]*(?:__proto__|constructor\.prototype|Object\.prototype)"#)
+            .unwrap()
+    });
 
 impl L2Evaluator for ProtoPollutionEvaluator {
     fn id(&self) -> &'static str {
@@ -344,6 +362,89 @@ impl L2Evaluator for ProtoPollutionEvaluator {
             });
         }
 
+        // Symbol.toStringTag pollution affects object identity/type branding behavior.
+        if let Some(m) = SYMBOL_TOSTRINGTAG_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_symbol_tostringtag".into(),
+                confidence: 0.87,
+                detail: "Prototype pollution attempt on Symbol.toStringTag".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str()[..m.as_str().len().min(120)].to_owned(),
+                    interpretation:
+                        "Mutating Symbol.toStringTag on prototype chain can corrupt runtime type branding"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Prototype chain must not permit untrusted writes to Symbol.toStringTag"
+                            .into(),
+                }],
+            });
+        }
+
+        // Vue observable/reactivity fields on polluted prototype chains.
+        if let Some(m) = VUE_OBSERVABLE_POLLUTION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_vue_observable".into(),
+                confidence: 0.88,
+                detail: "Vue-specific prototype pollution path".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Vue internal reactivity keys on prototype paths indicate framework-specific pollution"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Untrusted object paths must block Vue internal keys on prototype chains"
+                            .into(),
+                }],
+            });
+        }
+
+        // Recursive deep-merge payload with nested __proto__ object (CVE-2021-4273-style shape).
+        if let Some(m) = DEEP_MERGE_RECURSIVE_PROTO_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_deepmerge_recursive_bypass".into(),
+                confidence: 0.85,
+                detail: "Nested __proto__ object in recursive merge payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str()[..m.as_str().len().min(120)].to_owned(),
+                    interpretation:
+                        "Deep recursive merge payload includes __proto__ in nested object position"
+                            .into(),
+                    offset: m.start(),
+                    property: "Recursive merge inputs must reject __proto__ keys at all nesting levels"
+                        .into(),
+                }],
+            });
+        }
+
+        // Underscore template call fed with prototype-polluting tokens.
+        if let Some(m) = UNDERSCORE_TEMPLATE_POLLUTION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_underscore_template".into(),
+                confidence: 0.82,
+                detail: "Underscore template payload references prototype chain".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str()[..m.as_str().len().min(120)].to_owned(),
+                    interpretation:
+                        "_.template invocation includes prototype-polluting references in template data flow"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Template data passed to _.template must block prototype traversal tokens"
+                            .into(),
+                }],
+            });
+        }
+
         // Query string pollution: ?__proto__[x]=y
         static qs_proto: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?i)(?:__proto__|constructor)(?:\[|\.)").unwrap()
@@ -388,7 +489,11 @@ impl L2Evaluator for ProtoPollutionEvaluator {
             | "proto_json_parse_proto"
             | "proto_library_merge"
             | "proto_array_index"
-            | "proto_symbol_hasinstance" => Some(InvariantClass::ProtoPollution),
+            | "proto_symbol_hasinstance"
+            | "proto_symbol_tostringtag"
+            | "proto_vue_observable"
+            | "proto_deepmerge_recursive_bypass"
+            | "proto_underscore_template" => Some(InvariantClass::ProtoPollution),
             "proto_gadget" => Some(InvariantClass::ProtoPollutionGadget),
             _ => None,
         }
@@ -522,6 +627,46 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "proto_symbol_hasinstance")
+        );
+    }
+
+    #[test]
+    fn detects_symbol_tostringtag_pollution() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect("obj.__proto__[Symbol.toStringTag] = 'AdminUser'");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_symbol_tostringtag")
+        );
+    }
+
+    #[test]
+    fn detects_vue_observable_prototype_pollution() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect("payload.constructor.prototype.__ob__ = { dep: {} }");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_vue_observable")
+        );
+    }
+
+    #[test]
+    fn detects_deepmerge_recursive_proto_bypass_pattern() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect(r#"{"a":1,"__proto__":{"polluted":true},"b":2}"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_deepmerge_recursive_bypass")
+        );
+    }
+
+    #[test]
+    fn detects_underscore_template_proto_pollution_pattern() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect(r#"_.template("<%= it %>", {"__proto__":{"x":1}})"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_underscore_template")
         );
     }
 }
