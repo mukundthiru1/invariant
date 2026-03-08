@@ -46,6 +46,22 @@ static UNDERSCORE_TEMPLATE_POLLUTION_RE: std::sync::LazyLock<Regex> =
         Regex::new(r#"(?i)_\.template\([^)]*(?:__proto__|constructor\.prototype|Object\.prototype)"#)
             .unwrap()
     });
+static OBJECT_SET_PROTOTYPE_OF_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"(?i)Object\.setPrototypeOf\s*\([^)]{0,200},\s*(?:\{|null|\w+)"#).unwrap()
+});
+static REFLECT_SET_PROTO_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(r#"(?i)Reflect\.set\s*\([^)]{0,200}['"](?:__proto__|prototype)['"]"#).unwrap()
+});
+static OBJECT_DEFINE_PROPERTY_PROTO_RE: std::sync::LazyLock<Regex> =
+    std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?i)Object\.defineProperty\s*\([^,]{0,100},\s*['"]__proto__['"]"#).unwrap()
+    });
+static COMPUTED_PROPERTY_PROTO_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\[['"](?:__proto__|prototype)['"](?:\s*\]|\s*\+)|\{(?:\s*['"]__proto__['"]|\s*\[.*__proto__)\s*:"#,
+    )
+    .unwrap()
+});
 
 impl L2Evaluator for ProtoPollutionEvaluator {
     fn id(&self) -> &'static str {
@@ -450,24 +466,85 @@ impl L2Evaluator for ProtoPollutionEvaluator {
             Regex::new(r"(?i)(?:__proto__|constructor)(?:\[|\.)").unwrap()
         });
         if let Some(m) = qs_proto.find(&decoded) {
-            if dets.is_empty() {
-                dets.push(L2Detection {
-                    detection_type: "proto_query".into(),
-                    confidence: 0.85,
-                    detail: format!("Query parameter prototype pollution: {}", m.as_str()),
-                    position: m.start(),
-                    evidence: vec![ProofEvidence {
-                        operation: EvidenceOperation::PayloadInject,
-                        matched_input: m.as_str().to_owned(),
-                        interpretation:
-                            "Query parameter pollutes prototype via nested property parsing".into(),
-                        offset: m.start(),
-                        property:
-                            "User-supplied query parameters must not modify object prototypes"
-                                .into(),
-                    }],
-                });
-            }
+            dets.push(L2Detection {
+                detection_type: "proto_query".into(),
+                confidence: 0.85,
+                detail: format!("Query parameter prototype pollution: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Query parameter pollutes prototype via nested property parsing".into(),
+                    offset: m.start(),
+                    property: "User-supplied query parameters must not modify object prototypes"
+                        .into(),
+                }],
+            });
+        }
+
+        if let Some(m) = OBJECT_SET_PROTOTYPE_OF_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_set_prototype_of".into(),
+                confidence: 0.93,
+                detail: "Object.setPrototypeOf with attacker-controlled prototype argument".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Object.setPrototypeOf() directly replaces the prototype chain of an object. When an attacker controls the second argument, any object can have its prototype replaced with an attacker-supplied chain, enabling property injection without __proto__ keyword.".into(),
+                    offset: m.start(),
+                    property: "Untrusted input must not control Object.setPrototypeOf prototype argument".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = REFLECT_SET_PROTO_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_reflect_set".into(),
+                confidence: 0.90,
+                detail: "Reflect.set writes to __proto__ or prototype key".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Reflect.set() with __proto__ or prototype as the property key bypasses string-based filters that block direct assignment. The Reflect API provides an alternate code path for prototype pollution that is rarely rate-limited.".into(),
+                    offset: m.start(),
+                    property: "Untrusted input must not reach Reflect.set prototype-related property keys".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = OBJECT_DEFINE_PROPERTY_PROTO_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_define_property".into(),
+                confidence: 0.91,
+                detail: "Object.defineProperty targeting __proto__ descriptor key".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Object.defineProperty with __proto__ as the property name sets the __proto__ descriptor on an object directly. This is a stealth prototype pollution vector that bypasses simple string checks for __proto__ assignment syntax.".into(),
+                    offset: m.start(),
+                    property: "Untrusted input must not control Object.defineProperty names for __proto__".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = COMPUTED_PROPERTY_PROTO_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "proto_computed_prop".into(),
+                confidence: 0.88,
+                detail: "Computed property syntax references __proto__ or prototype keys".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Computed property name syntax ([\"__proto__\"]: value or {[\"__proto__\"]: ...}) constructs objects with literal __proto__ key. Some parsers treat this as a prototype setter while others treat it as an own property. This creates parser differential exploitation.".into(),
+                    offset: m.start(),
+                    property: "Computed property names from untrusted input must block __proto__/prototype".into(),
+                }],
+            });
         }
 
         dets
@@ -493,7 +570,11 @@ impl L2Evaluator for ProtoPollutionEvaluator {
             | "proto_symbol_tostringtag"
             | "proto_vue_observable"
             | "proto_deepmerge_recursive_bypass"
-            | "proto_underscore_template" => Some(InvariantClass::ProtoPollution),
+            | "proto_underscore_template"
+            | "proto_set_prototype_of"
+            | "proto_reflect_set"
+            | "proto_define_property"
+            | "proto_computed_prop" => Some(InvariantClass::ProtoPollution),
             "proto_gadget" => Some(InvariantClass::ProtoPollutionGadget),
             _ => None,
         }
@@ -667,6 +748,43 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "proto_underscore_template")
+        );
+    }
+
+    #[test]
+    fn test_set_prototype_of() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect("Object.setPrototypeOf(obj, {isAdmin: true})");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_set_prototype_of")
+        );
+    }
+
+    #[test]
+    fn test_reflect_set_proto() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect(r#"Reflect.set(target, "__proto__", payload)"#);
+        assert!(dets.iter().any(|d| d.detection_type == "proto_reflect_set"));
+    }
+
+    #[test]
+    fn test_define_property_proto() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect(r#"Object.defineProperty(obj, "__proto__", {value: malicious})"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_define_property")
+        );
+    }
+
+    #[test]
+    fn test_computed_property_proto() {
+        let eval = ProtoPollutionEvaluator;
+        let dets = eval.detect(r#"{["__proto__"]: {isAdmin: true}}"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "proto_computed_prop")
         );
     }
 }

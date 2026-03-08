@@ -84,6 +84,11 @@ const ACTOR_KEYS: &[&str] = &[
     "session_user_id",
     "actor_id",
     "subject_id",
+    "caller_id",
+    "from_user_id",
+    "auth_user_id",
+    "principal_id",
+    "owner_id",
 ];
 
 const TARGET_KEYS: &[&str] = &[
@@ -94,6 +99,9 @@ const TARGET_KEYS: &[&str] = &[
     "impersonated_user_id",
     "impersonate_user_id",
     "resource_owner_id",
+    "for_user_id",
+    "target_account_id",
+    "object_owner_id",
 ];
 
 #[derive(Clone)]
@@ -363,7 +371,7 @@ fn add_id_candidate(
             continue;
         }
 
-        if value.len() > 7 && !value.is_empty() {
+        if value.len() > 7 {
             if let Some(decoded) = decode_base64_token(&value) {
                 if let Some(extracted) = extract_numeric_id(&decoded) {
                     encoded.push(EncodedCandidate {
@@ -932,7 +940,7 @@ fn detect_horizontal_privilege(
 
 fn detect_wildcard_bulk_id_abuse(decoded: &str) -> Option<L2EvalResult> {
     static WILDCARD_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?i)/(?:api/)?v\d+/[a-z]+/(?:\*|all|bulk|everyone|any)(?:/|$|\?)").unwrap()
+        Regex::new(r"(?i)/(?:api/)?v\d+/[a-z]+/(?:\*|all|_all|__all__|bulk|everyone|any|me|self|current|default)(?:/|$|\?)").unwrap()
     });
 
     let Some(m) = WILDCARD_ID_RE.find(decoded) else {
@@ -1055,6 +1063,106 @@ fn detect_encoded_reference(
     }
 }
 
+fn detect_mongodb_objectid(decoded: &str) -> Option<L2EvalResult> {
+    static MONGO_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)[?&/](?:[a-z_-]+[=:/])?([0-9a-f]{24})(?:[?&/"'\s]|$)"#).unwrap()
+    });
+    
+    if let Some(m) = MONGO_RE.captures(decoded) {
+        if let Some(id_match) = m.get(1) {
+            return Some(L2Detection {
+                detection_type: "idor_mongodb_objectid".into(),
+                confidence: 0.79,
+                detail: "MongoDB ObjectId (24 hex chars) found in path/parameter".into(),
+                position: id_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(decoded, id_match.start()),
+                    interpretation: "MongoDB ObjectId (24 hex chars) encodes creation timestamp in the first 4 bytes. Sequential ObjectIds from the same server/process are predictable, enabling IDOR by guessing adjacent IDs.".into(),
+                    offset: id_match.start(),
+                    property: "MongoDB ObjectIds should be treated as predictable and require authorization checks.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
+fn detect_snowflake_id(decoded: &str) -> Option<L2EvalResult> {
+    static SNOWFLAKE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)[?&/](?:[a-z_-]+[=:/])?([0-9]{17,19})(?:[?&/"'\s]|$)"#).unwrap()
+    });
+    
+    if let Some(m) = SNOWFLAKE_RE.captures(decoded) {
+        if let Some(id_match) = m.get(1) {
+            return Some(L2Detection {
+                detection_type: "idor_snowflake_id".into(),
+                confidence: 0.77,
+                detail: "Snowflake ID (17-19 digit number) found in path/parameter".into(),
+                position: id_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(decoded, id_match.start()),
+                    interpretation: "Snowflake IDs (17-19 digit numbers used by Twitter, Discord, Instagram) encode a millisecond timestamp in the upper bits. Adjacent IDs are predictable, enabling temporal IDOR attacks by guessing IDs created within the same time window.".into(),
+                    offset: id_match.start(),
+                    property: "Snowflake IDs should be treated as predictable and require authorization checks.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
+fn detect_ulid(decoded: &str) -> Option<L2EvalResult> {
+    static ULID_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?i)[?&/](?:[a-z_-]+[=:/])?([0-9A-HJKMNP-TV-Z]{26})(?:[?&/"'\s]|$)"#).unwrap()
+    });
+    
+    if let Some(m) = ULID_RE.captures(decoded) {
+        if let Some(id_match) = m.get(1) {
+            return Some(L2Detection {
+                detection_type: "idor_ulid".into(),
+                confidence: 0.77,
+                detail: "ULID (26-char Crockford base32 string) found in path/parameter".into(),
+                position: id_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(decoded, id_match.start()),
+                    interpretation: "ULID (Universally Unique Lexicographically Sortable Identifier) encodes a millisecond timestamp prefix. ULIDs generated in close time proximity are nearly sequential, making IDOR attacks feasible by incrementing the timestamp portion.".into(),
+                    offset: id_match.start(),
+                    property: "ULIDs should be treated as predictable and require authorization checks.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
+fn detect_cookie_id(decoded: &str) -> Option<L2EvalResult> {
+    static COOKIE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)^cookie\s*:[^\r\n]*(?:user_id|account_id|customer_id|uid|user-id|userid)\s*=\s*([0-9]{1,15}|[0-9a-f-]{36})").unwrap()
+    });
+    
+    if let Some(m) = COOKIE_RE.captures(decoded) {
+        if let Some(id_match) = m.get(1) {
+            return Some(L2Detection {
+                detection_type: "idor_cookie_id".into(),
+                confidence: 0.78,
+                detail: "Cookie header contains an ID-like field (numeric or UUID)".into(),
+                position: id_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(decoded, id_match.start()),
+                    interpretation: "Numeric or UUID-format object references in Cookie headers indicate server-side access control decisions based on user-controlled cookies. Cookie values can be trivially modified, enabling IDOR by changing the identifier to another user account.".into(),
+                    offset: id_match.start(),
+                    property: "Server-side state should not rely on user-controlled identifiers in cookies for access control.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
 pub fn evaluate_idor(input: &str) -> Option<L2EvalResult> {
     let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
 
@@ -1116,7 +1224,28 @@ impl L2Evaluator for IdorEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        evaluate_idor(input).into_iter().collect()
+        let mut detections = Vec::new();
+        let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+
+        let (path_ids, path_encoded) = collect_path_references(&decoded);
+        let (param_ids, param_encoded) = collect_param_references(&decoded);
+
+        if let Some(d) = detect_sequential_path_ids(&decoded, &path_ids) { detections.push(d); }
+        if let Some(d) = detect_path_single_reference(&decoded, &path_ids) { detections.push(d); }
+        if let Some(d) = detect_param_id_reference(&decoded, &param_ids) { detections.push(d); }
+        if let Some(d) = detect_graphql_node_ids(&decoded) { detections.push(d); }
+        if let Some(d) = detect_predictable_resource_path(&decoded) { detections.push(d); }
+        if let Some(d) = detect_horizontal_privilege(&path_ids, &param_ids) { detections.push(d); }
+        if let Some(d) = detect_wildcard_bulk_id_abuse(&decoded) { detections.push(d); }
+        if let Some(d) = detect_uuidv1_prediction(&decoded) { detections.push(d); }
+        if let Some(d) = detect_encoded_reference(&path_encoded, &param_encoded) { detections.push(d); }
+
+        if let Some(d) = detect_mongodb_objectid(&decoded) { detections.push(d); }
+        if let Some(d) = detect_snowflake_id(&decoded) { detections.push(d); }
+        if let Some(d) = detect_ulid(&decoded) { detections.push(d); }
+        if let Some(d) = detect_cookie_id(&decoded) { detections.push(d); }
+
+        detections
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
@@ -1132,7 +1261,11 @@ impl L2Evaluator for IdorEvaluator {
             | "idor_horizontal_privilege"
             | "idor_graphql_node_id"
             | "idor_wildcard_id"
-            | "idor_uuidv1_prediction" => Some(InvariantClass::BolaIdor),
+            | "idor_uuidv1_prediction"
+            | "idor_mongodb_objectid"
+            | "idor_snowflake_id"
+            | "idor_ulid"
+            | "idor_cookie_id" => Some(InvariantClass::BolaIdor),
             _ => None,
         }
     }
@@ -1288,5 +1421,33 @@ mod tests {
         let result = evaluate_idor(input).unwrap();
         assert_eq!(result.detection_type, "idor_uuidv1_prediction");
         assert!((result.confidence - 0.79).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn detects_mongodb_objectid() {
+        let eval = IdorEvaluator;
+        let det = eval.detect("/api/users/507f1f77bcf86cd799439011");
+        assert!(det.iter().any(|d| d.detection_type == "idor_mongodb_objectid"));
+    }
+
+    #[test]
+    fn detects_snowflake_id() {
+        let eval = IdorEvaluator;
+        let det = eval.detect("/api/tweets/1234567890123456789");
+        assert!(det.iter().any(|d| d.detection_type == "idor_snowflake_id"));
+    }
+
+    #[test]
+    fn detects_ulid() {
+        let eval = IdorEvaluator;
+        let det = eval.detect("/api/events/01ARZ3NDEKTSV4RRFFQ69G5FAV");
+        assert!(det.iter().any(|d| d.detection_type == "idor_ulid"));
+    }
+
+    #[test]
+    fn detects_cookie_id() {
+        let eval = IdorEvaluator;
+        let det = eval.detect("Cookie: session=abc; user_id=12345\r\n");
+        assert!(det.iter().any(|d| d.detection_type == "idor_cookie_id"));
     }
 }

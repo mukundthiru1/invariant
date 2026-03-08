@@ -263,7 +263,7 @@ impl L2Evaluator for ApiAbuseEvaluator {
 
         // Rate limit bypass headers
         static bypass: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?im)^\s*(?:X-Forwarded-For|X-Real-IP|X-Client-IP|True-Client-IP|CF-Connecting-IP)\s*:\s*(?:\d{1,3}\.){3}\d{1,3}").unwrap()
+            Regex::new(r"(?im)^\s*(?:X-Forwarded-For|X-Real-IP|X-Client-IP|True-Client-IP|CF-Connecting-IP|X-Originating-IP|X-Remote-IP|X-Remote-Addr|X-Cluster-Client-IP|Fastly-Client-IP)\s*:\s*(?:(?:\d{1,3}\.){3}\d{1,3}|::1|fe80::|fc00::|\[::1\])").unwrap()
         });
         if let Some(m) = bypass.find(&decoded) {
             dets.push(L2Detection {
@@ -414,7 +414,7 @@ impl L2Evaluator for ApiAbuseEvaluator {
         // SSRF through API callback/url parameters to internal addresses
         static SSRF_PARAM_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(
-                r#"(?i)(?:^|[?&\s"'])?(?:url|webhook|callback)\s*[:=]\s*["']?(?:https?://)?(?:127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3})\b"#,
+                r#"(?i)(?:^|[?&\s"'])?(?:url|webhook|callback)\s*[:=]\s*["']?(?:(?:https?|file|gopher|dict)://)?(?:127\.0\.0\.1|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|169\.254\.\d{1,3}\.\d{1,3}|localhost|0\.0\.0\.0|::1|metadata\.google\.internal|metadata\.internal|2130706433|0177\.[0-9.]+)\b"#,
             )
             .unwrap()
         });
@@ -437,7 +437,7 @@ impl L2Evaluator for ApiAbuseEvaluator {
 
         // Excessive OAuth scope requests
         static excessive_scope: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?i)(?:^|[?&\s])scope\s*=\s*[^&]*(?:\*|\badmin\b)").unwrap()
+            Regex::new(r"(?i)(?:^|[?&\s])scope\s*=\s*[^&]*(?:\*|\badmin\b|\bread_write\b|\bfull_access\b|\broot\b|\bsystem\b)").unwrap()
         });
         if let Some(m) = excessive_scope.find(&decoded) {
             dets.push(L2Detection {
@@ -458,7 +458,7 @@ impl L2Evaluator for ApiAbuseEvaluator {
         // Undocumented endpoint probing for sensitive/debug surfaces
         static UNDOCUMENTED_ENDPOINT_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| {
-                Regex::new(r"(?i)(?:^|/)(?:swagger(?:-ui)?|api-docs?|openapi|graphiql|\.env|\.git/|config\.(?:php|json|yaml|yml|ini)|actuator/|debug(?:\.php)?|phpinfo\.php|server-status|jmx/|metrics/?|health/?\?.*verbose|admin/api|management/|_profiler/|__debug__)(?:/|\?|$)").unwrap()
+                Regex::new(r"(?i)(?:^|/)(?:swagger(?:-ui)?|api-docs?|openapi|graphiql|redoc|scalar|\.env(?:\.local|\.production)?|\.git(?:/config|/)|config\.(?:php|json|yaml|yml|ini)|appsettings\.json|credentials\.json|secrets\.json|aws/credentials|actuator/|debug(?:\.php)?|phpinfo\.php|server-status|jmx/|metrics/?|health/?\?.*verbose|admin/api|management/|_profiler/|__debug__)(?:/|\?|$)").unwrap()
             });
         if let Some(m) = UNDOCUMENTED_ENDPOINT_RE.find(&decoded) {
             dets.push(L2Detection {
@@ -474,6 +474,213 @@ impl L2Evaluator for ApiAbuseEvaluator {
                     property: "Disable or restrict internal/debug endpoints and ensure non-production disclosure controls".into(),
                 }],
             });
+        }
+
+        // JWT None Algorithm
+        static JWT_NONE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)['"]alg['"]\s*:\s*['"]none['"]"#).unwrap()
+        });
+        static JWT_NONE_B64_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"eyJ[A-Za-z0-9_-]+").unwrap()
+        });
+        
+        let mut jwt_none_detected = false;
+        if JWT_NONE_RE.is_match(&decoded) {
+            jwt_none_detected = true;
+        } else {
+            for caps in jwt_auth.captures_iter(&decoded) {
+                if let Some(header) = caps.get(1) {
+                    if let Some(decoded_header_bytes) = decode_base64url_nopad(header.as_str()) {
+                        if let Ok(header_json) = String::from_utf8(decoded_header_bytes) {
+                            if JWT_NONE_RE.is_match(&header_json) {
+                                jwt_none_detected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            if !jwt_none_detected {
+                for m in JWT_NONE_B64_RE.find_iter(&decoded) {
+                     let b64_part = m.as_str();
+                     if let Some(decoded_bytes) = decode_base64url_nopad(b64_part) {
+                         if let Ok(json_str) = String::from_utf8(decoded_bytes) {
+                             if JWT_NONE_RE.is_match(&json_str) {
+                                 jwt_none_detected = true;
+                                 break;
+                             }
+                         }
+                     }
+                }
+            }
+        }
+        
+        if jwt_none_detected {
+            dets.push(L2Detection {
+                detection_type: "api_jwt_none_alg".into(),
+                confidence: 0.96,
+                detail: "JWT none algorithm detected in header".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "JWT none algorithm disables signature verification. Tokens with alg:none are accepted by vulnerable servers without validating the signature, allowing arbitrary claim forgery.".into(),
+                    offset: 0,
+                    property: "JWT signature validation must reject 'none' algorithm and enforce explicit allowed algorithms".into(),
+                }],
+            });
+        }
+
+        // Pagination scraping (deep offset)
+        static DEEP_OFFSET_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&](?:offset|skip|start)=([0-9]{6,})").unwrap()
+        });
+        static DEEP_PAGE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)[?&]page=([0-9]{4,})").unwrap()
+        });
+        
+        let mut is_deep_pagination = false;
+        for cap in DEEP_OFFSET_RE.captures_iter(&decoded) {
+            if let Ok(val) = cap[1].parse::<u64>() {
+                if val >= 100000 {
+                    is_deep_pagination = true;
+                    break;
+                }
+            }
+        }
+        if !is_deep_pagination {
+            for cap in DEEP_PAGE_RE.captures_iter(&decoded) {
+                if let Ok(val) = cap[1].parse::<u64>() {
+                    if val >= 1000 {
+                        is_deep_pagination = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if is_deep_pagination {
+            dets.push(L2Detection {
+                detection_type: "api_deep_pagination".into(),
+                confidence: 0.82,
+                detail: "Extremely large offset or page value requested".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "Extremely large offset/page values indicate pagination-based data harvesting. Attackers enumerate entire datasets by iterating through pages, bypassing record-count limits while extracting all data.".into(),
+                    offset: 0,
+                    property: "API pagination must enforce a maximum absolute offset/page depth to prevent full data extraction".into(),
+                }],
+            });
+        }
+
+        // Content-Type confusion
+        static CT_CONFUSION_JSON_BODY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^content-type\s*:\s*(?:application/x-www-form-urlencoded|text/plain)").unwrap()
+        });
+        static CT_CONFUSION_FORM_BODY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^content-type\s*:\s*application/json").unwrap()
+        });
+        static JSON_LIKE_BODY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\{[^}]{3,}:").unwrap()
+        });
+
+        let body_idx = decoded.find("\r\n\r\n").map(|i| i + 4).unwrap_or(0);
+        let body = if body_idx > 0 && body_idx < decoded.len() { decoded[body_idx..].trim_start() } else { &decoded };
+        
+        let mut is_ct_confusion = false;
+        if CT_CONFUSION_JSON_BODY_RE.is_match(&decoded) && JSON_LIKE_BODY_RE.is_match(body) {
+            is_ct_confusion = true;
+        } else if CT_CONFUSION_FORM_BODY_RE.is_match(&decoded) && !body.starts_with('{') && !body.starts_with('[') && body.contains('=') && body.contains('&') {
+            is_ct_confusion = true;
+        }
+
+        if is_ct_confusion {
+            dets.push(L2Detection {
+                detection_type: "api_content_type_confusion".into(),
+                confidence: 0.85,
+                detail: "Content-Type header contradicts body structure".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::TypeCoerce,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "Content-Type mismatch exploits server-side parsing confusion. Some frameworks parse form-encoded POST bodies as JSON if the body structure looks like JSON, bypassing Content-Type-based security controls and validation.".into(),
+                    offset: 0,
+                    property: "Server frameworks must strictly reject requests where the body format does not match the Content-Type header".into(),
+                }],
+            });
+        }
+
+        // JWT array role claim
+        static JWT_ARRAY_ROLE_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?i)['"](?:roles?|groups?|permissions?)['"]\s*:\s*\[[^\]]*['"]admin['"]"#).unwrap()
+        });
+        
+        let mut jwt_array_role_detected = false;
+        if JWT_ARRAY_ROLE_RE.is_match(&decoded) {
+            jwt_array_role_detected = true;
+        } else {
+            for cap in jwt_auth.captures_iter(&decoded) {
+                if let Some(payload) = cap.get(2) {
+                    if let Some(decoded_payload_bytes) = decode_base64url_nopad(payload.as_str()) {
+                        if let Ok(payload_json) = String::from_utf8(decoded_payload_bytes) {
+                            if JWT_ARRAY_ROLE_RE.is_match(&payload_json) {
+                                jwt_array_role_detected = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if jwt_array_role_detected {
+            dets.push(L2Detection {
+                detection_type: "api_jwt_array_role".into(),
+                confidence: 0.88,
+                detail: "JWT payload contains array-format role with admin privilege".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::TypeCoerce,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "JWT payload contains an array-format role claim with admin value. Some authorization frameworks check only scalar role claims and miss array-format role injection.".into(),
+                    offset: 0,
+                    property: "Authorization frameworks must safely process both scalar and array role claims or reject ambiguous formats".into(),
+                }],
+            });
+        }
+
+        // HPP in JSON body (duplicate keys)
+        static JSON_KEY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"['"]([a-zA-Z_][a-zA-Z0-9_]{2,})['"]\s*:"#).unwrap()
+        });
+        
+        if decoded.contains('{') && decoded.contains(':') {
+            let mut keys_found = Vec::new();
+            let mut has_duplicate_key = false;
+            for cap in JSON_KEY_RE.captures_iter(&decoded) {
+                let key = cap[1].to_string();
+                if keys_found.contains(&key) {
+                    has_duplicate_key = true;
+                    break;
+                }
+                keys_found.push(key);
+            }
+            if has_duplicate_key {
+                dets.push(L2Detection {
+                    detection_type: "api_json_hpp".into(),
+                    confidence: 0.83,
+                    detail: "Duplicate keys found in JSON-like structure".into(),
+                    position: 0,
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                        interpretation: "Duplicate JSON keys exploit last-key-wins vs first-key-wins behavior differences between parsers. A duplicate key like {\"role\":\"user\",\"role\":\"admin\"} may be parsed as admin by some and user by others, enabling privilege escalation.".into(),
+                        offset: 0,
+                        property: "JSON parsers must reject payloads with duplicate keys to prevent parsing confusion".into(),
+                    }],
+                });
+            }
         }
 
         // API version disclosure in infrastructure headers
@@ -523,7 +730,12 @@ impl L2Evaluator for ApiAbuseEvaluator {
             | "api_ssrf_param_internal"
             | "api_excessive_scope"
             | "undocumented_endpoint_probe"
-            | "version_disclosure" => Some(InvariantClass::ApiMassEnum),
+            | "version_disclosure"
+            | "api_jwt_none_alg"
+            | "api_deep_pagination"
+            | "api_content_type_confusion"
+            | "api_jwt_array_role"
+            | "api_json_hpp" => Some(InvariantClass::ApiMassEnum),
             "api_idor_pattern" => Some(InvariantClass::BolaIdor),
             _ => None,
         }
@@ -690,5 +902,47 @@ Content-Type: application/json
         let input = "HTTP/1.1 200 OK\r\nServer: nginx/1.9.9\r\nX-Powered-By: Express/4.16\r\n\r\n";
         let dets = eval.detect(input);
         assert!(dets.iter().any(|d| d.detection_type == "version_disclosure"));
+    }
+
+    #[test]
+    fn detects_jwt_none_alg() {
+        let eval = ApiAbuseEvaluator;
+        // base64url of {"alg":"none"} is eyJhbGciOiJub25lIn0
+        let input = "Authorization: Bearer eyJhbGciOiJub25lIn0.eyJ1c2VyIjoiYWRtaW4ifQ.";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "api_jwt_none_alg"));
+    }
+
+    #[test]
+    fn detects_api_deep_pagination() {
+        let eval = ApiAbuseEvaluator;
+        let input = "GET /api/users?offset=100000 HTTP/1.1";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "api_deep_pagination"));
+    }
+
+    #[test]
+    fn detects_api_content_type_confusion() {
+        let eval = ApiAbuseEvaluator;
+        let input = "POST /api/users HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\n\r\n{\"user\":\"admin\"}";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "api_content_type_confusion"));
+    }
+
+    #[test]
+    fn detects_api_jwt_array_role() {
+        let eval = ApiAbuseEvaluator;
+        // base64url of {"roles":["user","admin"]} is eyJyb2xlcyI6WyJ1c2VyIiwiYWRtaW4iXX0
+        let input = "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJyb2xlcyI6WyJ1c2VyIiwiYWRtaW4iXX0.sig";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "api_jwt_array_role"));
+    }
+
+    #[test]
+    fn detects_api_json_hpp() {
+        let eval = ApiAbuseEvaluator;
+        let input = "{\"role\":\"user\", \"role\":\"admin\"}";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "api_json_hpp"));
     }
 }

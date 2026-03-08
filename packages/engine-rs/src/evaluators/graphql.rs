@@ -206,37 +206,65 @@ impl L2Evaluator for GraphqlEvaluator {
             });
         }
 
-        // Fragment cycle: fragment A spreads B and fragment B spreads A
-        static fragment_re: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
-            Regex::new(r"(?is)fragment\s+([A-Za-z_]\w*)\s+on\s+[A-Za-z_]\w*\s*\{([^}]*)\}").unwrap()
-        });
-        static spread_re: std::sync::LazyLock<Regex> =
+        // Fragment cycle: fragment A spreads B, B spreads C, C spreads A
+        static FRAG_DEF_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)fragment\s+([A-Za-z_]\w*)").unwrap());
+        static SPREAD_RE_2: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| Regex::new(r"\.\.\.([A-Za-z_]\w*)").unwrap());
+        
         let mut graph: HashMap<String, Vec<String>> = HashMap::new();
-        for caps in fragment_re.captures_iter(&decoded) {
-            if let (Some(name), Some(body)) = (caps.get(1), caps.get(2)) {
-                let mut edges = Vec::new();
-                for s in spread_re.captures_iter(body.as_str()) {
-                    if let Some(to) = s.get(1) {
-                        edges.push(to.as_str().to_owned());
-                    }
-                }
-                graph.insert(name.as_str().to_owned(), edges);
+        let mut frag_indices: Vec<(String, usize)> = Vec::new();
+        for m in FRAG_DEF_RE.captures_iter(&decoded) {
+            if let Some(name) = m.get(1) {
+                frag_indices.push((name.as_str().to_owned(), m.get(0).unwrap().start()));
             }
         }
-        let mut has_cycle = false;
-        for (src, edges) in &graph {
-            for dst in edges {
-                if graph
-                    .get(dst)
-                    .map(|b| b.iter().any(|x| x == src))
-                    .unwrap_or(false)
-                {
-                    has_cycle = true;
-                    break;
+        for i in 0..frag_indices.len() {
+            let start = frag_indices[i].1;
+            let end = if i + 1 < frag_indices.len() {
+                frag_indices[i + 1].1
+            } else {
+                decoded.len()
+            };
+            let body = &decoded[start..end];
+            let mut edges = Vec::new();
+            for s in SPREAD_RE_2.captures_iter(body) {
+                if let Some(to) = s.get(1) {
+                    edges.push(to.as_str().to_owned());
                 }
             }
-            if has_cycle {
+            graph.insert(frag_indices[i].0.clone(), edges);
+        }
+
+        let mut has_cycle = false;
+        fn dfs_check_cycle(
+            node: &str,
+            graph: &HashMap<String, Vec<String>>,
+            visit: &mut HashMap<String, u8>,
+        ) -> bool {
+            let state = *visit.get(node).unwrap_or(&0);
+            if state == 1 {
+                return true;
+            }
+            if state == 2 {
+                return false;
+            }
+            visit.insert(node.to_owned(), 1);
+            if let Some(edges) = graph.get(node) {
+                for next in edges {
+                    if dfs_check_cycle(next, graph, visit) {
+                        return true;
+                    }
+                }
+            }
+            visit.insert(node.to_owned(), 2);
+            false
+        }
+        
+        let mut visit: HashMap<String, u8> = HashMap::new();
+        for node in graph.keys() {
+            if dfs_check_cycle(node, &graph, &mut visit) {
+                has_cycle = true;
                 break;
             }
         }
@@ -320,6 +348,63 @@ impl L2Evaluator for GraphqlEvaluator {
             });
         }
 
+        // 1. GraphQL CSRF via GET mutation
+        let lower = decoded.to_ascii_lowercase();
+        if (input.contains("GET ") && lower.contains("mutation") && (lower.contains("?query=mutation") || lower.contains("query=mutation")))
+            || lower.starts_with("mutation ") {
+            dets.push(L2Detection {
+                detection_type: "graphql_csrf_get_mutation".into(),
+                confidence: 0.92,
+                detail: "GraphQL mutation submitted via HTTP GET request".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "GraphQL mutation submitted via HTTP GET request. Most CSRF protections rely on browser Same-Origin Policy blocking cross-origin POST requests, but GET-based mutations bypass CSRF tokens entirely. Attackers can embed malicious mutations in image src or link href tags.".into(),
+                    offset: 0,
+                    property: "GraphQL mutations must only be accepted via POST requests. GET requests must be restricted to queries only. Implement CSRF tokens for state-changing operations.".into(),
+                }],
+            });
+        }
+
+        // 2. @defer and @stream directive abuse
+        if lower.matches("@defer").count() >= 3 || lower.matches("@stream").count() >= 3 {
+            dets.push(L2Detection {
+                detection_type: "graphql_defer_stream_abuse".into(),
+                confidence: 0.84,
+                detail: "@defer or @stream directives used excessively".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "@defer and @stream are GraphQL incremental delivery directives. Abusing them with many deferred fragments forces the server to maintain long-lived streaming connections for each request, enabling connection exhaustion and DoS against servers that support incremental delivery.".into(),
+                    offset: 0,
+                    property: "Limit the number of @defer and @stream directives per query. Enforce maximum streaming connection lifetime and total deferred fragment count.".into(),
+                }],
+            });
+        }
+
+        // 3. GraphQL field argument injection
+        if lower.contains("(") && (
+            lower.contains("or 1=1") || lower.contains("' or '") || lower.contains("\" or \"") ||
+            lower.contains("../") || lower.contains("__proto__") || lower.contains("<script") ||
+            lower.contains("eval(") || lower.contains("exec(")
+        ) {
+            dets.push(L2Detection {
+                detection_type: "graphql_argument_injection".into(),
+                confidence: 0.87,
+                detail: "Dangerous payloads inside GraphQL argument values".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[..decoded.len().min(120)].to_owned(),
+                    interpretation: "GraphQL field arguments contain payloads indicating injection attempts (SQL injection, path traversal, prototype pollution, XSS, code execution). Resolvers that unsafely interpolate argument values into database queries, file paths, or eval calls are vulnerable to injection via this vector.".into(),
+                    offset: 0,
+                    property: "GraphQL resolvers must treat all argument values as untrusted input. Use parameterized queries, allowlisted path components, and safe API calls instead of string interpolation.".into(),
+                }],
+            });
+        }
+
         dets.extend(self.advanced_detections(&decoded));
 
         dets
@@ -348,7 +433,10 @@ impl L2Evaluator for GraphqlEvaluator {
             | "graphql_subscription_channel_abuse" => Some(InvariantClass::GraphqlBatchAbuse),
             "graphql_directive_excessive"
             | "graphql_persisted_apq_bypass"
-            | "graphql_directive_malicious_condition" => Some(InvariantClass::GraphqlIntrospection),
+            | "graphql_directive_malicious_condition"
+            | "graphql_csrf_get_mutation"
+            | "graphql_argument_injection" => Some(InvariantClass::GraphqlIntrospection),
+            "graphql_defer_stream_abuse" => Some(InvariantClass::GraphqlBatchAbuse),
             _ => None,
         }
     }
@@ -515,7 +603,7 @@ impl GraphqlEvaluator {
                 if depth > max_depth {
                     max_depth = depth;
                 }
-                if depth > 15 && first_overflow_offset.is_none() {
+                if depth > 20 && first_overflow_offset.is_none() {
                     first_overflow_offset = Some(idx);
                 }
             } else if ch == '}' {
@@ -523,16 +611,16 @@ impl GraphqlEvaluator {
             }
         }
 
-        if max_depth <= 15 {
+        if max_depth <= 20 {
             return None;
         }
 
         let offset = first_overflow_offset.unwrap_or(0);
         Some(L2Detection {
             detection_type: "graphql_depth_bomb".into(),
-            confidence: (0.90 + ((max_depth as f64 - 15.0) * 0.004).min(0.08)).min(0.98),
+            confidence: (0.90 + ((max_depth as f64 - 20.0) * 0.004).min(0.08)).min(0.98),
             detail: format!(
-                "GraphQL query nesting depth {} exceeds safe bound (>15)",
+                "GraphQL query nesting depth {} exceeds safe bound (>20)",
                 max_depth
             ),
             position: offset,
@@ -541,7 +629,7 @@ impl GraphqlEvaluator {
                 matched_input: decoded[..decoded.len().min(140)].to_owned(),
                 interpretation: "Excessive nesting drives deep resolver stacks and DoS risk".into(),
                 offset,
-                property: "Depth limits should hard-fail queries beyond 15 nested levels".into(),
+                property: "Depth limits should hard-fail queries beyond 20 nested levels".into(),
             }],
         })
     }
@@ -977,13 +1065,46 @@ mod tests {
     }
 
     #[test]
-    fn detects_depth_bomb_over_15() {
+    fn detects_depth_bomb_over_20() {
         let eval = GraphqlEvaluator;
-        let input = "query { a { b { c { d { e { f { g { h { i { j { k { l { m { n { o { p { id } } } } } } } } } } } } } } } }";
+        let input = "query { a { b { c { d { e { f { g { h { i { j { k { l { m { n { o { p { q { r { s { t { u { id } } } } } } } } } } } } } } } } } } } } }";
         let dets = eval.detect(input);
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "graphql_depth_bomb")
+        );
+    }
+
+    #[test]
+    fn test_graphql_csrf_get_mutation() {
+        let eval = GraphqlEvaluator;
+        let input = "GET /graphql?query=mutation%7BdeleteUser%7D HTTP/1.1";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "graphql_csrf_get_mutation")
+        );
+    }
+
+    #[test]
+    fn test_graphql_defer_stream_abuse() {
+        let eval = GraphqlEvaluator;
+        let input = "{user @defer { id } post @defer { title } comment @defer { text } extra @defer { meta }}";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "graphql_defer_stream_abuse")
+        );
+    }
+
+    #[test]
+    fn test_graphql_argument_injection() {
+        let eval = GraphqlEvaluator;
+        let input = "{users(filter: \"' OR 1=1 --\"){ id email }}";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "graphql_argument_injection")
         );
     }
 
