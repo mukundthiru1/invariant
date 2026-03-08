@@ -2,6 +2,13 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
+use std::sync::LazyLock;
+
+static DNS_REBINDING_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)Origin\s*:\s*https?://[a-z0-9.-]*(?:\d{1,3}\.){3}\d{1,3}\.(?:xip\.io|nip\.io|sslip\.io|localtest\.me|lvh\.me)").unwrap());
+static MULTI_ORIGIN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^Origin\s*:.*\r?\n(?:[^\r\n]*\r?\n)*?^Origin\s*:").unwrap());
+static ACAO_WILDCARD_CREDS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?im)^Access-Control-Allow-Credentials\s*:\s*true[^\r\n]*\r?\n(?:[^\r\n]*\r?\n)*?^Access-Control-Allow-Origin\s*:\s*\*").unwrap());
+
 
 pub type L2EvalResult = L2Detection;
 
@@ -259,12 +266,62 @@ impl L2Evaluator for CorsEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        evaluate_cors(input).into_iter().collect()
+        let mut results: Vec<L2Detection> = evaluate_cors(input).into_iter().collect();
+
+        if let Some(m) = DNS_REBINDING_RE.find(input) {
+            results.push(L2Detection {
+                detection_type: "cors_dns_rebinding_origin".into(),
+                confidence: 0.90,
+                detail: "DNS rebinding origin detected in CORS".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "xip.io and nip.io domains resolve to the embedded IP address. Origin: http://192.168.1.1.xip.io resolves to 192.168.1.1, enabling DNS rebinding to bypass same-origin policy by getting CORS headers accepted for an internal IP.".into(),
+                    offset: m.start(),
+                    property: "CORS origin validation must reject wildcard DNS services (xip.io, nip.io, sslip.io). Validate origins against an explicit allowlist of exact domain+port combinations.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = MULTI_ORIGIN_RE.find(input) {
+            results.push(L2Detection {
+                detection_type: "cors_multiple_origin_headers".into(),
+                confidence: 0.87,
+                detail: "Multiple Origin headers detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Multiple Origin headers in a single HTTP request exploit inconsistency in how intermediaries vs. application servers handle duplicate headers. The first may be trusted while the second (attacker-controlled) is echoed in ACAO.".into(),
+                    offset: m.start(),
+                    property: "Reject requests with multiple Origin headers. CORS origin validation must use exactly one Origin value and reject ambiguous multi-header Origin.".into(),
+                }],
+            });
+        }
+
+        if let Some(m) = ACAO_WILDCARD_CREDS_RE.find(input) {
+            results.push(L2Detection {
+                detection_type: "cors_acao_wildcard_credentials".into(),
+                confidence: 0.88,
+                detail: "CORS allow-credentials wildcard bypass".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Access-Control-Allow-Origin: * combined with Access-Control-Allow-Credentials: true violates CORS spec but some server misconfiguration still allows it. Malicious intermediaries may forward credentials with wildcard ACAO.".into(),
+                    offset: m.start(),
+                    property: "When Allow-Credentials: true is set, Allow-Origin must be a specific origin, never *. Reject this combination at middleware level.".into(),
+                }],
+            });
+        }
+
+        results
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "cors_misconfiguration" => Some(InvariantClass::CorsOriginAbuse),
+            "cors_misconfiguration" | "cors_dns_rebinding_origin" | "cors_multiple_origin_headers" | "cors_acao_wildcard_credentials" => Some(InvariantClass::CorsOriginAbuse),
             _ => None,
         }
     }
@@ -424,5 +481,26 @@ mod tests {
         let input = "Access-Control-Allow-Origin: https://site1.com\nAccess-Control-Allow-Origin: https://site2.com";
         let result = evaluate_cors(input).unwrap();
         assert!(result.detail.contains("duplicate ACAO headers"));
+    }
+
+    #[test]
+    fn test_dns_rebinding() {
+        let eval = CorsEvaluator;
+        let dets = eval.detect("Origin: http://127.0.0.1.xip.io");
+        assert!(dets.iter().any(|d| d.detection_type == "cors_dns_rebinding_origin"));
+    }
+
+    #[test]
+    fn test_multiple_origin() {
+        let eval = CorsEvaluator;
+        let dets = eval.detect("Origin: https://site1.com\nOrigin: https://site2.com");
+        assert!(dets.iter().any(|d| d.detection_type == "cors_multiple_origin_headers"));
+    }
+
+    #[test]
+    fn test_acao_wildcard_credentials() {
+        let eval = CorsEvaluator;
+        let dets = eval.detect("Access-Control-Allow-Credentials: true\nAccess-Control-Allow-Origin: *");
+        assert!(dets.iter().any(|d| d.detection_type == "cors_acao_wildcard_credentials"));
     }
 }
