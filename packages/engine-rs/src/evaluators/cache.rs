@@ -531,6 +531,46 @@ impl L2Evaluator for CacheEvaluator {
             });
         }
 
+        // Fat GET cache poisoning
+        static FAT_GET_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^GET\s+[^\r\n]+\s+HTTP/\d\.\d\r?\n(?:[^\r\n]+\r?\n)*Content-Length\s*:\s*[1-9]\d*").unwrap()
+        });
+        if let Some(m) = FAT_GET_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cache_fat_get_body".into(),
+                confidence: 0.87,
+                detail: "Fat GET request with Content-Length body indicating potential cache poisoning".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Fat GET requests (GET with Content-Length body) are rejected by some servers but accepted by CDN cache. If the cache stores the body-influenced response and the backend ignores the body, different content is served to cached vs uncached requests, enabling cache poisoning".into(),
+                    offset: m.start(),
+                    property: "GET requests must not contain Content-Length or body content. Reject or strip body from GET requests at the proxy/CDN layer".into(),
+                }],
+            });
+        }
+
+        // X-Original-URL override
+        static X_ORIGINAL_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)^X-Original-URL\s*:\s*(/[^\r\n]+)").unwrap()
+        });
+        if let Some(m) = X_ORIGINAL_URL_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cache_x_original_url_override".into(),
+                confidence: 0.89,
+                detail: "X-Original-URL header overrides request path".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "X-Original-URL and X-Rewrite-URL headers override the request path in many reverse proxies (Nginx, IIS). An attacker can supply X-Original-URL: /admin to access restricted paths while the cache key uses the original harmless URL, enabling cache poisoning of admin responses onto public cache entries".into(),
+                    offset: m.start(),
+                    property: "X-Original-URL and X-Rewrite-URL headers must only be accepted from trusted internal reverse proxies. Validate against expected internal IP ranges".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -542,6 +582,8 @@ impl L2Evaluator for CacheEvaluator {
                 | "cdn_ip_header_injection"
                 | "cache_response_splitting"
                 | "cache_key_confusion_multi_host"
+                | "cache_fat_get_body"
+                | "cache_x_original_url_override"
         ) {
             return Some(InvariantClass::CachePoisoning);
         }
@@ -722,5 +764,21 @@ mod tests {
             eval.map_class("cache_key_confusion_multi_host"),
             Some(InvariantClass::CachePoisoning)
         );
+    }
+
+    #[test]
+    fn detects_cache_fat_get_body() {
+        let eval = CacheEvaluator;
+        let dets = eval.detect("GET / HTTP/1.1\r\nHost: example.com\r\nContent-Length: 10\r\n\r\nbody123456");
+        assert!(dets.iter().any(|d| d.detection_type == "cache_fat_get_body"));
+        assert_eq!(eval.map_class("cache_fat_get_body"), Some(InvariantClass::CachePoisoning));
+    }
+
+    #[test]
+    fn detects_cache_x_original_url_override() {
+        let eval = CacheEvaluator;
+        let dets = eval.detect("GET /safe HTTP/1.1\r\nHost: example.com\r\nX-Original-URL: /admin\r\n\r\n");
+        assert!(dets.iter().any(|d| d.detection_type == "cache_x_original_url_override"));
+        assert_eq!(eval.map_class("cache_x_original_url_override"), Some(InvariantClass::CachePoisoning));
     }
 }

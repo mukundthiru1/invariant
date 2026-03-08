@@ -67,6 +67,14 @@ static AXFR_INJECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+static HEX_IP_REBINDING_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:0x[0-9a-f]{1,8}\.){3}0x[0-9a-f]{1,8}|(?:0[0-7]{3}\.){3}0[0-7]{3}").unwrap()
+});
+
+static ZONE_TRANSFER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:type\s*=\s*(?:axfr|ixfr|aXfR|iXfR)|qtype\s*=\s*252|qtype\s*=\s*251)").unwrap()
+});
+
 pub struct DnsEvaluator;
 
 impl L2Evaluator for DnsEvaluator {
@@ -258,6 +266,40 @@ impl L2Evaluator for DnsEvaluator {
             });
         }
 
+        // 7. Hex/Octal IP Rebinding
+        if let Some(m) = HEX_IP_REBINDING_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "dns_hex_ip_rebinding".into(),
+                confidence: 0.90,
+                detail: "Hex/octal encoded IP address detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "Hex/octal encoded IP addresses (0x7f000001, 0177.0.0.01) bypass IP allowlist validation while resolving to the same address. Used for SSRF and DNS rebinding attacks".into(),
+                    offset: m.start(),
+                    property: "IP address validation must normalize all hex/octal/decimal formats before comparison to detect 127.0.0.1 variants".into(),
+                }],
+            });
+        }
+
+        // 8. Zone Transfer Attempt
+        if let Some(m) = ZONE_TRANSFER_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "dns_zone_transfer_attempt".into(),
+                confidence: 0.92,
+                detail: "DNS zone transfer request type detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "AXFR and IXFR DNS query types request full zone transfers. If allowed, they expose the entire DNS zone including internal hostnames, IP addresses, and infrastructure topology".into(),
+                    offset: m.start(),
+                    property: "DNS zone transfers must be restricted to authorized secondary nameservers. AXFR/IXFR queries must be blocked from untrusted sources".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -267,7 +309,9 @@ impl L2Evaluator for DnsEvaluator {
             | "dns_ip_subdomain"
             | "dns_exfiltration"
             | "dns_dash_ip"
-            | "dns_axfr_injection" => Some(InvariantClass::DnsRebinding),
+            | "dns_axfr_injection"
+            | "dns_hex_ip_rebinding"
+            | "dns_zone_transfer_attempt" => Some(InvariantClass::DnsRebinding),
             "dns_subdomain_takeover" => Some(InvariantClass::SubdomainTakeover),
             _ => None,
         }
@@ -348,5 +392,19 @@ mod tests {
         let eval = DnsEvaluator;
         let dets = eval.detect("IXFR");
         assert!(dets.iter().any(|d| d.detection_type == "dns_axfr_injection"));
+    }
+
+    #[test]
+    fn test_hex_ip_rebinding() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("http://0x7f.0x00.0x00.0x01/");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_hex_ip_rebinding"));
+    }
+
+    #[test]
+    fn test_zone_transfer_attempt() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("qtype=252");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_zone_transfer_attempt"));
     }
 }

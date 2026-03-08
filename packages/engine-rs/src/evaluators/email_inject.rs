@@ -8,6 +8,8 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// SMTP header names that attackers inject.
 const SMTP_HEADERS: &[&str] = &[
@@ -15,6 +17,14 @@ const SMTP_HEADERS: &[&str] = &[
     "subject:", "content-type:", "mime-version:",
     "x-mailer:", "return-path:", "sender:",
 ];
+
+static SMTP_PIPELINING_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:MAIL\s+FROM\s*:<[^>]*>\s+RCPT\s+TO|RCPT\s+TO\s*:<[^>]*>\s+DATA|DATA\s*\r?\n.*\r?\n\.\r?\nMAIL)").unwrap()
+});
+
+static RFC2047_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)=\?[a-zA-Z0-9-]+\?[bqBQ]\?[a-zA-Z0-9+/=]+\?=").unwrap()
+});
 
 pub struct EmailInjectEvaluator;
 
@@ -150,12 +160,46 @@ impl L2Evaluator for EmailInjectEvaluator {
             }
         }
 
+        // 6. SMTP pipelining inject
+        if let Some(m) = SMTP_PIPELINING_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "email_smtp_pipelining_inject".into(),
+                confidence: 0.91,
+                detail: "SMTP command pipelining injection detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "SMTP pipelining allows injecting multiple commands in one transmission. MAIL FROM:<> RCPT TO:<att@evil> in email body/headers can be executed if the server incorrectly handles command injection".into(),
+                    offset: m.start(),
+                    property: "Email content must be stripped of SMTP command sequences. SMTP header parsing must reject embedded SMTP protocol commands".into(),
+                }],
+            });
+        }
+
+        // 7. RFC 2047 header inject
+        if let Some(m) = RFC2047_HEADER_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "email_rfc2047_header_inject".into(),
+                confidence: 0.87,
+                detail: "RFC 2047 encoded words in email headers detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "RFC 2047 encoded words in email headers can smuggle header injection by encoding the CRLF and header-name payload in base64 or quoted-printable. =?UTF-8?B?Q2M6IGF0dEBldmlsLmNvbQ==?= decodes to Cc: att@evil.com".into(),
+                    offset: m.start(),
+                    property: "RFC 2047 encoded words must be decoded before scanning for header injection. All headers must be validated after RFC 2047 decoding".into(),
+                }],
+            });
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "email_header_injection" | "email_mass_recipient" | "email_mime_injection" | "email_imap_injection" | "email_comment_injection" => {
+            "email_header_injection" | "email_mass_recipient" | "email_mime_injection" | "email_imap_injection" | "email_comment_injection" | "email_smtp_pipelining_inject" | "email_rfc2047_header_inject" => {
                 Some(InvariantClass::EmailHeaderInjection)
             }
             _ => None,
@@ -166,6 +210,20 @@ impl L2Evaluator for EmailInjectEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_smtp_pipelining_inject() {
+        let eval = EmailInjectEvaluator;
+        let dets = eval.detect("MAIL FROM:<legit> RCPT TO:<att@evil>");
+        assert!(dets.iter().any(|d| d.detection_type == "email_smtp_pipelining_inject"));
+    }
+
+    #[test]
+    fn detects_rfc2047_header_inject() {
+        let eval = EmailInjectEvaluator;
+        let dets = eval.detect("=?UTF-8?B?Q2M6IGF0dEBldmlsLmNvbQ==?=");
+        assert!(dets.iter().any(|d| d.detection_type == "email_rfc2047_header_inject"));
+    }
 
     #[test]
     fn detects_imap_injection() {

@@ -308,12 +308,59 @@ impl L2Evaluator for RedosEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        evaluate_redos(input).into_iter().collect()
+        let mut dets = evaluate_redos(input).into_iter().collect::<Vec<_>>();
+        let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+
+        static ALT_BOMB_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\(([^|()]{1,20})\|([^|()]{1,20})\)\s*[*+]").unwrap()
+        });
+        for caps in ALT_BOMB_RE.captures_iter(&decoded) {
+            let g1 = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let g2 = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if g1 == g2 && !g1.is_empty() {
+                let m = caps.get(0).unwrap();
+                dets.push(L2Detection {
+                    detection_type: "redos_alternation_bomb".into(),
+                    confidence: 0.89,
+                    detail: "Catastrophic backtracking via overlapping/identical alternation branches".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::SemanticEval,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Regex alternation with identical or near-identical branches causes exponential backtracking when the engine tries both paths. (a|a)+ has 2^n paths to explore for input of length n, causing catastrophic ReDoS on failure paths".into(),
+                        offset: m.start(),
+                        property: "Regex alternation must use mutually exclusive branches. Never use identical alternation branches. Use atomic groups or possessive quantifiers to prevent catastrophic backtracking".into(),
+                    }],
+                });
+                break;
+            }
+        }
+
+        static BACKREF_CATASTROPHIC_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"\\[1-9]\d*\s*[+*]|\\[1-9]\d*[^)]*[+*][^)]*\)").unwrap()
+        });
+        if let Some(m) = BACKREF_CATASTROPHIC_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "redos_backref_catastrophic".into(),
+                confidence: 0.86,
+                detail: "Catastrophic backtracking via backreference combined with quantifier".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Regex backreferences (\\1, \\2) combined with + or * quantifiers force the engine to re-match a previously captured group repeatedly. \\1+ with a complex capture group creates exponential backtracking on mismatch paths".into(),
+                    offset: m.start(),
+                    property: "Backreferences must not appear inside quantified groups or be combined with +/* quantifiers in security-critical regex patterns".into(),
+                }],
+            });
+        }
+
+        dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "regex_dos" => Some(InvariantClass::RegexDos),
+            "regex_dos" | "redos_alternation_bomb" | "redos_backref_catastrophic" => Some(InvariantClass::RegexDos),
             _ => None,
         }
     }
@@ -451,5 +498,21 @@ mod tests {
         let eval = RedosEvaluator;
         assert_eq!(eval.map_class("regex_dos"), Some(InvariantClass::RegexDos));
         assert_eq!(eval.map_class("unknown"), None);
+    }
+
+    #[test]
+    fn detects_redos_alternation_bomb() {
+        let eval = RedosEvaluator;
+        let dets = eval.detect("(a|a)*");
+        assert!(dets.iter().any(|d| d.detection_type == "redos_alternation_bomb"));
+        assert_eq!(eval.map_class("redos_alternation_bomb"), Some(InvariantClass::RegexDos));
+    }
+
+    #[test]
+    fn detects_redos_backref_catastrophic() {
+        let eval = RedosEvaluator;
+        let dets = eval.detect(r"\1*");
+        assert!(dets.iter().any(|d| d.detection_type == "redos_backref_catastrophic"));
+        assert_eq!(eval.map_class("redos_backref_catastrophic"), Some(InvariantClass::RegexDos));
     }
 }

@@ -431,6 +431,46 @@ impl L2Evaluator for MassAssignmentEvaluator {
             });
         }
 
+        // Deeply nested parameter injection
+        static MASS_ASSIGN_DEEP_NESTED_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:\w+\[(?:\w+)\]\[(?:\w+)\]\[(?:\w+)\]|user\[admin\]\[(?:role|level|type)\])").unwrap()
+        });
+        if let Some(m) = MASS_ASSIGN_DEEP_NESTED_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "mass_assign_deep_nested".into(),
+                confidence: 0.86,
+                detail: "Deeply nested parameter injection detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Deeply nested bracket notation in form parameters enables multi-level object property injection. 3+ levels of nesting can bypass mass assignment protections that only check top-level and second-level keys".into(),
+                    offset: m.start(),
+                    property: "Mass assignment protection must recursively inspect all nesting levels. Only explicitly allowlisted parameter keys at every nesting depth should be accepted".into(),
+                }],
+            });
+        }
+
+        // Array-indexed privilege escalation
+        static MASS_ASSIGN_ARRAY_ESCALATION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:permissions|roles|groups|scopes|capabilities)\s*\[\s*\d+\s*\]\s*=\s*(?:admin|superuser|root|privileged|elevated|god)").unwrap()
+        });
+        if let Some(m) = MASS_ASSIGN_ARRAY_ESCALATION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "mass_assign_array_escalation".into(),
+                confidence: 0.84,
+                detail: "Array-indexed privilege escalation detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Array-indexed parameter injection adds unauthorized values to permission/role arrays. permissions[0]=admin bypasses scalar mass assignment protections that only check for exact key names like permissions=admin".into(),
+                    offset: m.start(),
+                    property: "Array parameters for security-sensitive fields must be validated against allowlists. Never accept user-controlled array indices for permission, role, or scope fields".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -447,7 +487,9 @@ impl L2Evaluator for MassAssignmentEvaluator {
             | "mass_assign_array_param"
             | "mass_assign_graphql_unauthorized"
             | "mass_assign_json_merge_patch"
-            | "mass_assign_multipart_field" => Some(InvariantClass::MassAssignment),
+            | "mass_assign_multipart_field"
+            | "mass_assign_deep_nested"
+            | "mass_assign_array_escalation" => Some(InvariantClass::MassAssignment),
             _ => None,
         }
     }
@@ -456,6 +498,26 @@ impl L2Evaluator for MassAssignmentEvaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_mass_assign_deep_nested() {
+        let eval = MassAssignmentEvaluator;
+        let dets = eval.detect("user[admin][role][level]=superuser");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_deep_nested")
+        );
+    }
+
+    #[test]
+    fn detects_mass_assign_array_escalation() {
+        let eval = MassAssignmentEvaluator;
+        let dets = eval.detect("permissions[0]=admin");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mass_assign_array_escalation")
+        );
+    }
 
     #[test]
     fn detects_nested_dot_bracket_fields() {

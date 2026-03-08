@@ -272,12 +272,53 @@ impl L2Evaluator for RaceConditionEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        evaluate_race_condition(input).into_iter().collect()
+        let mut dets = evaluate_race_condition(input).into_iter().collect::<Vec<_>>();
+        let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+
+        static TOCTOU_SESSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:session\.(?:get|read|fetch)|getSession\s*\(\s*\))[^;{]{0,120}(?:if|assert|check|verify|validate)[^;{]{0,80}(?:session\.(?:set|put|update|write)|setSession\s*\()").unwrap()
+        });
+        if let Some(m) = TOCTOU_SESSION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "race_toctou_session".into(),
+                confidence: 0.84,
+                detail: "Check-then-use session validation pattern indicating TOCTOU vulnerability".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Time-of-check to time-of-use (TOCTOU) in session validation: reading a session value and later modifying it without atomic operations creates a race window. Concurrent requests can manipulate the session state between the read and write".into(),
+                    offset: m.start(),
+                    property: "Session validation and update must use atomic compare-and-swap operations. Never read-check-write session state with non-atomic operations".into(),
+                }],
+            });
+        }
+
+        static LIMIT_BYPASS_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:coupon|voucher|promo|discount|credit|balance|limit|quota|allowance)[^;{]{0,80}(?:check|verify|validate|enough|available|sufficient)[^;{]{0,80}(?:use|redeem|apply|consume|deduct|decrement|withdraw)").unwrap()
+        });
+        if let Some(m) = LIMIT_BYPASS_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "race_limit_bypass_parallel".into(),
+                confidence: 0.86,
+                detail: "Rate limit or balance check followed by use without atomic operation".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Non-atomic check-then-use patterns for rate limits and balances are vulnerable to parallel request races. Multiple simultaneous requests can all pass the balance check before any deduction occurs, enabling overdraft or limit bypass".into(),
+                    offset: m.start(),
+                    property: "Balance checks and decrements must use database-level atomic operations (SELECT FOR UPDATE, compare-and-swap, Redis DECR with atomicity guarantees). Never check then update in separate non-atomic steps".into(),
+                }],
+            });
+        }
+
+        dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "race_condition" | "race_condition_toctou" => Some(InvariantClass::ApiMassEnum),
+            "race_condition" | "race_condition_toctou" | "race_toctou_session" | "race_limit_bypass_parallel" => Some(InvariantClass::ApiMassEnum),
             _ => None,
         }
     }
@@ -424,5 +465,21 @@ mod tests {
             Some(InvariantClass::ApiMassEnum)
         );
         assert_eq!(eval.map_class("unknown_race"), None);
+    }
+
+    #[test]
+    fn detects_race_toctou_session() {
+        let eval = RaceConditionEvaluator;
+        let dets = eval.detect("session.get('user') if check(s) session.set('user', s)");
+        assert!(dets.iter().any(|d| d.detection_type == "race_toctou_session"));
+        assert_eq!(eval.map_class("race_toctou_session"), Some(InvariantClass::ApiMassEnum));
+    }
+
+    #[test]
+    fn detects_race_limit_bypass_parallel() {
+        let eval = RaceConditionEvaluator;
+        let dets = eval.detect("balance check enough then deduct");
+        assert!(dets.iter().any(|d| d.detection_type == "race_limit_bypass_parallel"));
+        assert_eq!(eval.map_class("race_limit_bypass_parallel"), Some(InvariantClass::ApiMassEnum));
     }
 }

