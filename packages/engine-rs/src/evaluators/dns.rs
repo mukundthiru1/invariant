@@ -10,6 +10,8 @@
 
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
+use regex::Regex;
+use std::sync::LazyLock;
 
 /// Known DNS rebinding services.
 const REBINDING_DOMAINS: &[&str] = &[
@@ -22,6 +24,48 @@ const REBINDING_DOMAINS: &[&str] = &[
     "lock.cmpxchg8b.com",
     "rebind.network",
 ];
+
+const TAKEOVER_SUFFIXES: &[&str] = &[
+    "amazonaws.com",
+    "azurewebsites.net",
+    "cloudapp.azure.com",
+    "azurefd.net",
+    "herokuapp.com",
+    "herokudns.com",
+    "fastly.net",
+    "github.io",
+    "githubusercontent.com",
+    "netlify.app",
+    "netlify.com",
+    "vercel.app",
+    "now.sh",
+    "shopifypreview.com",
+    "myshopify.com",
+    "unbouncepages.com",
+    "unbounce.com",
+    "surge.sh",
+    "bitbucket.io",
+    "readme.io",
+    "cargo.site",
+];
+
+static CNAME_TAKEOVER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bCNAME\b[^\n\r]{0,100}(?:amazonaws\.com|azurewebsites\.net|cloudapp\.azure\.com|azurefd\.net|herokuapp\.com|github\.io|netlify\.app|netlify\.com|vercel\.app|now\.sh|shopifypreview\.com|unbouncepages\.com|surge\.sh|bitbucket\.io|readme\.io|cargo\.site)").unwrap()
+});
+
+static CNAME_URL_PARAM_TAKEOVER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:\?|&)[^=\s&#]{1,64}\s*=\s*[^&#\s]{1,253}\.(?:amazonaws\.com|azurewebsites\.net|cloudapp\.azure\.com|azurefd\.net|herokuapp\.com|herokudns\.com|fastly\.net|github\.io|githubusercontent\.com|netlify\.app|netlify\.com|vercel\.app|now\.sh|shopifypreview\.com|myshopify\.com|unbouncepages\.com|unbounce\.com|surge\.sh|bitbucket\.io|readme\.io|cargo\.site)\b").unwrap()
+});
+
+static CNAME_FASTLY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bCNAME\b[^\n\r]{0,100}fastly\.net\b").unwrap());
+
+static AXFR_INJECTION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:AXFR|IXFR)\b|\btype\s*=\s*(?:AXFR|IXFR|255)\b|\bqtype\s*=\s*255\b|\bdig\s+\+AXFR\b|\bhost\s+-t\s+AXFR\b",
+    )
+    .unwrap()
+});
 
 pub struct DnsEvaluator;
 
@@ -150,6 +194,70 @@ impl L2Evaluator for DnsEvaluator {
             });
         }
 
+        // 5. Dangling CNAME takeover indicators
+        let takeover_pos = CNAME_TAKEOVER_RE
+            .find(&decoded)
+            .map(|m| m.start())
+            .or_else(|| {
+                CNAME_URL_PARAM_TAKEOVER_RE
+                    .find(&decoded)
+                    .map(|m| m.start())
+            })
+            .or_else(|| {
+                if CNAME_FASTLY_RE.is_match(&decoded)
+                    && (lower.contains("404")
+                        || lower.contains("nxdomain")
+                        || lower.contains("not found"))
+                {
+                    CNAME_FASTLY_RE.find(&decoded).map(|m| m.start())
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                if lower.contains("cname") {
+                    TAKEOVER_SUFFIXES
+                        .iter()
+                        .find_map(|suffix| lower.find(suffix).filter(|_| lower.contains("cname")))
+                } else {
+                    None
+                }
+            });
+
+        if let Some(pos) = takeover_pos {
+            dets.push(L2Detection {
+                detection_type: "dns_subdomain_takeover".into(),
+                confidence: 0.87,
+                detail: "Potential dangling CNAME to vulnerable SaaS/cloud takeover target".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[pos.saturating_sub(20)..decoded.len().min(pos + 120)]
+                        .to_string(),
+                    interpretation: "Input references a CNAME target that matches known subdomain takeover-prone SaaS/cloud domains. Unclaimed resources behind dangling CNAME records can be re-registered by attackers.".into(),
+                    offset: pos,
+                    property: "CNAME targets to third-party SaaS/cloud services must be continuously verified as claimed and returning expected ownership responses.".into(),
+                }],
+            });
+        }
+
+        // 6. DNS zone transfer (AXFR/IXFR) injection indicators
+        if let Some(m) = AXFR_INJECTION_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "dns_axfr_injection".into(),
+                confidence: 0.91,
+                detail: "DNS zone transfer query type injection detected (AXFR/IXFR/ANY)".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "Input attempts to inject DNS transfer query types (AXFR/IXFR/ANY), which can be used to enumerate complete DNS zones when resolvers or authorities are misconfigured.".into(),
+                    offset: m.start(),
+                    property: "User-controlled DNS query parameters must not allow AXFR/IXFR/ANY transfer/zone-enumeration query types.".into(),
+                }],
+            });
+        }
+
         dets
     }
 
@@ -158,7 +266,9 @@ impl L2Evaluator for DnsEvaluator {
             "dns_rebinding_service"
             | "dns_ip_subdomain"
             | "dns_exfiltration"
-            | "dns_dash_ip" => Some(InvariantClass::DnsRebinding),
+            | "dns_dash_ip"
+            | "dns_axfr_injection" => Some(InvariantClass::DnsRebinding),
+            "dns_subdomain_takeover" => Some(InvariantClass::SubdomainTakeover),
             _ => None,
         }
     }
@@ -210,5 +320,33 @@ mod tests {
             eval.map_class("dns_rebinding_service"),
             Some(InvariantClass::DnsRebinding)
         );
+    }
+
+    #[test]
+    fn test_cname_github_io_takeover() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("sub.example.com CNAME something.github.io");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_subdomain_takeover"));
+    }
+
+    #[test]
+    fn test_cname_netlify_takeover() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("CNAME myapp.netlify.app");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_subdomain_takeover"));
+    }
+
+    #[test]
+    fn test_axfr_query() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("type=AXFR");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_axfr_injection"));
+    }
+
+    #[test]
+    fn test_ixfr_query() {
+        let eval = DnsEvaluator;
+        let dets = eval.detect("IXFR");
+        assert!(dets.iter().any(|d| d.detection_type == "dns_axfr_injection"));
     }
 }

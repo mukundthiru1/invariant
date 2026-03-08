@@ -121,6 +121,28 @@ fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
                 snippet: format!("Origin {origin} downgraded to {acao}"),
             });
         }
+
+        let has_creds_true_local = acac
+            .as_deref()
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if origin_l == acao_l && origin_l != "null" && !origin_l.is_empty() && hits.is_empty() && has_creds_true_local {
+            hits.push(CorsPatternHit {
+                name: "arbitrary origin reflected",
+                confidence: 0.85,
+                snippet: format!("Origin {origin} reflected in ACAO with credentials"),
+            });
+        }
+    }
+
+    let acao_values = header_values(input, "Access-Control-Allow-Origin");
+    if acao_values.len() >= 2 {
+        hits.push(CorsPatternHit {
+            name: "duplicate ACAO headers",
+            confidence: 0.83,
+            snippet: format!("Found {} Access-Control-Allow-Origin headers", acao_values.len()),
+        });
     }
 
     let has_wildcard_acao = acao.as_deref().map(|v| v.trim() == "*").unwrap_or(false);
@@ -382,5 +404,25 @@ mod tests {
             origin_host("https://app.example.com:443/path"),
             Some("app.example.com".to_string())
         );
+    }
+
+    #[test]
+    fn test_general_arbitrary_origin_reflection() {
+        let input = "Origin: https://attacker.com\nAccess-Control-Allow-Origin: https://attacker.com\nAccess-Control-Allow-Credentials: true";
+        let result = evaluate_cors(input).unwrap();
+        assert!(result.detail.contains("arbitrary origin reflected"));
+    }
+
+    #[test]
+    fn test_no_false_positive_when_origin_not_reflected() {
+        let input = "Origin: https://evil.com\nAccess-Control-Allow-Origin: https://legit.example.com";
+        assert!(evaluate_cors(input).is_none());
+    }
+
+    #[test]
+    fn test_duplicate_acao_headers() {
+        let input = "Access-Control-Allow-Origin: https://site1.com\nAccess-Control-Allow-Origin: https://site2.com";
+        let result = evaluate_cors(input).unwrap();
+        assert!(result.detail.contains("duplicate ACAO headers"));
     }
 }
