@@ -416,6 +416,13 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     web_cache_deception: { invariantClass: 'web_cache_deception', techniques: [T1185], rationale: 'Static-extension path tricks CDNs into caching sensitive responses accessible to attackers' },
     dependency_hijacking: { invariantClass: 'dependency_hijacking', techniques: [T1195_001], rationale: 'Internal package names published to public registries hijack build pipelines via confusion attacks' },
     git_history_tampering: { invariantClass: 'git_history_tampering', techniques: [T1070], rationale: 'Force-push, rebase, and filter-branch rewrites destroy forensic audit history and conceal malicious commits' },
+    xpath_injection: { invariantClass: 'xpath_injection', techniques: [T1190], rationale: 'XPath boolean injection bypasses XML data access controls and leaks document structure' },
+    ognl_injection: { invariantClass: 'ognl_injection', techniques: [T1190], rationale: 'OGNL expression injection via Struts2/WebWork enables RCE through EL evaluation' },
+
+    // Previously unmapped classes
+    jwt_claim_confusion: { invariantClass: 'jwt_claim_confusion', techniques: [T1550_004], rationale: 'JWT claim set confusion exploits parser inconsistency to forge audience/issuer assertions' },
+    request_smuggling_desync: { invariantClass: 'request_smuggling_desync', techniques: [T1557], rationale: 'Request desync via CL.TE/TE.CL ambiguity poisons shared frontend/backend request queues' },
+    csv_injection: { invariantClass: 'csv_injection', techniques: [T1059], rationale: 'Formula injection in CSV exports executes spreadsheet macros when opened in Excel/Sheets' },
 }
 
 // T1552 and T1070 declared above the map where they are referenced
