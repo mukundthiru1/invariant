@@ -204,8 +204,11 @@ export const pathNormalizationBypass: InvariantClassModule = {
         // Backslash as path separator targeting sensitive paths (IIS/Windows normalization on Unix)
         if (/^\/.*\\.*\w/.test(d) && /\/(?:admin|config|internal|secret|private|\.env|\.git)[\\/]/i.test(d)) return true
         // NTFS alternate data streams (ADS), often used to bypass extension/path controls on Windows.
+        // C-011: Both ::$DATA (double-colon) and :$ZONE.IDENTIFIER (single-colon) forms.
         if (/(?:^|[\\/])\.\.[\\/][^:\r\n]*:[a-z0-9_$.-]+/i.test(d)) return true
         if (/::\$(?:DATA|INDEX_ALLOCATION|BITMAP)\b/i.test(d)) return true
+        // C-011: Single-colon ADS — file.txt:$ZONE.IDENTIFIER, file.php:$DATA, file.txt:$I30
+        if (/\.\w{1,10}:\$[A-Z][A-Z0-9_.]{1,30}\b/i.test(d)) return true
         // Double-slash normalization bypass (e.g. //etc//passwd)
         if (/^\/\/|(?<!:)\/\/{1,}(?:[a-z])/i.test(d)) return true
         return false

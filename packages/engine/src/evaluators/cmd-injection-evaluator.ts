@@ -176,6 +176,13 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     // Strategy 11: Null-byte command truncation/bypass attempts
     detectNullByteBypass(rawInput, detections)
 
+    // Strategy 12: Brace expansion command injection ({id,whoami}, {cat,/etc/passwd})
+    detectBraceExpansion(decoded, detections)
+
+    // Strategy 13: Arithmetic expansion with nested command substitution
+    // $((echo $(id))) — not caught by CMD_SUBST_OPEN because tokenizer sees $( then (
+    detectArithmeticExpansion(decoded, detections)
+
     return detections
 }
 
@@ -711,6 +718,98 @@ function detectNullByteBypass(
         detail: 'Null-byte present in shell context — possible parser-truncation bypass',
         position: nullMatch.index ?? 0,
         confidence: 0.89,
+    })
+}
+
+
+// ── Strategy 12: Brace Expansion ────────────────────────────────
+//
+// Invariant: Bash brace expansion {a,b,c} executes multiple commands when
+// the shell processes the expression as a word-list. input={id,whoami}
+// is equivalent to `id` + `whoami` executed via bash brace expansion.
+//
+// C-006: This bypass is not caught by separator/substitution strategies
+// because it uses no ;|& operators and no $(). The braces ARE the command
+// boundary creation mechanism.
+
+// Pattern: {word,word,...} where at least one member is a dangerous command
+// or path — e.g., {id,whoami}, {cat,/etc/passwd}, {ls,/tmp}
+const BRACE_EXPAND_RE = /\{([^{}]{1,400})\}/g
+
+function detectBraceExpansion(
+    rawInput: string,
+    detections: CmdInjectionDetection[],
+): void {
+    let match: RegExpExecArray | null
+    const re = new RegExp(BRACE_EXPAND_RE.source, 'g')
+
+    while ((match = re.exec(rawInput)) !== null) {
+        const body = match[1]
+        const members = body.split(',').map(s => s.trim())
+
+        // Must have 2+ members to be brace expansion (single-item braces are parameter expansion)
+        if (members.length < 2) continue
+
+        // At least one member must look like a command or path
+        const dangerousMembers = members.filter(m =>
+            KNOWN_DANGEROUS_COMMANDS.has(m.toLowerCase()) ||
+            looksLikeExecutablePath(m) ||
+            /^\/(?:etc|bin|sbin|usr|proc|sys|tmp|var|root|home)\b/.test(m)
+        )
+
+        if (dangerousMembers.length === 0) continue
+
+        const confidence = dangerousMembers.length >= 2 ? 0.88 : 0.78
+
+        detections.push({
+            type: 'structural',
+            separator: 'brace_expansion',
+            command: dangerousMembers.join(','),
+            detail: `Brace expansion: {${body}} — shell executes each member as separate command/path`,
+            position: match.index,
+            confidence,
+        })
+    }
+}
+
+
+// ── Strategy 13: Arithmetic Expansion ────────────────────────────
+//
+// $((expr)) is shell arithmetic. Attackers nest command substitution inside:
+//   $((echo $(id)))  — arithmetic wraps command sub to evade $( detection
+//   $((`id`))        — same with backtick variant
+//
+// C-007: The tokenizer sees the outer $( as CMD_SUBST_OPEN but the extra (
+// is missed. A direct regex covering the $((  ...  )) pattern with dangerous
+// content catches what the tokenizer structural analysis misses.
+
+// Matches $((  or $((`  — arithmetic expansion start
+const ARITH_EXPAND_RE = /\$\(\([\s\S]{0,200}/
+
+function detectArithmeticExpansion(
+    rawInput: string,
+    detections: CmdInjectionDetection[],
+): void {
+    const match = ARITH_EXPAND_RE.exec(rawInput)
+    if (!match) return
+
+    // Arithmetic expansion alone is not necessarily malicious (e.g. $((1+2))).
+    // Only flag if it also contains a command substitution or dangerous command.
+    const snippet = match[0]
+    const hasCmdSubst = /\$\(/.test(snippet.slice(3)) || /`[^`]+`/.test(snippet)
+    const hasDangerousCmd = [...KNOWN_DANGEROUS_COMMANDS].some(cmd =>
+        new RegExp(`\\b${cmd}\\b`, 'i').test(snippet)
+    )
+
+    if (!hasCmdSubst && !hasDangerousCmd) return
+
+    detections.push({
+        type: 'substitution',
+        separator: 'arithmetic_expansion',
+        command: snippet.slice(0, 40),
+        detail: `Arithmetic expansion with nested command substitution: ${snippet.slice(0, 60)}`,
+        position: match.index,
+        confidence: 0.86,
     })
 }
 

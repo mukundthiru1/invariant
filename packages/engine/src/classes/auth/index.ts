@@ -72,6 +72,10 @@ export const authNoneAlgorithm: InvariantClassModule = {
         'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6ImFkbWluIiwiaWF0IjoxNTE2MjM5MDIyfQ.',
         'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJhZG1pbiIsInJvbGUiOiJhZG1pbiJ9.',
         'eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJ1c2VyIiwicm9sZSI6InVzZXIifQ.',
+        // C-010: Whitespace-padded "none" bypass (many JWT libraries trim)
+        'eyJhbGciOiIgbm9uZSAiLCJ0eXAiOiJKV1QifQ.eyJzdWIiOiJhZG1pbiJ9.',
+        // C-010: Tab/newline padding
+        'eyJhbGciOiJcdG5vbmVcbiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbiJ9.',
     ],
 
     knownBenign: [
@@ -85,14 +89,16 @@ export const authNoneAlgorithm: InvariantClassModule = {
         if (!token) return false
         const header = parseJwtHeader(token)
         if (!header) return false
-        return /^none$/i.test(String(header.alg ?? ''))
+        // C-010: Trim whitespace/control chars — many JWT libraries normalize the alg field
+        // so {"alg":" none "} (with spaces) is treated as alg=none at the library level.
+        return /^none$/i.test(String(header.alg ?? '').trim())
     },
     detectL2: (input: string): DetectionLevelResult | null => {
         const token = findJwtToken(input)
         if (!token) return null
         const header = parseJwtHeader(token)
         if (!header) return null
-        if (/^none$/i.test(String(header.alg ?? ''))) {
+        if (/^none$/i.test(String(header.alg ?? '').trim())) {
             return {
                 detected: true,
                 confidence: 0.97,
