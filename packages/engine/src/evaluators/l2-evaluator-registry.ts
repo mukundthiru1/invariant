@@ -39,6 +39,7 @@ import { detectWebSocketAttack, type WebSocketDetection } from './websocket-eval
 import { detectJWTAbuse, type JWTDetection } from './jwt-evaluator.js'
 import { detectCacheAttack, type CacheDetection } from './cache-evaluator.js'
 import { detectAPIAbuse, type APIAbuseDetection } from './api-abuse-evaluator.js'
+import { detectOAuthTheft, type OAuthDetection } from './oauth-theft-evaluator.js'
 
 
 // ── Descriptor Interface ────────────────────────────────────────
@@ -628,6 +629,10 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     mass_assignment: 'auth',
     // JWT
     jwt_kid_injection: 'auth', jwt_jwk_embedding: 'auth', jwt_confusion: 'auth',
+    // OAuth / PKCE / token
+    oauth_token_leak: 'auth', oauth_state_missing: 'auth', oauth_redirect_hijack: 'auth',
+    oauth_redirect_uri_bypass: 'auth', oauth_state_bypass: 'auth', pkce_downgrade: 'auth',
+    bearer_token_exposure: 'auth',
     // Proto
     proto_pollution: 'injection', prototype_pollution_via_query: 'injection', proto_pollution_gadget: 'injection',
     // Log4Shell
@@ -678,6 +683,9 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     llm_data_exfiltration: 'critical', llm_jailbreak: 'critical',
     jwt_kid_injection: 'critical', jwt_jwk_embedding: 'critical', jwt_confusion: 'critical',
     nosql_operator_injection: 'critical',
+    oauth_redirect_uri_bypass: 'high', oauth_redirect_hijack: 'high', pkce_downgrade: 'high',
+    bearer_token_exposure: 'high', oauth_token_leak: 'high', oauth_state_missing: 'high',
+    oauth_state_bypass: 'high',
     // High
     sql_tautology: 'high', sql_time_oracle: 'high', sql_error_oracle: 'high',
     sql_string_termination: 'high',
@@ -1029,5 +1037,24 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
             api_mass_enum: 'api_mass_enum' as InvariantClass,
         },
         prefix: 'L2 API',
+    },
+
+    // OAuth Theft / PKCE Bypass (5 detection types → auth classes)
+    {
+        id: 'oauth_theft',
+        detect: (input: string) =>
+            detectOAuthTheft(input).map((d: OAuthDetection) => ({
+                type: d.type,
+                confidence: d.confidence,
+                detail: d.detail,
+            })),
+        typeToClass: {
+            auth_code_interception: 'oauth_redirect_uri_bypass' as InvariantClass,
+            pkce_downgrade: 'pkce_downgrade' as InvariantClass,
+            oauth_mixup: 'oauth_state_missing' as InvariantClass,
+            token_leakage_referrer: 'bearer_token_exposure' as InvariantClass,
+            implicit_flow_abuse: 'oauth_token_leak' as InvariantClass,
+        },
+        prefix: 'L2 OAuth',
     },
 ]

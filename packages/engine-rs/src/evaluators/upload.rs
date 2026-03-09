@@ -14,6 +14,8 @@
 use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEvidence};
 use crate::types::InvariantClass;
 
+type RustDetection = L2Detection;
+
 /// Extensions that execute server-side.
 const EXECUTABLE_EXTENSIONS: &[&str] = &[
     ".php", ".php3", ".php4", ".php5", ".php7", ".phtml", ".phar",
@@ -41,6 +43,155 @@ const POLYGLOT_SIGNATURES: &[(&str, &str)] = &[
 ];
 
 pub struct UploadEvaluator;
+
+fn detect_polyglot_file_upload(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let has_php = lower.contains("<?php");
+    let has_html = lower.contains("<html");
+    let has_script = lower.contains("<script");
+    let has_gif = lower.contains("gif89a");
+    let has_jpeg_magic = input.starts_with("\u{00ff}\u{00d8}\u{00ff}") || lower.contains("ff d8 ff");
+    let has_pdf = lower.contains("%pdf-");
+
+    if (has_gif && has_php) || (has_jpeg_magic && has_script) || (has_pdf && has_html) {
+        let pos = if has_gif {
+            lower.find("gif89a").unwrap_or(0)
+        } else if has_jpeg_magic {
+            lower.find("ff d8 ff").unwrap_or(0)
+        } else {
+            lower.find("%pdf-").unwrap_or(0)
+        };
+        return Some(RustDetection {
+            detection_type: "upload_polyglot_file".into(),
+            confidence: 0.90,
+            detail: "Polyglot upload payload combines multiple file formats (image/document + executable markup/code)".into(),
+            position: pos,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::PayloadInject,
+                matched_input: input[pos..input.len().min(pos + 120)].to_string(),
+                interpretation: "Payload appears valid under one file signature while containing executable or active content from another format (e.g., GIF+PHP, JPEG+script, PDF+HTML).".into(),
+                offset: pos,
+                property: "Upload validation must enforce strict single-format parsing and reject active-content polyglots.".into(),
+            }],
+        });
+    }
+
+    None
+}
+
+fn detect_zip_slip_in_upload(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let pos = lower
+        .find("../")
+        .or_else(|| lower.find("..\\"))
+        .or_else(|| lower.find("%2e%2e%2f"))
+        .or_else(|| lower.find("%2e%2e%5c"))
+        .or_else(|| lower.find("..%2f"))
+        .or_else(|| lower.find("..%5c"));
+
+    if let Some(idx) = pos {
+        return Some(RustDetection {
+            detection_type: "upload_zip_slip_in_archive".into(),
+            confidence: 0.93,
+            detail: "Archive member path traversal (zip slip) in uploaded content".into(),
+            position: idx,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::ContextEscape,
+                matched_input: input[idx..input.len().min(idx + 120)].to_string(),
+                interpretation: "Archive member names include parent traversal segments and can write files outside extraction root.".into(),
+                offset: idx,
+                property: "Archive extraction must normalize and block entries resolving outside destination root.".into(),
+            }],
+        });
+    }
+
+    None
+}
+
+fn detect_svg_upload_xss(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("<svg") {
+        return None;
+    }
+    if let Some(pos) = lower.find("<svg") {
+        let has_event = lower.contains("onload=") || lower.contains("onerror=");
+        let has_external_href = lower.contains("<image")
+            && (lower.contains("href='http://")
+                || lower.contains("href=\"http://")
+                || lower.contains("href='https://")
+                || lower.contains("href=\"https://"));
+        if has_event || has_external_href {
+            return Some(RustDetection {
+                detection_type: "upload_svg_upload_xss".into(),
+                confidence: 0.91,
+                detail: "SVG upload contains scriptable event handlers or external URL reference".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input[pos..input.len().min(pos + 120)].to_string(),
+                    interpretation: "SVG content can execute script via event handlers or trigger SSRF/XSS via external references in image href attributes.".into(),
+                    offset: pos,
+                    property: "SVG uploads must be sanitized and disallow scriptable attributes and external network references.".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
+
+fn detect_archive_bomb_upload(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+
+    if let Some(pos) = lower.find(".tar.gz.gz.gz") {
+        return Some(RustDetection {
+            detection_type: "upload_archive_bomb".into(),
+            confidence: 0.85,
+            detail: "Nested archive extension chain indicates possible archive bomb".into(),
+            position: pos,
+            evidence: vec![ProofEvidence {
+                operation: EvidenceOperation::PayloadInject,
+                matched_input: input[pos..input.len().min(pos + 120)].to_string(),
+                interpretation: "Repeated nested compression layers are commonly used in archive bombs to exhaust decompression resources.".into(),
+                offset: pos,
+                property: "Upload processing must enforce archive depth limits and reject excessive nested compression.".into(),
+            }],
+        });
+    }
+
+    let parse_number = |s: &str| -> Option<u64> {
+        let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+        digits.parse::<u64>().ok()
+    };
+    let uncompressed = lower
+        .split("uncompressed")
+        .nth(1)
+        .and_then(parse_number);
+    let compressed = lower
+        .split("compressed")
+        .nth(1)
+        .and_then(parse_number);
+    if let (Some(u), Some(c)) = (uncompressed, compressed) {
+        if c > 0 && u / c >= 1000 {
+            let pos = lower.find("uncompressed").unwrap_or(0);
+            return Some(RustDetection {
+                detection_type: "upload_archive_bomb".into(),
+                confidence: 0.85,
+                detail: "Extreme uncompressed/compressed ratio indicates archive bomb behavior".into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input[pos..input.len().min(pos + 120)].to_string(),
+                    interpretation: "The declared decompression ratio is abnormally high and can trigger disk/CPU exhaustion during extraction.".into(),
+                    offset: pos,
+                    property: "Archive handling must apply decompression ratio and total-expanded-size limits.".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
 
 impl L2Evaluator for UploadEvaluator {
     fn id(&self) -> &'static str {
@@ -292,6 +443,19 @@ impl L2Evaluator for UploadEvaluator {
             });
         }
 
+        if let Some(det) = detect_polyglot_file_upload(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_zip_slip_in_upload(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_svg_upload_xss(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_archive_bomb_upload(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -306,7 +470,11 @@ impl L2Evaluator for UploadEvaluator {
             | "upload_zip_slip"
             | "upload_config_override"
             | "upload_content_type_mismatch"
-            | "upload_xxe" => Some(InvariantClass::MaliciousUpload),
+            | "upload_xxe"
+            | "upload_polyglot_file"
+            | "upload_zip_slip_in_archive"
+            | "upload_svg_upload_xss"
+            | "upload_archive_bomb" => Some(InvariantClass::MaliciousUpload),
             _ => None,
         }
     }
@@ -393,5 +561,61 @@ mod tests {
         let eval = UploadEvaluator;
         let dets = eval.detect(r#"<?xml version="1.0"?><!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><svg>&xxe;</svg>"#);
         assert!(dets.iter().any(|d| d.detection_type == "upload_xxe"));
+    }
+
+    #[test]
+    fn detects_polyglot_gif_php_upload() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("GIF89a<?php echo 'owned'; ?>");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_polyglot_file"));
+    }
+
+    #[test]
+    fn detects_polyglot_pdf_html_upload() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("%PDF-1.7\n<html><body>payload</body></html>");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_polyglot_file"));
+    }
+
+    #[test]
+    fn detects_zip_slip_archive_member_relative() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("archive-entry=../../../etc/cron.d/evil");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_zip_slip_in_archive"));
+    }
+
+    #[test]
+    fn detects_zip_slip_archive_member_backslash() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect(r"archive-entry=..\..\Windows\System32\drivers\etc\hosts");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_zip_slip_in_archive"));
+    }
+
+    #[test]
+    fn detects_svg_upload_onload_xss() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect(r#"<svg onload=alert(1) xmlns="http://www.w3.org/2000/svg"></svg>"#);
+        assert!(dets.iter().any(|d| d.detection_type == "upload_svg_upload_xss"));
+    }
+
+    #[test]
+    fn detects_svg_upload_external_href() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect(r#"<svg><image href='http://evil.example/x.png' /></svg>"#);
+        assert!(dets.iter().any(|d| d.detection_type == "upload_svg_upload_xss"));
+    }
+
+    #[test]
+    fn detects_archive_bomb_nested_extensions() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("filename=backup.tar.gz.gz.gz");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_archive_bomb"));
+    }
+
+    #[test]
+    fn detects_archive_bomb_ratio_indicator() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("compressed size: 1024 bytes; uncompressed size: 2147483648 bytes");
+        assert!(dets.iter().any(|d| d.detection_type == "upload_archive_bomb"));
     }
 }

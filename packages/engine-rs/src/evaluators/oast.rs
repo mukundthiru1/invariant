@@ -11,6 +11,8 @@ use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEviden
 use crate::types::InvariantClass;
 use regex::Regex;
 
+type RustDetection = L2Detection;
+
 const OAST_DOMAINS: &[&str] = &[
     "burpcollaborator.net",
     "oastify.com",
@@ -93,15 +95,169 @@ impl L2Evaluator for OastEvaluator {
             }
         }
 
+        if let Some(det) = detect_oast_dns_exfil(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_oast_http_ssrf(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_oast_smb_exfil(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_oast_smtp_injection(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "oast_domain" => Some(InvariantClass::OastInteraction),
+            "oast_domain"
+            | "oast_dns_exfil"
+            | "oast_http_ssrf"
+            | "oast_smb_exfil"
+            | "oast_smtp_injection" => Some(InvariantClass::OastInteraction),
             _ => None,
         }
     }
+}
+
+const CORE_OAST_DOMAINS: &[&str] = &[
+    "burpcollaborator.net",
+    "oastify.com",
+    "interact.sh",
+    "oast.pro",
+    "oast.live",
+    "oast.fun",
+    "oast.online",
+];
+
+fn is_encoded_label(s: &str) -> bool {
+    if s.len() < 10 {
+        return false;
+    }
+    let hex = s.chars().all(|c| c.is_ascii_hexdigit());
+    if hex {
+        return true;
+    }
+    let b64ish = s
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '+' || c == '/' || c == '=');
+    let has_letter = s.chars().any(|c| c.is_ascii_alphabetic());
+    let has_digit = s.chars().any(|c| c.is_ascii_digit());
+    b64ish && has_letter && has_digit
+}
+
+fn detect_oast_dns_exfil(input: &str) -> Option<RustDetection> {
+    let domains = CORE_OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(
+        r"(?i)\b([a-z0-9][a-z0-9_\-+/=]{{9,}})\.(?:[a-z0-9-]+\.)?(?:{})\b",
+        domains
+    );
+    let re = Regex::new(&pattern).ok()?;
+    let caps = re.captures(input)?;
+    let label = caps.get(1)?.as_str();
+    if !is_encoded_label(label) {
+        return None;
+    }
+    let m = caps.get(0)?;
+    Some(RustDetection {
+        detection_type: "oast_dns_exfil".into(),
+        confidence: 0.93,
+        detail: "OAST DNS exfiltration pattern detected with encoded subdomain data".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: m.as_str().to_string(),
+            interpretation: "Encoded-looking data is prepended as a subdomain to a known OAST domain, indicating DNS-based out-of-band exfiltration.".into(),
+            offset: m.start(),
+            property: "Block outbound DNS/HTTP callbacks to OAST infrastructure and sanitize attacker-controlled network destinations.".into(),
+        }],
+    })
+}
+
+fn detect_oast_http_ssrf(input: &str) -> Option<RustDetection> {
+    let domains = CORE_OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(
+        r#"(?i)(?:\?|&)[a-z0-9_.-]+=([^&\s"']*(?:https?://|//)[^&\s"']*(?:{}))"#,
+        domains
+    );
+    let re = Regex::new(&pattern).ok()?;
+    let caps = re.captures(input)?;
+    let m = caps.get(1)?;
+    Some(RustDetection {
+        detection_type: "oast_http_ssrf".into(),
+        confidence: 0.91,
+        detail: "HTTP SSRF callback target points to OAST domain via parameter value".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: m.as_str().to_string(),
+            interpretation: "A URL parameter contains a full callback URL to an OAST host, a common SSRF verification and exfiltration technique.".into(),
+            offset: m.start(),
+            property: "Reject untrusted callback URLs and enforce strict egress filtering for server-side HTTP requests.".into(),
+        }],
+    })
+}
+
+fn detect_oast_smb_exfil(input: &str) -> Option<RustDetection> {
+    let domains = CORE_OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(r#"(?i)\\\\[a-z0-9._-]*?(?:{})\\[a-z0-9$._-]*"#, domains);
+    let re = Regex::new(&pattern).ok()?;
+    let m = re.find(input)?;
+    Some(RustDetection {
+        detection_type: "oast_smb_exfil".into(),
+        confidence: 0.90,
+        detail: "UNC/SMB path to OAST host detected (credential capture/exfil risk)".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: m.as_str().to_string(),
+            interpretation: "The payload uses a UNC path to an OAST domain, which can trigger SMB authentication leakage and out-of-band interaction.".into(),
+            offset: m.start(),
+            property: "Disallow UNC paths in user-controlled inputs and block outbound SMB/NTLM from application environments.".into(),
+        }],
+    })
+}
+
+fn detect_oast_smtp_injection(input: &str) -> Option<RustDetection> {
+    let domains = CORE_OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(
+        r#"(?i)\brcpt\s+to\s*:\s*<?[a-z0-9._%+-]+@(?:[a-z0-9-]+\.)?(?:{})>?"#,
+        domains
+    );
+    let re = Regex::new(&pattern).ok()?;
+    let m = re.find(input)?;
+    Some(RustDetection {
+        detection_type: "oast_smtp_injection".into(),
+        confidence: 0.88,
+        detail: "SMTP RCPT TO injection references OAST domain".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: m.as_str().to_string(),
+            interpretation: "Injected SMTP recipient points to an OAST domain, indicating an out-of-band callback attempt through mail infrastructure.".into(),
+            offset: m.start(),
+            property: "Validate and sanitize SMTP command contexts and block untrusted outbound mail destinations.".into(),
+        }],
+    })
 }
 
 #[cfg(test)]
@@ -135,5 +291,61 @@ mod tests {
         let _dets = eval.detect("http://example.com/test?domain=interact.sh.fake.com");
         // This actually might trigger if interact.sh is embedded, but the \b boundary
         // protects against some suffixing.
+    }
+
+    #[test]
+    fn detects_dns_exfil_with_hex_subdomain() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("a3f9c0d1e2b4.interact.sh");
+        assert!(dets.iter().any(|d| d.detection_type == "oast_dns_exfil"));
+    }
+
+    #[test]
+    fn detects_dns_exfil_with_b64ish_subdomain() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("dG9rZW4xMjM0NQ.oast.online");
+        assert!(dets.iter().any(|d| d.detection_type == "oast_dns_exfil"));
+    }
+
+    #[test]
+    fn detects_http_ssrf_parameter_oast() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("GET /fetch?url=http://abc.oastify.com/cb HTTP/1.1");
+        assert!(dets.iter().any(|d| d.detection_type == "oast_http_ssrf"));
+    }
+
+    #[test]
+    fn detects_smb_exfil_unc() {
+        let eval = OastEvaluator;
+        let dets = eval.detect(r#"\\attacker.burpcollaborator.net\share"#);
+        assert!(dets.iter().any(|d| d.detection_type == "oast_smb_exfil"));
+    }
+
+    #[test]
+    fn detects_smtp_injection_rcpt_to_oast() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("MAIL FROM:<a@b.com>\r\nRCPT TO:<exfil@oast.pro>\r\nDATA");
+        assert!(dets.iter().any(|d| d.detection_type == "oast_smtp_injection"));
+    }
+
+    #[test]
+    fn no_dns_exfil_for_short_subdomain() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("abc.interact.sh");
+        assert!(!dets.iter().any(|d| d.detection_type == "oast_dns_exfil"));
+    }
+
+    #[test]
+    fn no_http_ssrf_for_non_oast_parameter() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("GET /fetch?url=http://example.com/cb HTTP/1.1");
+        assert!(!dets.iter().any(|d| d.detection_type == "oast_http_ssrf"));
+    }
+
+    #[test]
+    fn no_smtp_injection_for_regular_email_domain() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("RCPT TO:<user@example.org>");
+        assert!(!dets.iter().any(|d| d.detection_type == "oast_smtp_injection"));
     }
 }

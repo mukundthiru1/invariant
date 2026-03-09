@@ -375,15 +375,134 @@ function detectBracketPaths(decoded: string): ProtoPollutionDetection[] {
     return detections
 }
 
+/** Constructor chain pollution: obj.constructor.prototype.isAdmin = true */
+export function detectPrototypePollutionViaConstructor(input: string): ProtoPollutionDetection | null {
+    const decoded = deepDecode(input)
+    const dotPattern = /\.constructor\.prototype\.([a-zA-Z_$][a-zA-Z0-9_$]*)\b/g
+    const m1 = dotPattern.exec(decoded)
+    if (m1) {
+        const prop = normalizeKey(m1[1])
+        return {
+            type: 'constructor_chain',
+            detail: `Constructor chain pollution via dot: .constructor.prototype.${m1[1]}`,
+            path: `constructor.prototype.${prop}`,
+            pollutedProperty: prop,
+            confidence: 0.94,
+            l1: false,
+            l2: true,
+            evidence: decoded.slice(Math.max(0, m1.index), m1.index + m1[0].length),
+        }
+    }
+    const bracketPattern = /\[\s*['"]constructor['"]\s*\]\s*\[\s*['"]prototype['"]\s*\](\[\s*['"]([a-zA-Z_$][a-zA-Z0-9_$]*)['"]\s*\])?/g
+    const m2 = bracketPattern.exec(decoded)
+    if (m2) {
+        const pollutedProperty = m2[2] != null ? normalizeKey(m2[2]) : '<unknown>'
+        return {
+            type: 'constructor_chain',
+            detail: `Constructor chain pollution via bracket: ['constructor']['prototype']`,
+            path: pollutedProperty !== '<unknown>' ? `constructor.prototype.${pollutedProperty}` : 'constructor.prototype',
+            pollutedProperty,
+            confidence: 0.94,
+            l1: false,
+            l2: true,
+            evidence: m2[0],
+        }
+    }
+    return null
+}
+
+/** Deep clone/merge pollution: JSON or Object.assign with __proto__ */
+export function detectPrototypePollutionViaClone(input: string): ProtoPollutionDetection | null {
+    const decoded = deepDecode(input)
+    const fragments = decoded.trim().startsWith('{') ? [decoded] : extractJsonFragments(decoded)
+    for (const fragment of fragments) {
+        try {
+            const detections = analyzeJsonObject(JSON.parse(fragment))
+            const withProto = detections.find(d => d.path.includes('__proto__') || d.detail.includes('constructor.prototype'))
+            if (withProto) {
+                return {
+                    ...withProto,
+                    detail: `Deep clone/merge pollution: ${withProto.detail}`,
+                    confidence: 0.93,
+                }
+            }
+        } catch {
+            /* ignore malformed JSON */
+        }
+    }
+    const mergeAssignPattern = /(?:_\s*\.\s*merge|merge\s*\(|Object\s*\.\s*assign\s*\()/i
+    const hasUntrusted = /\b(?:JSON\s*\.\s*parse|req\s*\.\s*body|request\s*\.\s*body|userInput|untrusted)/i.test(decoded)
+    if (mergeAssignPattern.test(decoded) && hasUntrusted && (decoded.includes('__proto__') || decoded.includes('constructor') && decoded.includes('prototype'))) {
+        return {
+            type: 'json_proto_path',
+            detail: 'Unsafe merge/assign with untrusted source can lead to prototype pollution',
+            path: 'merge_or_assign',
+            pollutedProperty: '__proto__',
+            confidence: 0.93,
+            l1: false,
+            l2: true,
+            evidence: 'merge/assign with parsed or user input',
+        }
+    }
+    return null
+}
+
+/** URL parameter prototype pollution: ?__proto__[x]=y or ?constructor[prototype][x]=y */
+export function detectPrototypePollutionInUrl(input: string): ProtoPollutionDetection | null {
+    const decoded = deepDecode(input)
+    const qIndex = decoded.indexOf('?')
+    const query = qIndex >= 0 ? decoded.slice(qIndex + 1) : decoded
+    for (const part of query.split('&')) {
+        const [rawKey] = part.split('=')
+        if (!rawKey || !rawKey.includes('[')) continue
+        const path = parseQueryKeyPath(rawKey)
+        const protoIndex = path.indexOf('__proto__')
+        const ctorProto = path.some((k, idx) => k === 'constructor' && path[idx + 1] === 'prototype')
+        if (protoIndex >= 0) {
+            return {
+                type: 'bracket_proto_path',
+                detail: `URL parameter prototype pollution: ${path.join(' -> ')}`,
+                path: path.join('.'),
+                pollutedProperty: path[protoIndex + 1] ?? '<unknown>',
+                confidence: 0.91,
+                l1: false,
+                l2: true,
+                evidence: path.join('.'),
+            }
+        }
+        if (ctorProto) {
+            const idx = path.findIndex((k, i) => k === 'constructor' && path[i + 1] === 'prototype')
+            return {
+                type: 'constructor_chain',
+                detail: `URL parameter constructor.prototype: ${path.join(' -> ')}`,
+                path: path.join('.'),
+                pollutedProperty: path[idx + 2] ?? '<unknown>',
+                confidence: 0.91,
+                l1: false,
+                l2: true,
+                evidence: path.join('.'),
+            }
+        }
+    }
+    return null
+}
+
 export function detectPrototypePollution(input: string): ProtoPollutionDetection[] {
     if (input.length < 6) return []
     const decoded = deepDecode(input)
     if (!isInteresting(decoded)) return []
 
+    const viaConstructor = detectPrototypePollutionViaConstructor(decoded)
+    const viaClone = detectPrototypePollutionViaClone(decoded)
+    const inUrl = detectPrototypePollutionInUrl(decoded)
+
     const detections = [
         ...detectAssignmentChains(decoded),
         ...detectJsonProtoPaths(decoded),
         ...detectBracketPaths(decoded),
+        ...(viaConstructor ? [viaConstructor] : []),
+        ...(viaClone ? [viaClone] : []),
+        ...(inUrl ? [inUrl] : []),
     ]
 
     const deduped = new Map<string, ProtoPollutionDetection>()
