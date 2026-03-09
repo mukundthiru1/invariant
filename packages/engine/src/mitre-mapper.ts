@@ -127,6 +127,7 @@ const T1040 = T('T1040', 'Network Sniffing', 'credential_access')
 const T1185 = T('T1185', 'Browser Session Hijacking', 'collection')
 const T1539 = T('T1539', 'Steal Web Session Cookie', 'credential_access')
 const T1565 = T('T1565', 'Data Manipulation', 'impact')
+const T1562_006 = T('T1562.006', 'Indicator Removal on Host: Timestomp', 'defense_evasion')
 const T1530 = T('T1530', 'Data from Cloud Storage', 'collection')
 const T1119 = T('T1119', 'Automated Collection', 'collection')
 const T1087 = T('T1087', 'Account Discovery', 'discovery')
@@ -234,7 +235,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
 
     // CRLF (2 classes)
     crlf_header_injection: { invariantClass: 'crlf_header_injection', techniques: [T1557], rationale: 'CRLF injection manipulates HTTP response headers' },
-    crlf_log_injection: { invariantClass: 'crlf_log_injection', techniques: [T1070], rationale: 'Log injection forges log entries to cover tracks' },
+    crlf_log_injection: { invariantClass: 'crlf_log_injection', techniques: [T1562_006], rationale: 'Log injection forges or tampers indicators to evade detection' },
 
     // HTTP Smuggling (2 classes)
     http_smuggle_cl_te: { invariantClass: 'http_smuggle_cl_te', techniques: [T1557, T1190], rationale: 'CL.TE desync enables request smuggling through proxy chains' },
