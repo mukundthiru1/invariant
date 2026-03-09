@@ -441,6 +441,53 @@ export function l2GraphQLBatch(input: string): DetectionLevelResult | null {
     } catch { return null }
 }
 
+export function l2GraphQLInjection(input: string): DetectionLevelResult | null {
+    try {
+        const detections = detectGraphQLAbuse(input)
+        const highSignal = detections.find(d =>
+            d.type === 'introspection' || d.type === 'batch_abuse' || (d.type === 'depth_abuse' && d.depth > 10)
+        )
+        if (highSignal) {
+            return {
+                detected: true,
+                confidence: Math.max(0.85, highSignal.confidence),
+                explanation: `GraphQL analysis: ${highSignal.detail}`,
+                evidence: highSignal.evidence,
+            }
+        }
+
+        const decoded = deepDecode(input)
+        const typoProbing = (decoded.match(/\b(?:usr|userr|userr|idd|iddd|namee|emal|emaill|passwrod|tokn|rolee|creditcardd|ssnn)\b/gi) || []).length
+        if (typoProbing >= 2) {
+            return {
+                detected: true,
+                confidence: 0.82,
+                explanation: 'GraphQL analysis: typo-heavy field probing indicates schema suggestion enumeration',
+                evidence: decoded.slice(0, 220),
+            }
+        }
+    } catch { return null }
+    return null
+}
+
+export function l2GraphQLDos(input: string): DetectionLevelResult | null {
+    try {
+        const detections = detectGraphQLAbuse(input)
+        const severe = detections.find(d =>
+            (d.type === 'depth_abuse' && d.depth > 15) || d.type === 'fragment_abuse' || d.type === 'alias_abuse'
+        )
+        if (severe) {
+            return {
+                detected: true,
+                confidence: Math.max(0.84, severe.confidence),
+                explanation: `GraphQL DoS analysis: ${severe.detail}`,
+                evidence: severe.evidence,
+            }
+        }
+    } catch { return null }
+    return null
+}
+
 
 // ── Prototype Pollution Adapter ──────────────────────────────────
 
@@ -456,6 +503,26 @@ export function l2ProtoPollution(input: string): DetectionLevelResult | null {
                 evidence: best.path,
                 structuredEvidence: (best as ProofEvidenceCarrier).proofEvidence,
             }
+        }
+    } catch { /* safe */ }
+    return null
+}
+
+export function l2PrototypePollution(input: string): DetectionLevelResult | null {
+    return l2ProtoPollution(input)
+}
+
+export function l2PrototypePollutionQuery(input: string): DetectionLevelResult | null {
+    try {
+        const decoded = deepDecode(input)
+        const match = decoded.match(/(?:^|[?&])(?:__proto__(?:\[[^\]]+\]){1,3}|constructor\[prototype\](?:\[[^\]]+\]){1,3}|[a-z_$][\w$]*\[__proto__\](?:\[[^\]]+\]){1,3}|[a-z_$][\w$]*\.__proto__\.[a-z_$][\w$]*)\s*=[^&]*/i)
+        if (!match?.[0]) return null
+
+        return {
+            detected: true,
+            confidence: 0.94,
+            explanation: 'Proto analysis: query-string key path reaches prototype chain (__proto__ / constructor.prototype)',
+            evidence: match[0],
         }
     } catch { /* safe */ }
     return null
@@ -741,6 +808,34 @@ export function l2HTTPSmuggleCLTE(input: string): DetectionLevelResult | null {
 
 export function l2HTTPSmuggleH2(input: string): DetectionLevelResult | null {
     return l2HttpSmuggling(input)
+}
+
+export function l2HttpRequestSmuggling(input: string): DetectionLevelResult | null {
+    const base = l2HttpSmuggling(input)
+    if (base) return base
+
+    try {
+        const decoded = normalizeHttpInput(input)
+        if (/\btransfer-encoding\s*:\s*[^\\r\\n]*chunked[^\\r\\n]*gzip/i.test(decoded)
+            || (/\btransfer-encoding\s*:\s*chunked/i.test(decoded) && /\bcontent-encoding\s*:\s*gzip\b/i.test(decoded))) {
+            return {
+                detected: true,
+                confidence: 0.88,
+                explanation: 'HTTP smuggling analysis: chunked + gzip transfer ambiguity can create parser disagreement',
+                evidence: decoded.match(/\b(?:transfer-encoding|content-encoding)\s*:[^\r\n]+/ig)?.slice(0, 2).join(' | '),
+            }
+        }
+
+        if (/\btransfer-encoding\s*:\s*chunked/i.test(decoded) && /\r?\n(?:ZZ|GG|INVALID|[^\r\n;]*[^0-9a-f\r\n;])[^\r\n]*\r?\n/i.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.86,
+                explanation: 'HTTP smuggling analysis: invalid chunk-size line detected under chunked transfer',
+                evidence: decoded.slice(0, 220),
+            }
+        }
+    } catch { return null }
+    return null
 }
 
 // ── DOM XSS / AngularJS Sandbox Escape Adapters ────────────────
@@ -1088,6 +1183,118 @@ export function l2WsHijack(input: string): DetectionLevelResult | null {
             (d: WebSocketDetection) => d.type === 'ws_hijack',
             'WebSocket analysis')
     } catch { return null }
+}
+
+export function l2WebsocketOriginBypass(input: string): DetectionLevelResult | null {
+    try {
+        const decoded = deepDecode(input)
+        if (!/(?:^|\r?\n)\s*upgrade\s*:\s*websocket\b/i.test(decoded)) return null
+
+        const origin = decoded.match(/(?:^|\r?\n)\s*origin\s*:\s*([^\r\n]+)/i)?.[1]?.trim()
+        const host = decoded.match(/(?:^|\r?\n)\s*host\s*:\s*([^\r\n]+)/i)?.[1]?.trim()
+        if (!origin) {
+            return {
+                detected: true,
+                confidence: 0.9,
+                explanation: 'WebSocket analysis: upgrade request is missing Origin header',
+                evidence: decoded.slice(0, 220),
+            }
+        }
+
+        const originLower = origin.toLowerCase()
+        if (originLower === '*' || originLower === 'null') {
+            return {
+                detected: true,
+                confidence: 0.9,
+                explanation: 'WebSocket analysis: wildcard/null Origin on WS upgrade bypasses origin-based CSRF controls',
+                evidence: origin,
+            }
+        }
+
+        if (host) {
+            const hostLower = host.toLowerCase().replace(/^https?:\/\//, '')
+            const originHost = originLower.replace(/^https?:\/\//, '').split('/')[0]
+            const allowOrigin = decoded.match(/(?:^|\r?\n)\s*access-control-allow-origin\s*:\s*([^\r\n]+)/i)?.[1]?.trim().toLowerCase()
+            if (originHost !== hostLower && (!allowOrigin || (allowOrigin !== '*' && allowOrigin !== originLower))) {
+                return {
+                    detected: true,
+                    confidence: 0.91,
+                    explanation: 'WebSocket analysis: cross-origin upgrade without matching CORS allowlist',
+                    evidence: `origin=${origin} host=${host}`,
+                }
+            }
+        }
+    } catch { return null }
+    return null
+}
+
+export function l2WebsocketMessageInjection(input: string): DetectionLevelResult | null {
+    try {
+        const decoded = deepDecode(input)
+        const wsLike = /(?:websocket|ws[_-]?(?:message|frame)|\{[\s\S]*\})/i.test(decoded)
+        if (!wsLike) return null
+
+        const proto = l2PrototypePollution(decoded)
+        if (proto?.detected) {
+            return {
+                detected: true,
+                confidence: Math.max(0.9, proto.confidence),
+                explanation: `WebSocket analysis: ${proto.explanation}`,
+                evidence: proto.evidence,
+                structuredEvidence: proto.structuredEvidence,
+            }
+        }
+
+        if (/(?:__defineGetter__|__lookupSetter__|constructor\s*\.\s*prototype)/i.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.88,
+                explanation: 'WebSocket analysis: prototype-manipulation primitive found in WS payload',
+                evidence: decoded.slice(0, 220),
+            }
+        }
+    } catch { return null }
+    return null
+}
+
+export function l2WebsocketDos(input: string): DetectionLevelResult | null {
+    try {
+        const decoded = deepDecode(input)
+        const sizeMatch = decoded.match(/\b(?:payload(?:_| )?size|frame(?:_| )?(?:size|length)|bytes|len)\s*[:=]\s*(\d{6,})\b/i)
+            ?? decoded.match(/(?:^|\r?\n)\s*content-length\s*:\s*(\d{6,})\b/i)
+        if (sizeMatch) {
+            const bytes = Number.parseInt(sizeMatch[1], 10)
+            if (Number.isFinite(bytes) && bytes >= 1_000_000) {
+                return {
+                    detected: true,
+                    confidence: 0.84,
+                    explanation: `WebSocket analysis: oversized frame payload (${bytes} bytes) indicates DoS pressure`,
+                    evidence: sizeMatch[0],
+                }
+            }
+        }
+
+        const reconnects = (decoded.match(/(?:GET\s+\/[^\r\n\s]*\s+HTTP\/1\.1[\s\S]{0,180}?Upgrade\s*:\s*websocket)/gi) || []).length
+        if (reconnects >= 4) {
+            return {
+                detected: true,
+                confidence: 0.86,
+                explanation: `WebSocket analysis: rapid reconnect pattern (${reconnects} upgrades in one payload)`,
+                evidence: `upgrade_count=${reconnects}`,
+            }
+        }
+
+        const pingCount = (decoded.match(/\bping\b/gi) || []).length
+        if (pingCount >= 20) {
+            return {
+                detected: true,
+                confidence: 0.82,
+                explanation: `WebSocket analysis: ping flood behavior (${pingCount} ping frames/messages)`,
+                evidence: `ping_count=${pingCount}`,
+            }
+        }
+    } catch { return null }
+    return null
 }
 
 

@@ -60,6 +60,7 @@ const MONGO_UPDATE_OPERATORS = new Set([
 const MONGO_DANGEROUS_OPERATORS = new Set([
     '$where',       // JavaScript execution
     '$regex',       // ReDoS potential
+    '$options',     // regex behavior control
     '$expr',        // Aggregation expression evaluation
     '$function',    // Arbitrary JavaScript (4.4+)
     '$accumulator', // Custom JS in aggregation
@@ -77,6 +78,16 @@ const ALL_MONGO_OPERATORS = new Set([
     ...MONGO_DANGEROUS_OPERATORS,
     ...BSON_EXTENDED_OPERATORS,
 ])
+
+const REDIS_DANGEROUS_COMMANDS: Array<{ label: string; pattern: RegExp }> = [
+    { label: 'FLUSHALL', pattern: /(?:^|[^a-z])flushall(?:$|[^a-z])/i },
+    { label: 'CONFIG SET', pattern: /config[\s\S]{0,120}set/i },
+    { label: 'SLAVEOF', pattern: /(?:^|[^a-z])slaveof(?:$|[^a-z])/i },
+    { label: 'REPLICAOF', pattern: /(?:^|[^a-z])replicaof(?:$|[^a-z])/i },
+    { label: 'DEBUG OBJECT', pattern: /debug[\s\S]{0,120}object/i },
+]
+
+const REDIS_SSRF_TRANSPORT = /(?:\b(?:gopher|redis|dict):\/\/|\b(?:127\.0\.0\.1|localhost|::1)(?::6379)?\b|%0d%0a|\r?\n)/i
 
 
 // ── JSON Key Extractor ───────────────────────────────────────────
@@ -305,6 +316,56 @@ function detectJSInjection(input: string): NoSQLDetection[] {
     return detections
 }
 
+function detectRedisCommandInjection(input: string): NoSQLDetection[] {
+    if (!REDIS_SSRF_TRANSPORT.test(input)) return []
+
+    const detections: NoSQLDetection[] = []
+    for (const command of REDIS_DANGEROUS_COMMANDS) {
+        const match = input.match(command.pattern)
+        if (!match?.[0]) continue
+        detections.push({
+            type: 'operator_injection',
+            detail: `Redis dangerous command over SSRF transport: ${command.label}`,
+            operator: `redis:${command.label}`,
+            confidence: 0.95,
+        })
+    }
+    return detections
+}
+
+function detectCouchAndElasticInjection(input: string): NoSQLDetection[] {
+    const detections: NoSQLDetection[] = []
+
+    if (/"selector"\s*:\s*\{[\s\S]{0,800}"\$(?:or|and|nor|not)"\s*:/i.test(input)) {
+        detections.push({
+            type: 'operator_injection',
+            detail: 'CouchDB Mango selector operator injection detected ($or/$and/$nor/$not)',
+            operator: '$selector.$or',
+            confidence: 0.90,
+        })
+    }
+
+    if (/"query"\s*:\s*\{\s*"match_all"\s*:\s*\{\s*\}\s*\}/i.test(input)) {
+        detections.push({
+            type: 'operator_injection',
+            detail: 'Elasticsearch broad match_all query detected in user-controlled payload',
+            operator: 'match_all',
+            confidence: 0.88,
+        })
+    }
+
+    if (/"script"\s*:\s*\{[\s\S]{0,1200}"(?:source|inline|lang|params)"\s*:/i.test(input)) {
+        detections.push({
+            type: 'operator_injection',
+            detail: 'Elasticsearch script execution payload detected',
+            operator: 'script',
+            confidence: 0.93,
+        })
+    }
+
+    return detections
+}
+
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -316,7 +377,12 @@ export function detectNoSQLInjection(input: string): NoSQLDetection[] {
     const detections: NoSQLDetection[] = []
 
     // Quick bail: must contain $ or { to be relevant
-    if (!input.includes('$') && !input.includes('{') && !input.includes('[')) {
+    if (
+        !input.includes('$') &&
+        !input.includes('{') &&
+        !input.includes('[') &&
+        !/\b(?:flushall|config\s+set|slaveof|replicaof|debug\s+object|match_all|script)\b/i.test(input)
+    ) {
         return detections
     }
 
@@ -337,6 +403,14 @@ export function detectNoSQLInjection(input: string): NoSQLDetection[] {
 
     try {
         detections.push(...detectJSInjection(decoded))
+    } catch { /* never crash */ }
+
+    try {
+        detections.push(...detectRedisCommandInjection(decoded))
+    } catch { /* never crash */ }
+
+    try {
+        detections.push(...detectCouchAndElasticInjection(decoded))
     } catch { /* never crash */ }
 
     return detections

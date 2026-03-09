@@ -612,7 +612,7 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     // SSRF
     ssrf_internal_reach: 'ssrf', ssrf_cloud_metadata: 'ssrf', ssrf_protocol_smuggle: 'ssrf',
     // Deser
-    deser_java_gadget: 'deser', deser_php_object: 'deser', deser_python_pickle: 'deser',
+    deser_java_gadget: 'deser', deser_php_object: 'deser', deser_python_pickle: 'deser', yaml_deserialization: 'deser',
     // SSTI
     ssti_jinja_twig: 'injection', ssti_el_expression: 'injection', template_injection_generic: 'injection',
     // Auth
@@ -621,7 +621,7 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     // JWT
     jwt_kid_injection: 'auth', jwt_jwk_embedding: 'auth', jwt_confusion: 'auth',
     // Proto
-    proto_pollution: 'injection', proto_pollution_gadget: 'injection',
+    proto_pollution: 'injection', prototype_pollution_via_query: 'injection', proto_pollution_gadget: 'injection',
     // Log4Shell
     log_jndi_lookup: 'injection',
     // XXE / XML
@@ -662,13 +662,14 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     sql_stacked_execution: 'critical', sql_union_extraction: 'critical',
     ssrf_cloud_metadata: 'critical',
     ssti_jinja_twig: 'critical', ssti_el_expression: 'critical',
-    deser_java_gadget: 'critical', deser_python_pickle: 'critical',
+    deser_java_gadget: 'critical', deser_python_pickle: 'critical', yaml_deserialization: 'critical',
     log_jndi_lookup: 'critical', xxe_entity_expansion: 'critical',
     http_smuggle_cl_te: 'critical', http_smuggle_h2: 'critical',
     auth_none_algorithm: 'critical',
     postinstall_injection: 'critical',
     llm_data_exfiltration: 'critical', llm_jailbreak: 'critical',
     jwt_kid_injection: 'critical', jwt_jwk_embedding: 'critical', jwt_confusion: 'critical',
+    nosql_operator_injection: 'critical',
     // High
     sql_tautology: 'high', sql_time_oracle: 'high', sql_error_oracle: 'high',
     sql_string_termination: 'high',
@@ -677,8 +678,8 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     path_windows_traversal: 'high',
     xss_tag_injection: 'high', xss_event_handler: 'high', xss_protocol_handler: 'high',
     css_injection: 'high',
-    nosql_operator_injection: 'high', nosql_js_injection: 'high',
-    crlf_header_injection: 'high', proto_pollution: 'high',
+    nosql_js_injection: 'high',
+    crlf_header_injection: 'high', proto_pollution: 'high', prototype_pollution_via_query: 'high',
     deser_php_object: 'high', ldap_filter_injection: 'high',
     cmd_argument_injection: 'high', graphql_batch_abuse: 'high',
     mass_assignment: 'high', xml_injection: 'high',

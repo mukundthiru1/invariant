@@ -365,6 +365,124 @@ impl SqlStructuralEvaluator {
         detections
     }
 
+    fn detect_semicolon_normalized_stacked(&self, input: &str) -> Vec<L2Detection> {
+        static BLOCK_COMMENT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?is)/\*.*?\*/").unwrap());
+        static LINE_COMMENT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?m)(?:--|#)[^\n]*").unwrap());
+
+        let without_block = BLOCK_COMMENT_RE.replace_all(input, "");
+        let without_comments = LINE_COMMENT_RE.replace_all(&without_block, "");
+        let collapsed = without_comments
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect::<String>()
+            .to_uppercase();
+
+        let stacked_markers = [
+            ";SELECT",
+            ";INSERT",
+            ";UPDATE",
+            ";DELETE",
+            ";DROP",
+            ";CREATE",
+            ";ALTER",
+            ";EXEC",
+            ";EXECUTE",
+            ";TRUNCATE",
+            ";GRANT",
+            ";REVOKE",
+        ];
+
+        if let Some(marker) = stacked_markers.iter().find(|marker| collapsed.contains(**marker)) {
+            return vec![L2Detection {
+                detection_type: "stacked_execution_normalized".into(),
+                confidence: 0.92,
+                detail: format!(
+                    "Stacked SQL statement recovered after whitespace/comment normalization: {}",
+                    marker
+                ),
+                position: input.find(';').unwrap_or(0),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: input.to_owned(),
+                    interpretation:
+                        "Comment and whitespace normalization reveals semicolon-delimited stacked SQL execution"
+                            .into(),
+                    offset: input.find(';').unwrap_or(0),
+                    property:
+                        "SQL input must not contain normalized semicolon-separated multi-statement payloads"
+                            .into(),
+                }],
+            }];
+        }
+
+        Vec::new()
+    }
+
+    fn detect_mysql_if_sleep_subquery(&self, input: &str) -> Vec<L2Detection> {
+        static MYSQL_IF_SLEEP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r"(?is)\bif\s*\(\s*\d+\s*=\s*\d+\s*,\s*sleep\s*\(\s*\d+(?:\.\d+)?\s*\)\s*,\s*0\s*\)",
+            )
+            .unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in MYSQL_IF_SLEEP_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "mysql_if_sleep_time_oracle".into(),
+                confidence: 0.93,
+                detail: "MySQL IF(condition,SLEEP(),0) subquery timing payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Conditional MySQL IF() call executes SLEEP() to leak truth values via response time"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not introduce conditional SQL time-delay branches".into(),
+                }],
+            });
+        }
+
+        detections
+    }
+
+    fn detect_postgres_cast_pg_sleep_chain(&self, input: &str) -> Vec<L2Detection> {
+        static PG_CAST_SLEEP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r"(?is)\b\d+\s*::\s*int\s*=\s*\d+\s+and\s*\(\s*select\s+pg_sleep\s*\(\s*\d+(?:\.\d+)?\s*\)\s*\)\s+is\s+not\s+null",
+            )
+            .unwrap()
+        });
+
+        let mut detections = Vec::new();
+        for m in PG_CAST_SLEEP_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "postgres_cast_pg_sleep_oracle".into(),
+                confidence: 0.92,
+                detail: "PostgreSQL cast + pg_sleep boolean-chain payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "PostgreSQL cast/boolean chain with subquery pg_sleep() indicates advanced blind/error-oracle probing"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not compose cast-based boolean chains with timing subqueries"
+                            .into(),
+                }],
+            });
+        }
+
+        detections
+    }
+
     fn detect_time_oracle(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
         let meaningful: Vec<_> = tokens
@@ -2494,7 +2612,25 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            for det in self.detect_semicolon_normalized_stacked(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
             for det in self.detect_time_oracle(&tokens) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_mysql_if_sleep_subquery(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_postgres_cast_pg_sleep_chain(variant) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
                 if seen.insert(key) {
                     all_detections.push(det);
@@ -2833,8 +2969,11 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "string_termination" => Some(InvariantClass::SqlStringTermination),
             "union_extraction" => Some(InvariantClass::SqlUnionExtraction),
             "stacked_execution" => Some(InvariantClass::SqlStackedExecution),
+            "stacked_execution_normalized" => Some(InvariantClass::SqlStackedExecution),
             "time_oracle" => Some(InvariantClass::SqlTimeOracle),
+            "mysql_if_sleep_time_oracle" => Some(InvariantClass::SqlTimeOracle),
             "case_time_oracle" => Some(InvariantClass::SqlTimeOracle),
+            "postgres_cast_pg_sleep_oracle" => Some(InvariantClass::SqlErrorOracle),
             "error_oracle" => Some(InvariantClass::SqlErrorOracle),
             "comment_truncation" => Some(InvariantClass::SqlCommentTruncation),
             "file_exec_primitive" => Some(InvariantClass::SqlStackedExecution),
@@ -3009,6 +3148,42 @@ mod tests {
         assert!(
             dets.iter().any(|d| d.detection_type == "time_oracle"),
             "Should detect SLEEP time oracle, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn mysql_if_sleep_subquery_payload() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("1 OR IF(1=1,SLEEP(5),0)");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mysql_if_sleep_time_oracle"),
+            "Should detect IF(...,SLEEP(...),0) time payload, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn postgres_cast_pg_sleep_boolean_chain() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("1::int=1 AND (SELECT pg_sleep(5)) IS NOT NULL");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "postgres_cast_pg_sleep_oracle"),
+            "Should detect postgres cast+pg_sleep chain, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn stacked_query_semicolon_with_normalization() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("1/**/; \n\t/**/DROP/**/TABLE users");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "stacked_execution_normalized"),
+            "Should detect normalized semicolon-stacked query, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }

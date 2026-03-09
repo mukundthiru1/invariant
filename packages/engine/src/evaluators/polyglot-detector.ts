@@ -83,6 +83,7 @@ const CLASS_TO_DOMAIN: Record<string, string> = {
     deser_java_gadget: 'deser',
     deser_php_object: 'deser',
     deser_python_pickle: 'deser',
+    yaml_deserialization: 'deser',
 
     // Auth domain
     auth_none_algorithm: 'auth',

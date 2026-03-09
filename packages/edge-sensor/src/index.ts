@@ -1226,12 +1226,17 @@ export default {
             knownAttacker,
         )
 
+        const anomalyScore = applicationModel.computeAnomalyScore(path, request)
+        const anomalyEvidence = applicationModel.getLastAnomalyEvidence()
+
         // Compute composite threat score (L5f)
         const threatScore = threatScoring.score(threatSignals, {
             sourceHash,
             knownAttacker,
             priorSignalCount: reputation?.signals ?? 0,
             requestsInWindow: behaviorTracker.getRequestCount(sourceHash),
+            anomalyScore,
+            anomalyEvidence,
         })
 
         // ── Defense Decision (L6) ─────────────────────────────────
@@ -1264,7 +1269,7 @@ export default {
         // without auth, making that pattern appear "normal" to drift detection.
         if (action === 'passed') {
             const authType = detectAuthType(request.headers)
-            applicationModel.recordRequest(path, request.method, authType)
+            applicationModel.recordRequest(path, request.method, authType, request)
         }
 
         // ── State Updates ────────────────────────────────────────
@@ -1685,6 +1690,7 @@ export default {
                         authTypes: ep.auth as Record<string, number>,
                         sensitive: ep.sensitive,
                         requestCount: ep.requestCount,
+                        parameterNames: Object.keys(ep.parameterDistribution),
                     })),
                     totalRequests: snapshot.totalRequests,
                 }

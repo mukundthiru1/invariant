@@ -27,7 +27,7 @@ export type { ProbeTarget, ProbeResult } from './internal-probe.js'
 
 // ── Application Intelligence ─────────────────────────────────────
 export { ApplicationModel, normalizePathPattern, detectAuthType, detectSensitiveResponse } from './application-model.js'
-export type { EndpointSnapshot, ApplicationModelSnapshot, AuthType } from './application-model.js'
+export type { EndpointSnapshot, ApplicationModelSnapshot, AuthType, ParameterStats, EndpointProfile } from './application-model.js'
 
 export { PrivilegeGraph } from './privilege-graph.js'
 export type { PrivilegeLevel, EndpointPrivilege, PrivilegeEdge, PrivilegeGraphSnapshot, PrivilegeObservation } from './privilege-graph.js'

@@ -45,6 +45,9 @@ const HASH_PATTERN = /^[0-9a-f]{32,128}$/i
 const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const FILE_PATTERN = /^.+\.[a-z0-9]{1,10}$/i
 const BASE64_SLUG_PATTERN = /^[A-Za-z0-9_-]{20,}$/
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const BOOLEAN_PATTERN = /^(true|false|0|1)$/i
+const SQL_KEYWORD_PATTERN = /\b(select|union|insert|update|delete|drop|alter|create|truncate|where|or|and)\b|--|\/\*|\*\/|;/i
 
 /**
  * Normalize a URL path into a canonical pattern.
@@ -204,6 +207,27 @@ export interface EndpointSnapshot {
     lastSeen: number
     /** Total requests observed */
     requestCount: number
+    /** Learned parameter value distribution for this endpoint */
+    parameterDistribution: Record<string, ParameterStats>
+}
+
+export interface ParameterStats {
+    type: 'numeric' | 'string' | 'email' | 'uuid' | 'boolean'
+    minLength: number
+    maxLength: number
+    pattern?: string
+    entropy: number
+}
+
+export interface EndpointProfile {
+    pattern: string
+    parameterDistribution: Map<string, ParameterStats>
+}
+
+interface ParameterState {
+    stats: ParameterStats
+    observations: number
+    typeCounts: Map<ParameterStats['type'], number>
 }
 
 interface EndpointState {
@@ -218,6 +242,7 @@ interface EndpointState {
     firstSeen: number
     lastSeen: number
     requestCount: number
+    parameterDistribution: Map<string, ParameterState>
 }
 
 
@@ -280,6 +305,7 @@ export class ApplicationModel {
 
     private endpoints = new Map<string, EndpointState>()
     private totalRequests = 0
+    private lastAnomalyEvidence: string[] = []
 
     /**
      * Record a request observation.
@@ -289,7 +315,7 @@ export class ApplicationModel {
      * @param method - HTTP method
      * @param authType - Detected auth type
      */
-    recordRequest(path: string, method: string, authType: AuthType): void {
+    recordRequest(path: string, method: string, authType: AuthType, request?: Request): void {
         this.totalRequests++
         const pattern = normalizePathPattern(path)
         const now = Date.now()
@@ -314,6 +340,7 @@ export class ApplicationModel {
                 firstSeen: now,
                 lastSeen: now,
                 requestCount: 0,
+                parameterDistribution: new Map(),
             }
             this.endpoints.set(pattern, endpoint)
         }
@@ -322,6 +349,9 @@ export class ApplicationModel {
         endpoint.requestCount++
         endpoint.methods.set(method, (endpoint.methods.get(method) ?? 0) + 1)
         endpoint.auth.set(authType, (endpoint.auth.get(authType) ?? 0) + 1)
+        if (request) {
+            this.updateParameterDistribution(endpoint, request)
+        }
     }
 
     /**
@@ -434,6 +464,9 @@ export class ApplicationModel {
             firstSeen: endpoint.firstSeen,
             lastSeen: endpoint.lastSeen,
             requestCount: endpoint.requestCount,
+            parameterDistribution: Object.fromEntries(
+                [...endpoint.parameterDistribution.entries()].map(([name, value]) => [name, value.stats]),
+            ),
         }
     }
 
@@ -505,6 +538,154 @@ export class ApplicationModel {
     }
 
     /**
+     * Compute anomaly score for request parameters against learned endpoint baseline.
+     * Score range: 0 (normal) to 1 (highly anomalous).
+     */
+    computeAnomalyScore(endpoint: string, request: Request): number {
+        this.lastAnomalyEvidence = []
+
+        const pattern = normalizePathPattern(endpoint)
+        const endpointState = this.endpoints.get(pattern)
+        if (!endpointState || endpointState.parameterDistribution.size === 0) {
+            return 0
+        }
+
+        const paramValues = this.extractParameters(request)
+        if (paramValues.size === 0) return 0
+
+        let aggregate = 0
+        let compared = 0
+
+        for (const [name, value] of paramValues) {
+            const learned = endpointState.parameterDistribution.get(name)
+            if (!learned) {
+                continue
+            }
+
+            compared++
+            const score = this.computeParameterAnomaly(name, value, learned.stats)
+            aggregate += score
+        }
+
+        if (compared === 0) return 0
+        return Math.max(0, Math.min(1, aggregate / compared))
+    }
+
+    /**
+     * Retrieve anomaly evidence emitted by the most recent anomaly scoring call.
+     */
+    getLastAnomalyEvidence(): string[] {
+        return [...this.lastAnomalyEvidence]
+    }
+
+    private computeParameterAnomaly(name: string, value: string, stats: ParameterStats): number {
+        const valueType = classifyParameterType(value)
+        const valueLength = value.length
+        let score = 0
+
+        if (valueLength > 0 && stats.maxLength > 0 && valueLength > stats.maxLength * 3) {
+            score = Math.max(score, 0.95)
+            this.lastAnomalyEvidence.push(
+                `Parameter "${name}" length ${valueLength} exceeds learned max ${stats.maxLength} by >3x`,
+            )
+        }
+
+        if (stats.type === 'numeric' && SQL_KEYWORD_PATTERN.test(value)) {
+            score = Math.max(score, 1)
+            this.lastAnomalyEvidence.push(
+                `Parameter "${name}" is learned numeric but contains SQL-like keywords`,
+            )
+        }
+
+        if (stats.type !== valueType) {
+            score = Math.max(score, 0.55)
+            this.lastAnomalyEvidence.push(
+                `Parameter "${name}" expected ${stats.type} but observed ${valueType}`,
+            )
+        }
+
+        if (stats.type === 'uuid' && !UUID_PATTERN.test(value)) {
+            score = Math.max(score, 0.7)
+            this.lastAnomalyEvidence.push(`Parameter "${name}" violates learned UUID format`)
+        }
+
+        if (stats.type === 'email' && !EMAIL_PATTERN.test(value)) {
+            score = Math.max(score, 0.7)
+            this.lastAnomalyEvidence.push(`Parameter "${name}" violates learned email format`)
+        }
+
+        if (stats.type === 'boolean' && !BOOLEAN_PATTERN.test(value)) {
+            score = Math.max(score, 0.7)
+            this.lastAnomalyEvidence.push(`Parameter "${name}" violates learned boolean format`)
+        }
+
+        const currentEntropy = computeEntropy(value)
+        if (stats.entropy > 0.3 && currentEntropy > stats.entropy * 1.8 && valueLength >= 8) {
+            score = Math.max(score, 0.45)
+            this.lastAnomalyEvidence.push(
+                `Parameter "${name}" entropy ${currentEntropy.toFixed(2)} deviates from baseline ${stats.entropy.toFixed(2)}`,
+            )
+        }
+
+        return Math.min(1, score)
+    }
+
+    private updateParameterDistribution(endpoint: EndpointState, request: Request): void {
+        const values = this.extractParameters(request)
+        for (const [name, value] of values) {
+            const type = classifyParameterType(value)
+            const length = value.length
+            const entropy = computeEntropy(value)
+
+            let state = endpoint.parameterDistribution.get(name)
+            if (!state) {
+                state = {
+                    stats: {
+                        type,
+                        minLength: length,
+                        maxLength: length,
+                        pattern: inferPattern(value, type),
+                        entropy,
+                    },
+                    observations: 0,
+                    typeCounts: new Map(),
+                }
+                endpoint.parameterDistribution.set(name, state)
+            }
+
+            state.observations++
+            state.typeCounts.set(type, (state.typeCounts.get(type) ?? 0) + 1)
+            state.stats.type = dominantParameterType(state.typeCounts)
+            state.stats.minLength = Math.min(state.stats.minLength, length)
+            state.stats.maxLength = Math.max(state.stats.maxLength, length)
+            state.stats.pattern = mergePattern(state.stats.pattern, inferPattern(value, type))
+            // Exponential moving average keeps the signal stable.
+            state.stats.entropy = state.observations === 1
+                ? entropy
+                : state.stats.entropy * 0.9 + entropy * 0.1
+        }
+    }
+
+    private extractParameters(request: Request): Map<string, string> {
+        const params = new Map<string, string>()
+        let parsed: URL
+
+        try {
+            parsed = new URL(request.url)
+        } catch {
+            return params
+        }
+
+        for (const [name, value] of parsed.searchParams.entries()) {
+            if (!name) continue
+            const existing = params.get(name)
+            params.set(name, existing ? `${existing},${value}` : value)
+        }
+
+        return params
+    }
+
+    /**
      * Evict the least recently seen endpoint when at capacity.
      */
     private evictLeastRecent(): void {
@@ -542,4 +723,56 @@ export class ApplicationModel {
         if (!endpoint) return null
         return this.snapshotEndpoint(endpoint)
     }
+}
+
+function classifyParameterType(value: string): ParameterStats['type'] {
+    if (NUMERIC_ID_PATTERN.test(value)) return 'numeric'
+    if (BOOLEAN_PATTERN.test(value)) return 'boolean'
+    if (UUID_PATTERN.test(value)) return 'uuid'
+    if (EMAIL_PATTERN.test(value)) return 'email'
+    return 'string'
+}
+
+function dominantParameterType(
+    counts: Map<ParameterStats['type'], number>,
+): ParameterStats['type'] {
+    let dominant: ParameterStats['type'] = 'string'
+    let max = -1
+    for (const [type, count] of counts) {
+        if (count > max) {
+            dominant = type
+            max = count
+        }
+    }
+    return dominant
+}
+
+function inferPattern(value: string, type: ParameterStats['type']): string | undefined {
+    if (type !== 'string') return undefined
+    if (SQL_KEYWORD_PATTERN.test(value)) return 'contains_sql_keyword'
+    if (/^[a-z]+$/i.test(value)) return 'alpha'
+    if (/^[a-z0-9_-]+$/i.test(value)) return 'alnum_symbol'
+    if (/^[^a-z0-9]+$/i.test(value)) return 'symbolic'
+    return 'mixed'
+}
+
+function mergePattern(current: string | undefined, next: string | undefined): string | undefined {
+    if (!current) return next
+    if (!next) return current
+    return current === next ? current : 'mixed'
+}
+
+function computeEntropy(value: string): number {
+    if (!value) return 0
+    const counts = new Map<string, number>()
+    for (const ch of value) {
+        counts.set(ch, (counts.get(ch) ?? 0) + 1)
+    }
+
+    let entropy = 0
+    for (const count of counts.values()) {
+        const p = count / value.length
+        entropy -= p * Math.log2(p)
+    }
+    return entropy
 }

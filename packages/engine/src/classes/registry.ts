@@ -166,6 +166,23 @@ const CORRELATION_RULES: readonly CorrelationRule[] = [
         confidence: { type: 'fixed', value: 0.99 },
         reason: 'HTTP smuggling + cache poisoning = mass-impact stored attack',
     },
+    {
+        required: [['http_request_smuggling'], ['cache_poisoning', 'cache_deception']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'General HTTP request smuggling + cache abuse = large-scale response poisoning',
+    },
+    // WebSocket abuse chain
+    {
+        required: [['websocket_origin_bypass'], ['websocket_message_injection']],
+        confidence: { type: 'fixed', value: 0.99 },
+        reason: 'Cross-origin WS bypass + message injection = account takeover and persistent compromise',
+    },
+    // GraphQL compound abuse
+    {
+        required: [['graphql_injection'], ['graphql_dos']],
+        confidence: { type: 'relative', delta: 0.10 },
+        reason: 'GraphQL exploitation combined with resource exhaustion indicators',
+    },
     // Path traversal + SSRF → internal pivot
     {
         required: [['path_dotdot_escape', 'path_encoding_bypass'], ['ssrf_internal_reach']],

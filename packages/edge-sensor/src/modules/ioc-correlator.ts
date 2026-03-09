@@ -57,6 +57,16 @@ export class IOCCorrelator {
     private uaSignatures: Array<{ pattern: RegExp; entry: IOCEntry }> = []
     private cvePatterns: Array<{ pattern: RegExp; entry: IOCEntry }> = []
     private lastSync = 0
+    private readonly cloudMetadataIndicators: Array<{ indicator: string; pattern: RegExp; threat: string }> = [
+        { indicator: '169.254.169.254/latest/meta-data', pattern: /https?:\/\/169\.254\.169\.254\/latest\/meta-data(?:[/?#]|$)/i, threat: 'aws_imds_access' },
+        { indicator: '169.254.169.254/latest/api/token', pattern: /https?:\/\/169\.254\.169\.254\/latest\/api\/token(?:[/?#]|$)/i, threat: 'aws_imdsv2_token_access' },
+        { indicator: 'metadata.google.internal', pattern: /https?:\/\/metadata\.google\.internal(?:[/:?#]|$)/i, threat: 'gcp_metadata_access' },
+        { indicator: '169.254.169.254/computeMetadata', pattern: /https?:\/\/169\.254\.169\.254\/computeMetadata(?:[/?#]|$)/i, threat: 'gcp_metadata_access' },
+        { indicator: '169.254.169.254/metadata/identity', pattern: /https?:\/\/169\.254\.169\.254\/metadata\/identity(?:[/?#]|$)/i, threat: 'azure_imds_access' },
+        { indicator: '169.254.169.254/metadata/instance', pattern: /https?:\/\/169\.254\.169\.254\/metadata\/instance(?:[/?#]|$)/i, threat: 'azure_imds_access' },
+        { indicator: 'metadata.digitalocean.com', pattern: /https?:\/\/metadata\.digitalocean\.com(?:[/:?#]|$)/i, threat: 'digitalocean_metadata_access' },
+        { indicator: '169.254.169.254/opc', pattern: /https?:\/\/169\.254\.169\.254\/opc(?:[/?#]|$)/i, threat: 'oracle_cloud_metadata_access' },
+    ]
 
     /**
      * Load IOC feed data. Called during rule sync from intel pipeline.
@@ -151,6 +161,7 @@ export class IOCCorrelator {
         payloadHash?: string
     }): IOCMatch[] {
         const matches: IOCMatch[] = []
+        const combinedInput = `${context.url}\n${context.decodedInput}`
 
         // 1. IP reputation check
         if (context.sourceIp) {
@@ -182,6 +193,22 @@ export class IOCCorrelator {
                     confidence: domainEntry.confidence,
                     linkedCves: domainEntry.linkedCves,
                     source: domainEntry.source,
+                    matchContext: 'request_input',
+                })
+            }
+        }
+
+        // 2b. Built-in cloud metadata endpoint correlation
+        for (const indicator of this.cloudMetadataIndicators) {
+            if (indicator.pattern.test(combinedInput)) {
+                matches.push({
+                    iocType: 'domain_blocklist',
+                    indicator: indicator.indicator,
+                    threat: indicator.threat,
+                    severity: 'critical',
+                    confidence: 0.95,
+                    linkedCves: [],
+                    source: 'built_in_cloud_metadata',
                     matchContext: 'request_input',
                 })
             }

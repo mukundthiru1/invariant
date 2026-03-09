@@ -433,6 +433,14 @@ impl XssEvaluator {
             .map(|m| (m.start(), m.as_str().to_string()))
     }
 
+    fn detect_template_literal_alert_injection(input: &str) -> Option<(usize, String)> {
+        static TEMPLATE_LITERAL_ALERT_RE: OnceLock<Regex> = OnceLock::new();
+        let re = TEMPLATE_LITERAL_ALERT_RE.get_or_init(|| {
+            Regex::new(r#"(?is)\$\{\s*alert\s*\([^)]{0,80}\)\s*\}"#).unwrap()
+        });
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
     fn detect_bare_protocol_handler(input: &str) -> Option<(usize, String)> {
         let compact = Self::compact_protocol_token(input);
         if compact.starts_with("javascript:")
@@ -503,6 +511,25 @@ impl XssEvaluator {
         let normalized = Self::normalized_xss_view(input);
         re.find(&normalized)
             .map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_css_expression_split_keyword(input: &str) -> Option<(usize, String)> {
+        static CSS_SPLIT_EXPR_RE: OnceLock<Regex> = OnceLock::new();
+        let re = CSS_SPLIT_EXPR_RE.get_or_init(|| {
+            Regex::new(r#"(?is)expr\s*/\*[\s\S]*?\*/\s*ession\s*\("#).unwrap()
+        });
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
+    }
+
+    fn detect_svg_animate_onbegin(input: &str) -> Option<(usize, String)> {
+        static SVG_ANIMATE_ONBEGIN_RE: OnceLock<Regex> = OnceLock::new();
+        let re = SVG_ANIMATE_ONBEGIN_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?is)<svg\b[^>]*>\s*<animate\b[^>]*\bonbegin\s*=\s*['"]?[^'" >]+[^>]*\battributename\s*=\s*['"]?x"#,
+            )
+            .unwrap()
+        });
+        re.find(input).map(|m| (m.start(), m.as_str().to_string()))
     }
 
     fn detect_svg_data_uri_payload(input: &str) -> Option<(usize, String)> {
@@ -747,6 +774,26 @@ impl L2Evaluator for XssEvaluator {
             });
         }
 
+        if let Some((position, matched)) = Self::detect_template_literal_alert_injection(input) {
+            detections.push(L2Detection {
+                detection_type: "template_literal_js".into(),
+                confidence: 0.89,
+                detail: "Template literal JavaScript interpolation payload".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: matched,
+                    interpretation:
+                        "JavaScript template literal interpolation executes attacker-controlled expression"
+                            .into(),
+                    offset: position,
+                    property:
+                        "User input must not inject executable expressions in template-literal contexts"
+                            .into(),
+                }],
+            });
+        }
+
         if let Some((position, matched)) = Self::detect_bare_protocol_handler(input) {
             detections.push(L2Detection {
                 detection_type: "protocol_handler".into(),
@@ -870,6 +917,46 @@ impl L2Evaluator for XssEvaluator {
                     offset: position,
                     property:
                         "User-controlled CSS must not include executable legacy expression primitives"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_css_expression_split_keyword(input) {
+            detections.push(L2Detection {
+                detection_type: "css_expression_split_keyword".into(),
+                confidence: 0.90,
+                detail: "Obfuscated CSS expr/**/ession() execution primitive".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: matched,
+                    interpretation:
+                        "CSS comments split expression() keyword to evade signature-based XSS filtering"
+                            .into(),
+                    offset: position,
+                    property:
+                        "CSS syntax must be normalized by stripping comments before expression checks"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((position, matched)) = Self::detect_svg_animate_onbegin(input) {
+            detections.push(L2Detection {
+                detection_type: "xss_svg_animate_onbegin".into(),
+                confidence: 0.90,
+                detail: "SVG animate element with onbegin handler".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched,
+                    interpretation:
+                        "SVG animate onbegin event handlers execute script when animation lifecycle starts"
+                            .into(),
+                    offset: position,
+                    property:
+                        "User HTML/SVG input must not define script-capable animation event handlers"
                             .into(),
                 }],
             });
@@ -1269,9 +1356,12 @@ impl L2Evaluator for XssEvaluator {
             "dom_xss_storage_sink"
             | "dom_xss_window_name_bracket"
             | "xss_svg_animate_js_to"
+            | "xss_svg_animate_onbegin"
             | "mutation_xss_special_elements"
             | "xss_srcdoc_entity_encoded"
-            | "css_expression_obfuscated" => Some(InvariantClass::XssTagInjection),
+            | "css_expression_obfuscated"
+            | "css_expression_split_keyword" => Some(InvariantClass::XssTagInjection),
+            "template_literal_js" => Some(InvariantClass::XssTemplateExpression),
             _ => None,
         }
     }
@@ -1498,7 +1588,7 @@ mod tests {
         let dets = eval.detect(
             "<svg><animate onbegin=alert(1) attributeName='visibility' from='hidden'></svg>",
         );
-        assert!(has_type(&dets, "event_handler"));
+        assert!(has_type(&dets, "xss_svg_animate_onbegin"));
     }
 
     #[test]
@@ -1570,6 +1660,13 @@ mod tests {
         let eval = XssEvaluator;
         let dets = eval.detect("`hello ${alert(1)}`");
         assert!(has_type(&dets, "template_expression"));
+    }
+
+    #[test]
+    fn template_literal_alert_expression() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("${alert(1)}");
+        assert!(has_type(&dets, "template_literal_js"));
     }
 
     #[test]
@@ -1712,5 +1809,12 @@ mod tests {
         let eval = XssEvaluator;
         let dets = eval.detect("expression/*comment*/(alert(1))");
         assert!(has_type(&dets, "css_expression_obfuscated"));
+    }
+
+    #[test]
+    fn test_css_expression_split_keyword() {
+        let eval = XssEvaluator;
+        let dets = eval.detect(r#"<div style="color:expr/**/ession(alert(1))">"#);
+        assert!(has_type(&dets, "css_expression_split_keyword"));
     }
 }

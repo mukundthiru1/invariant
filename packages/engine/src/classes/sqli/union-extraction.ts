@@ -17,6 +17,8 @@ import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.j
 
 const UNION_EXTRACT_PATTERN = /UNION\s+(?:ALL\s+)?SELECT\s/i
 const UNION_EXTRACT_OBFUSCATED_PATTERN = /(?:^|[^a-z])U\s*N\s*I\s*O\s*N\s*(?:A\s*L\s*L\s*)?S\s*E\s*L\s*E\s*C\s*T(?:\s|$)/i
+const POSTGRES_DOLLAR_QUOTING_PATTERN = /\$(?:[a-z_][a-z0-9_]*)?\$[\s\S]{0,200}?\bSELECT\b[\s\S]{0,200}?\$(?:[a-z_][a-z0-9_]*)?\$/i
+const HEX_KEYWORD_SELECT_PATTERN = /\b0x53454c454354\b/i
 
 export const sqlUnionExtraction: InvariantClassModule = {
     id: 'sql_union_extraction',
@@ -41,6 +43,9 @@ export const sqlUnionExtraction: InvariantClassModule = {
         "' UN/**/ION SE/**/LECT 1,2,3--",
         "' U/**/NION ALL SE/**/LECT NULL,NULL--",
         "' UNION%0BSELECT 1,2,3--",
+        "' || $$SELECT password FROM users$$--",
+        "' || $tag$SELECT current_user$tag$--",
+        "' UNION SELECT 0x53454c454354,2,3--",
     ],
 
     knownBenign: [
@@ -53,7 +58,10 @@ export const sqlUnionExtraction: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return UNION_EXTRACT_PATTERN.test(d) || UNION_EXTRACT_OBFUSCATED_PATTERN.test(d)
+        return UNION_EXTRACT_PATTERN.test(d)
+            || UNION_EXTRACT_OBFUSCATED_PATTERN.test(d)
+            || POSTGRES_DOLLAR_QUOTING_PATTERN.test(d)
+            || HEX_KEYWORD_SELECT_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
@@ -83,6 +91,9 @@ export const sqlUnionExtraction: InvariantClassModule = {
             "' UnIoN SeLeCt 1,2,3--",
             "' UNION SELECT CHAR(65),2,3--",
             "' UNION SELECT table_name,NULL FROM information_schema.tables--",
+            "' || $$SELECT version()$$--",
+            "' || $tag$SELECT current_database()$tag$--",
+            "' UNION SELECT 0x53454c454354,2,3--",
         ]
         const result: string[] = []
         for (let i = 0; i < count; i++) result.push(variants[i % variants.length])

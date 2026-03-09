@@ -58,6 +58,12 @@ export interface ThreatScore {
     chainIndicators: ChainIndicator[]
     /** Time-to-verdict in ms */
     verdictMs: number
+    /** Per-application anomaly score from application model */
+    anomalyScore?: number
+    /** Evidence strings from application invariant checks */
+    anomalyEvidence: string[]
+    /** Whether anomaly-based confidence boost was applied */
+    anomalyBoostApplied: boolean
 }
 
 export interface SignalContribution {
@@ -154,6 +160,8 @@ export class ThreatScoringEngine {
             knownAttacker: boolean
             priorSignalCount: number
             requestsInWindow: number
+            anomalyScore?: number
+            anomalyEvidence?: string[]
         },
     ): ThreatScore {
         const start = performance.now()
@@ -167,6 +175,9 @@ export class ThreatScoringEngine {
                 contributions: [],
                 chainIndicators: [],
                 verdictMs: performance.now() - start,
+                anomalyScore: context.anomalyScore,
+                anomalyEvidence: context.anomalyEvidence ?? [],
+                anomalyBoostApplied: false,
             }
         }
 
@@ -268,7 +279,20 @@ export class ThreatScoringEngine {
 
         // ── Step 7: Normalize to 0-100 ──────────────────────────
         // Sigmoid normalization prevents extreme scores while preserving discrimination
-        const normalizedScore = Math.min(100, Math.round(sigmoid(amplified) * 100))
+        const baselineScore = Math.min(100, Math.round(sigmoid(amplified) * 100))
+        let normalizedScore = baselineScore
+        let anomalyBoostApplied = false
+
+        const anomalyScore = context.anomalyScore ?? 0
+        if (anomalyScore > 0.8 && baselineScore / 100 > 0.3) {
+            normalizedScore = Math.min(100, Math.round((baselineScore / 100 + 0.15) * 100))
+            anomalyBoostApplied = true
+            chainIndicators.push({
+                type: 'application_invariant_anomaly',
+                description: `High application-model anomaly (${anomalyScore.toFixed(2)}) corroborates active threat`,
+                multiplier: 1.15,
+            })
+        }
 
         // ── Step 8: Classify ─────────────────────────────────────
         const classification = normalizedScore >= 70 ? 'hostile'
@@ -279,7 +303,14 @@ export class ThreatScoringEngine {
 
         // ── Build summary ────────────────────────────────────────
         const topSignal = contributions.sort((a, b) => b.weightedScore - a.weightedScore)[0]
-        const summary = buildSummary(normalizedScore, classification, signals, linkedCves, topSignal)
+        const summary = buildSummary(
+            normalizedScore,
+            classification,
+            signals,
+            linkedCves,
+            topSignal,
+            context.anomalyEvidence ?? [],
+        )
 
         // Record for temporal analysis
         this.recentScores.push({
@@ -300,6 +331,9 @@ export class ThreatScoringEngine {
             contributions,
             chainIndicators,
             verdictMs: performance.now() - start,
+            anomalyScore: context.anomalyScore,
+            anomalyEvidence: context.anomalyEvidence ?? [],
+            anomalyBoostApplied,
         }
     }
 
@@ -354,6 +388,7 @@ function buildSummary(
     signals: ThreatSignal[],
     linkedCves: string[],
     topSignal: SignalContribution | undefined,
+    anomalyEvidence: string[],
 ): string {
     const parts: string[] = []
 
@@ -374,6 +409,10 @@ function buildSummary(
     const novelCount = signals.filter(s => s.isNovel).length
     if (novelCount > 0) {
         parts.push(`${novelCount} novel variant(s)`)
+    }
+
+    if (anomalyEvidence.length > 0) {
+        parts.push(`Anomaly evidence: ${anomalyEvidence.slice(0, 2).join('; ')}`)
     }
 
     return parts.join(' | ')

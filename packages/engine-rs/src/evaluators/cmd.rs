@@ -1777,6 +1777,75 @@ impl L2Evaluator for CmdInjectionEvaluator {
             });
         }
 
+        static EXPLICIT_BACKTICK_EXEC_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"`[^`\r\n]{1,220}`").unwrap());
+        for m in EXPLICIT_BACKTICK_EXEC_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_backtick_exec_explicit".into(),
+                confidence: 0.91,
+                detail: "Explicit backtick command substitution payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Backtick-wrapped shell fragment is executed and substituted into command context"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not include backtick command substitution primitives".into(),
+                }],
+            });
+        }
+
+        static EXPLICIT_PROCESS_SUBSTITUTION_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)<\(\s*cat\s+/etc/passwd\s*\)").unwrap());
+        for m in EXPLICIT_PROCESS_SUBSTITUTION_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_process_substitution_cat_passwd".into(),
+                confidence: 0.92,
+                detail: "Process substitution reading /etc/passwd".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Process substitution executes cat /etc/passwd and exposes output as a pseudo-file argument"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not include process substitution that accesses sensitive files"
+                            .into(),
+                }],
+            });
+        }
+
+        static NEWLINE_COMMAND_CHAIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(
+                r"(?im)^\s*[a-z][a-z0-9._/-]{1,24}(?:\s+[^\r\n]{0,80})?\r?\n\s*[a-z][a-z0-9._/-]{1,24}(?:\s|$)",
+            )
+            .unwrap()
+        });
+        for m in NEWLINE_COMMAND_CHAIN_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_newline_command_chain".into(),
+                confidence: 0.90,
+                detail: "Multiline command chaining via newline injection".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Line break splits one shell invocation into sequential command execution lines"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input in shell context must not introduce newline-delimited command boundaries"
+                            .into(),
+                }],
+            });
+        }
+
         let tokenizer = ShellTokenizer;
         let stream = tokenizer.tokenize(&decoded);
         let tokens = stream.all().to_vec();
@@ -1826,7 +1895,9 @@ impl L2Evaluator for CmdInjectionEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "cmd_newline_fd_redirect" => Some(InvariantClass::CmdSeparator),
+            "cmd_newline_fd_redirect" | "cmd_newline_command_chain" => {
+                Some(InvariantClass::CmdSeparator)
+            }
             "separator"
             | "variable_expansion"
             | "quote_fragmentation"
@@ -1839,6 +1910,8 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "shell_evasion_here_string"
             | "shell_evasion_line_continuation" => Some(InvariantClass::CmdSeparator),
             "substitution"
+            | "cmd_backtick_exec_explicit"
+            | "cmd_process_substitution_cat_passwd"
             | "powershell_cradle"
             | "shell_evasion_ansi_c_quote"
             | "shell_evasion_process_substitution"
@@ -1920,6 +1993,11 @@ mod tests {
         assert!(
             dets.iter().any(|d| d.detection_type == "substitution"),
             "Should detect backtick substitution"
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_backtick_exec_explicit"),
+            "Should detect explicit backtick execution pattern"
         );
     }
 
@@ -2089,6 +2167,11 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "shell_evasion_process_substitution"),
             "Should detect process substitution evasion"
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_process_substitution_cat_passwd"),
+            "Should detect explicit process substitution /etc/passwd pattern"
         );
     }
 
@@ -2697,5 +2780,15 @@ mod tests {
         let eval = CmdInjectionEvaluator;
         let dets = eval.detect("mkfifo /tmp/f; cat /tmp/f | bash -i");
         assert!(dets.iter().any(|d| d.detection_type == "cmd_mkfifo_shell"));
+    }
+
+    #[test]
+    fn newline_multicommand_chain_detected() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("whoami\nid");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_newline_command_chain")
+        );
     }
 }

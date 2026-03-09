@@ -84,6 +84,16 @@ static NT_DEVICE_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\\\\[.\\]\\(?:[a-zA-Z]+[0-9]*|GLOBALROOT|Device\\[a-zA-Z]+Volume[0-9]+)\b")
         .unwrap()
 });
+static UNC_TRAVERSAL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:\\\\|//)[a-z0-9._-]+[\\/][a-z0-9.$_-]+(?:[\\/]\.\.)+[\\/][^\\/\s]+")
+        .unwrap()
+});
+static NULL_BYTE_SUFFIX_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:\.\.[\\/]){2,}[^\\/\s]+%00\.[a-z0-9]{1,8}\b").unwrap()
+});
+static ZIP_SLIP_ARCHIVE_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:archive|zip|jar|tar|entry|filename|filepath|path)[^\n]{0,80}(?:\.\.[\\/]){2,}[^\\/\s]+\.(?:sh|bash|ps1|bat|cmd|exe|dll)\b").unwrap()
+});
 
 impl L2Evaluator for PathTraversalEvaluator {
     fn id(&self) -> &'static str {
@@ -435,6 +445,66 @@ impl L2Evaluator for PathTraversalEvaluator {
             });
         }
 
+        if let Some(m) = UNC_TRAVERSAL_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_unc_traversal".into(),
+                confidence: 0.93,
+                detail: format!("UNC path with traversal segments: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "UNC share access combined with parent traversal can escape intended remote share subpaths"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "UNC paths in user input must not include traversal segments (..\\ or ../)"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some(m) = NULL_BYTE_SUFFIX_BYPASS_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_null_byte_suffix_bypass".into(),
+                confidence: 0.93,
+                detail: format!("Traversal + null-byte extension bypass: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Null byte before fake extension can truncate parser-visible filename validation"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Traversal payloads containing %00 extension smuggling must be rejected"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some(m) = ZIP_SLIP_ARCHIVE_ENTRY_RE.find(input) {
+            dets.push(L2Detection {
+                detection_type: "path_zip_slip_archive_entry".into(),
+                confidence: 0.94,
+                detail: format!("Zip-slip archive entry traversal detected: {}", m.as_str()),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Archive extraction entry path traverses out of destination directory (zip slip)"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Archive member paths must be normalized and enforced under extraction root"
+                            .into(),
+                }],
+            });
+        }
+
         // Count traversal tokens
         let traversal_count = tokens
             .iter()
@@ -530,7 +600,10 @@ impl L2Evaluator for PathTraversalEvaluator {
             | "path_expect_wrapper"
             | "path_windows_device_name"
             | "path_alternate_data_stream"
-            | "path_nt_device_prefix" => Some(InvariantClass::PathEncodingBypass),
+            | "path_nt_device_prefix"
+            | "path_unc_traversal"
+            | "path_zip_slip_archive_entry"
+            | "path_null_byte_suffix_bypass" => Some(InvariantClass::PathEncodingBypass),
             "path_verbatim_prefix" => Some(InvariantClass::PathNormalizationBypass),
             "path_null_byte_unicode" => Some(InvariantClass::PathNullTerminate),
             _ => None,
@@ -573,6 +646,16 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "path_unc_injection")
+        );
+    }
+
+    #[test]
+    fn detects_unc_path_with_traversal() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect(r"\\server\share\..\secret");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_unc_traversal")
         );
     }
 
@@ -650,6 +733,16 @@ mod tests {
     }
 
     #[test]
+    fn detects_traversal_null_byte_suffix_bypass() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("../../../etc/passwd%00.jpg");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_null_byte_suffix_bypass")
+        );
+    }
+
+    #[test]
     fn detects_case_variation_bypass_windows_separator_mix() {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect(r"..\..%2Fadmin");
@@ -716,6 +809,16 @@ mod tests {
         let eval = PathTraversalEvaluator;
         let dets = eval.detect("zip://archive.zip#payload.php");
         assert!(dets.iter().any(|d| d.detection_type == "path_zip_wrapper"));
+    }
+
+    #[test]
+    fn detects_zip_slip_archive_entry_path() {
+        let eval = PathTraversalEvaluator;
+        let dets = eval.detect("archive_path=../../../evil.sh");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "path_zip_slip_archive_entry")
+        );
     }
 
     #[test]

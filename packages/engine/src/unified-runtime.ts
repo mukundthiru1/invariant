@@ -312,7 +312,7 @@ const CLASS_BEHAVIORS: readonly ClassBehaviorRule[] = [
     // HTTP smuggling
     { classes: ['http_smuggle_cl_te', 'http_smuggle_h2', 'http_smuggle_chunk_ext', 'http_smuggle_zero_cl', 'http_smuggle_expect'], behaviors: ['request_smuggling'] },
     // Deserialization
-    { classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle'], behaviors: ['code_execution'] },
+    { classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle', 'yaml_deserialization'], behaviors: ['code_execution'] },
 ]
 
 const CONTENT_BEHAVIORS: readonly ContentBehaviorRule[] = [

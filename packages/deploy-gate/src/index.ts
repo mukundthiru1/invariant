@@ -2,9 +2,12 @@ import { computeBehaviorDelta, extractBehaviors, getBehaviorBaseline, saveBehavi
 import { fetchGithubDiffFromRequest, parseDiff } from './diff-fetcher.js'
 import { evaluateDeployLaws, type DeployLawResult } from './laws.js'
 import { notifyEmail, notifySlack, notifyWebPush } from './notification.js'
+import { checkNpmIntegrity, getTopDependenciesByDepth, type IntegrityResult } from './publish-integrity.js'
 import { scanDiff, type ScanResult } from './scanner.js'
+import { diffSbom, type SbomComponent, type SbomDiff } from './sbom-diff.js'
 import { approveDeployRecord, createDeployRecord, denyDeployRecord, getDeployRecord, type DeployRecord } from './store.js'
-import { runTrivyScan, type TrivyScanOptions, type TrivyReport } from './trivy.js'
+import { generateSbom, runTrivyScan, type TrivyScanOptions, type TrivyReport } from './trivy.js'
+import { readFile } from 'node:fs/promises'
 
 export type { TrivyScanOptions, TrivyReport }
 
@@ -30,6 +33,7 @@ interface DeployWebhookInput {
   head?: string
   diffLines?: string[]
   diffPatch?: string
+  previousSbomPath?: string
 }
 
 interface AnalyzeResult {
@@ -40,6 +44,8 @@ interface AnalyzeResult {
     scanResults: ScanResult[]
     behavioralDelta: Behaviors
     lawCompliance: DeployLawResult[]
+    sbomDiff?: SbomDiff
+    integrityResults: IntegrityResult[]
   }
   clean: boolean
   behavioralCurrent: Behaviors
@@ -101,6 +107,7 @@ function normalizeGenericPayload(payload: Record<string, unknown>): DeployWebhoo
     head: asString(payload.head) ?? asString(payload.headRef),
     diffLines: Array.isArray(payload.diff_lines) ? payload.diff_lines.filter((line): line is string => typeof line === 'string') : undefined,
     diffPatch: asString(payload.diff_patch),
+    previousSbomPath: asString(payload.previous_sbom_path) ?? asString(payload.previousSbomPath),
   }
 }
 
@@ -127,6 +134,7 @@ function normalizeVercelPayload(payload: Record<string, unknown>): DeployWebhook
     head: asString(gitSource.sha) ?? asString(meta.githubCommitSha) ?? asString(payload.head),
     diffLines: Array.isArray(payload.diff_lines) ? payload.diff_lines.filter((line): line is string => typeof line === 'string') : undefined,
     diffPatch: asString(payload.diff_patch),
+    previousSbomPath: asString(payload.previous_sbom_path) ?? asString(payload.previousSbomPath),
   }
 }
 
@@ -149,7 +157,57 @@ function normalizeGithubPayload(payload: Record<string, unknown>): DeployWebhook
     head: asString(checkRun.head_sha) ?? asString(payload.head),
     diffLines: Array.isArray(payload.diff_lines) ? payload.diff_lines.filter((line): line is string => typeof line === 'string') : undefined,
     diffPatch: asString(payload.diff_patch),
+    previousSbomPath: asString(payload.previous_sbom_path) ?? asString(payload.previousSbomPath),
   }
+}
+
+interface CycloneDxComponent {
+  name?: string
+  version?: string
+  purl?: string
+  licenses?: Array<{
+    license?: {
+      id?: string
+      name?: string
+    }
+  }>
+}
+
+interface CycloneDxDocument {
+  components?: CycloneDxComponent[]
+}
+
+function extractLicense(component: CycloneDxComponent): string {
+  if (!Array.isArray(component.licenses) || component.licenses.length === 0) return 'UNKNOWN'
+  const entry = component.licenses[0]?.license
+  if (!entry) return 'UNKNOWN'
+  return entry.id ?? entry.name ?? 'UNKNOWN'
+}
+
+function parseSbomComponents(raw: string): SbomComponent[] {
+  let parsed: CycloneDxDocument
+  try {
+    parsed = JSON.parse(raw) as CycloneDxDocument
+  } catch {
+    return []
+  }
+
+  const components = parsed.components ?? []
+  const normalized: SbomComponent[] = []
+
+  for (const component of components) {
+    const name = component.name ?? ''
+    const version = component.version ?? ''
+    if (!name || !version) continue
+    normalized.push({
+      name,
+      version,
+      purl: component.purl ?? '',
+      license: extractLicense(component),
+    })
+  }
+
+  return normalized
 }
 
 async function resolveDiffLines(env: Env, input: DeployWebhookInput): Promise<string[]> {
@@ -172,6 +230,8 @@ async function resolveDiffLines(env: Env, input: DeployWebhookInput): Promise<st
 async function runAnalysis(env: Env, input: DeployWebhookInput): Promise<AnalyzeResult> {
   const diffLines = await resolveDiffLines(env, input)
   const scanResults = scanDiff(diffLines)
+  const integrityResults: IntegrityResult[] = []
+  let sbomDiff: SbomDiff | undefined
   
   let trivyReport: TrivyReport = {
     passed: false,
@@ -188,6 +248,32 @@ async function runAnalysis(env: Env, input: DeployWebhookInput): Promise<Analyze
       licenses: [],
       sbom: {},
     }
+  }
+
+  if (input.previousSbomPath) {
+    try {
+      const [previousRaw, currentRaw] = await Promise.all([
+        readFile(input.previousSbomPath, 'utf8'),
+        generateSbom('.'),
+      ])
+      const previousSbom = parseSbomComponents(previousRaw)
+      const currentSbom = parseSbomComponents(currentRaw)
+      sbomDiff = await diffSbom(previousSbom, currentSbom)
+    } catch (error) {
+      console.warn(`Failed to diff SBOMs for path ${input.previousSbomPath}.`, error)
+    }
+  }
+  
+  try {
+    const dependencies = await getTopDependenciesByDepth(20)
+    const checks = await Promise.allSettled(dependencies.map((dep) => checkNpmIntegrity(dep.name, dep.version)))
+    for (const check of checks) {
+      if (check.status === 'fulfilled') {
+        integrityResults.push(check.value)
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to perform npm publish integrity checks.', error)
   }
   
   for (const cve of trivyReport.cves) {
@@ -226,6 +312,44 @@ async function runAnalysis(env: Env, input: DeployWebhookInput): Promise<Analyze
     }
   }
 
+  if (sbomDiff) {
+    for (const licenseChange of sbomDiff.licenseChanged) {
+      scanResults.push({
+        line: `License changed: ${licenseChange.from.name} ${licenseChange.from.license} -> ${licenseChange.to.license}`,
+        lineNumber: 1,
+        file: 'sbom-diff',
+        matches: [{
+          class: 'supply_chain_package_eval',
+          confidence: 1.0,
+          category: 'license',
+          severity: 'critical',
+          isNovelVariant: false,
+          description: `License changed for ${licenseChange.from.name}: ${licenseChange.from.license} -> ${licenseChange.to.license}`,
+          detectionLevels: { l1: true, l2: false, convergent: false },
+        }],
+      })
+    }
+  }
+
+  for (const integrity of integrityResults) {
+    if (!integrity.matches) {
+      scanResults.push({
+        line: `Integrity mismatch: ${integrity.name} @ ${integrity.version}`,
+        lineNumber: 1,
+        file: 'publish-integrity',
+        matches: [{
+          class: 'supply_chain_tampering' as ScanResult['matches'][number]['class'],
+          confidence: 1.0,
+          category: 'supply_chain',
+          severity: 'critical',
+          isNovelVariant: false,
+          description: `Registry hash and local hash mismatch for ${integrity.name}@${integrity.version}`,
+          detectionLevels: { l1: true, l2: false, convergent: false },
+        }],
+      })
+    }
+  }
+
   const hasInvariantMatches = scanResults.some(result => result.matches.length > 0)
 
   const behavioralCurrent = extractBehaviors(diffLines)
@@ -257,6 +381,8 @@ async function runAnalysis(env: Env, input: DeployWebhookInput): Promise<Analyze
       scanResults,
       behavioralDelta,
       lawCompliance,
+      sbomDiff,
+      integrityResults,
     },
     clean,
     behavioralCurrent,

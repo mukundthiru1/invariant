@@ -24,14 +24,14 @@
 import type { InvariantClassModule } from '../types.js'
 
 // Individual class imports
-import { protoPollution, graphqlIntrospection } from './prototype-pollution.js'
+import { protoPollution, prototypePollutionViaQuery, graphqlIntrospection } from './prototype-pollution.js'
 import { protoPollutionGadget } from './proto-pollution-gadget.js'
 import { logJndiLookup } from './log-jndi-lookup.js'
 import { sstiJinjaTwig, sstiElExpression, templateInjectionGeneric } from './ssti.js'
 import { nosqlOperatorInjection, nosqlJsInjection } from './nosql.js'
 import { xxeEntityExpansion, xmlInjection } from './xxe.js'
 import { crlfHeaderInjection, crlfLogInjection } from './crlf.js'
-import { graphqlBatchAbuse } from './graphql.js'
+import { graphqlBatchAbuse, graphql_injection, graphql_dos } from './graphql.js'
 import { openRedirectBypass, ldapFilterInjection, regexDos, xxeInjection, httpSmuggling } from './misc.js'
 import { llmPromptInjection, llmDataExfiltration, llmJailbreak, llmIndirectInjection } from './llm-injection.js'
 import {
@@ -40,10 +40,12 @@ import {
     httpSmuggleChunkExt,
     httpSmuggleZeroCl,
     httpSmuggleExpect,
+    http_request_smuggling,
 } from './http-smuggling.js'
 import { corsOriginAbuse } from './cors.js'
 import { dependencyConfusion, postinstallInjection, envExfiltration } from './supply-chain.js'
 import { ws_injection, ws_hijack } from './websocket.js'
+import { websocket_origin_bypass, websocket_message_injection, websocket_dos } from './websocket-attacks.js'
 import { cachePoisoning, cacheDeception } from './cache-poisoning.js'
 import { bolaIdor, apiMassEnum } from './api-abuse.js'
 import { credentialStuffing } from '../auth/index.js'
@@ -98,7 +100,7 @@ import {
 import { WEB_ATTACKS_CLASSES } from './web-attacks.js'
 
 // Re-export individual classes for selective imports
-export { protoPollution, graphqlIntrospection, graphqlInjection } from './prototype-pollution.js'
+export { protoPollution, prototypePollutionViaQuery, graphqlIntrospection, graphqlInjection } from './prototype-pollution.js'
 export { protoPollutionGadget } from './proto-pollution-gadget.js'
 export { logJndiLookup } from './log-jndi-lookup.js'
 export { sstiJinjaTwig, sstiElExpression, templateInjectionGeneric } from './ssti.js'
@@ -106,6 +108,7 @@ export { nosqlOperatorInjection, nosqlJsInjection } from './nosql.js'
 export { xxeEntityExpansion, xmlInjection } from './xxe.js'
 export { crlfHeaderInjection, crlfLogInjection } from './crlf.js'
 export { graphqlBatchAbuse } from './graphql.js'
+export { graphql_injection, graphql_dos } from './graphql.js'
 export { openRedirectBypass, ldapFilterInjection, regexDos, xxeInjection, httpSmuggling } from './misc.js'
 export { llmPromptInjection, llmDataExfiltration, llmJailbreak, llmIndirectInjection } from './llm-injection.js'
 export {
@@ -114,10 +117,12 @@ export {
     httpSmuggleChunkExt,
     httpSmuggleZeroCl,
     httpSmuggleExpect,
+    http_request_smuggling,
 } from './http-smuggling.js'
 export { corsOriginAbuse } from './cors.js'
 export { dependencyConfusion, postinstallInjection, envExfiltration } from './supply-chain.js'
 export { ws_injection, ws_hijack } from './websocket.js'
+export { websocket_origin_bypass, websocket_message_injection, websocket_dos } from './websocket-attacks.js'
 export { cachePoisoning, cacheDeception } from './cache-poisoning.js'
 export { bolaIdor, apiMassEnum } from './api-abuse.js'
 export {
@@ -174,6 +179,7 @@ export {
 export const INJECTION_CLASSES: InvariantClassModule[] = [
     // Proto pollution (basic detection + gadget-chain-aware)
     protoPollution,
+    prototypePollutionViaQuery,
     protoPollutionGadget,
     // Log4Shell / JNDI
     logJndiLookup,
@@ -193,6 +199,8 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     // GraphQL
     graphqlIntrospection,
     graphqlBatchAbuse,
+    graphql_injection,
+    graphql_dos,
     // Open redirect
     openRedirectBypass,
     // Mass assignment
@@ -213,6 +221,7 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     httpSmuggleChunkExt,    // Chunk extension exploit (2025)
     httpSmuggleZeroCl,      // 0.CL desync (2025)
     httpSmuggleExpect,      // Expect-based desync (2025)
+    http_request_smuggling, // CL.TE/TE.CL/general request smuggling detection
     // CORS
     corsOriginAbuse,
     // Supply-chain and dependency threats
@@ -222,6 +231,9 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     // WebSocket-specific threats
     ws_injection,
     ws_hijack,
+    websocket_origin_bypass,
+    websocket_message_injection,
+    websocket_dos,
     // LLM prompt security classes
     llmPromptInjection,
     llmDataExfiltration,

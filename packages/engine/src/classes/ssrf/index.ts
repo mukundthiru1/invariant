@@ -21,6 +21,7 @@ export const ssrfInternalReach: InvariantClassModule = {
         'http://10.0.0.1',
         'http://192.168.1.1',
         'http://[::1]',
+        'http://[0:0:0:0:0:ffff:7f00:1]',
         'http://0x7f000001',
         'http://2130706433',
         'http://0177.0.0.1',
@@ -29,6 +30,11 @@ export const ssrfInternalReach: InvariantClassModule = {
         'http://[0:0:0:0:0:0:0:1]',
         'http://[::ffff:7f00:0001]',
         'http://[fe80::1%25lo]',
+        'http://bit.ly/example',
+        'http://tinyurl.com/example',
+        'http://t.co/example',
+        'http://kubernetes.default.svc/',
+        'https://10.0.0.1:6443/api/',
     ],
 
     knownBenign: [
@@ -39,7 +45,7 @@ export const ssrfInternalReach: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:https?:\/\/)?(?:127\.\d+(?:\.\d+)*|localhost|0\.0\.0\.0|10\.\d+(?:\.\d+)*|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|\[0:0:0:0:0:0:0:1\]|\[(?:0000:){7}0001\]|\[::ffff:127\.0\.0\.1\]|\[::ffff:7f00:1\]|\[::ffff:7f00:0001\]|\[::ffff:0:0\]|\[fe80::1(?:%25|%|).*\]|0177\.0\.0\.01|0177\.0\.0\.1|localtest\.me|lvh\.me|yurets\.dev|1u\.ms|\.nip\.io|\.xip\.io|\.sslip\.io)/i.test(d)
+        return /(?:https?:\/\/)?(?:127(?:\.\d{1,3}){1,3}|localhost|0\.0\.0\.0|10(?:\.\d{1,3}){1,3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|(?:0x7f000001|0X7F000001)|2130706433|017700000001|0177\.0\.0\.0?1|\[(?:::1|0:0:0:0:0:0:0:1|(?:0000:){7}0001|::ffff:127\.0\.0\.1|::ffff:7f00:1|::ffff:7f00:0001|0:0:0:0:0:ffff:7f00:1|::ffff:0:0)\]|\[fe80::1(?:%25|%|).*\]|localtest\.me|lvh\.me|yurets\.dev|1u\.ms|[a-z0-9.-]+\.nip\.io|[a-z0-9.-]+\.xip\.io|[a-z0-9.-]+\.sslip\.io|kubernetes\.default\.svc|10\.0\.0\.1:6443\/api\/?|bit\.ly(?:\/|$)|tinyurl\.com(?:\/|$)|t\.co(?:\/|$))/i.test(d)
     },
     detectL2: l2SsrfInternal,
     generateVariants: (count: number): string[] => {
@@ -58,8 +64,14 @@ export const ssrfInternalReach: InvariantClassModule = {
             '%48%54%54%50://localhost',
             'http://[::ffff:127.0.0.1]',
             'http://[::ffff:7f00:1]',
+            'http://[0:0:0:0:0:ffff:7f00:1]',
             'http://0x7f000001:80',
             'http://2130706433/admin',
+            'http://bit.ly/short',
+            'http://tinyurl.com/short',
+            'http://t.co/short',
+            'http://kubernetes.default.svc/api',
+            'https://10.0.0.1:6443/api/',
         ]
         const v = [...seeds, ...mutated].filter(candidate => ssrfInternalReach.detect(candidate))
         const r: string[] = []
@@ -80,7 +92,12 @@ export const ssrfCloudMetadata: InvariantClassModule = {
 
     knownPayloads: [
         'http://169.254.169.254/latest/meta-data/',
+        'http://169.254.169.254/latest/api/token',
         'http://metadata.google.internal/computeMetadata/v1/',
+        'http://169.254.169.254/computeMetadata/v1/',
+        'http://169.254.169.254/metadata/identity/',
+        'http://metadata.digitalocean.com/metadata/v1/',
+        'http://169.254.169.254/opc/v2/instance/',
         'http://100.100.100.200/latest/meta-data/',
         'http://168.63.129.16/metadata',
     ],
@@ -93,7 +110,7 @@ export const ssrfCloudMetadata: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254|metadata\.azure\.com|168\.63\.129\.16/i.test(d)
+        return /(?:https?:\/\/)?(?:metadata\.google\.internal|metadata\.digitalocean\.com|metadata\.azure\.com|100\.100\.100\.200|168\.63\.129\.16|\[fd00:ec2::254\]|169\.254\.169\.254(?:\/(?:latest\/meta-data|latest\/api\/token|computeMetadata|metadata(?:\/identity)?|opc)(?:[\/?#]|$)|(?::\d+)?(?:[\/?#]|$)))/i.test(d)
     },
     detectL2: l2SsrfCloudMetadata,
     generateVariants: (count: number): string[] => {
@@ -111,6 +128,11 @@ export const ssrfCloudMetadata: InvariantClassModule = {
             '%2568%2574%2574%2570%253A%252F%252F169.254.169.254%252Flatest%252Fmeta-data%252F',
             'http://metadata.google.internal/computeMetadata/v1/?recursive=true',
             '%68%74%74%70://metadata.google.internal/computeMetadata/v1/',
+            'http://169.254.169.254/latest/api/token',
+            'http://169.254.169.254/computeMetadata/v1/instance/id',
+            'http://169.254.169.254/metadata/identity/oauth2/token',
+            'http://metadata.digitalocean.com/metadata/v1/id',
+            'http://169.254.169.254/opc/v2/instance/',
             'http://168.63.129.16/metadata/instance',
             '%68%74%74%70://100.100.100.200/latest/meta-data/',
             'http://[fd00:ec2::254]:80/latest/meta-data/',
@@ -135,7 +157,9 @@ export const ssrfProtocolSmuggle: InvariantClassModule = {
     knownPayloads: [
         'file:///etc/passwd',
         'gopher://127.0.0.1:6379/_*1%0d%0a$8%0d%0aflushall',
+        'gopher://127.0.0.1:6379/_FLUSHALL',
         'dict://127.0.0.1:6379/INFO',
+        'dict://127.0.0.1:11211/stat',
         'phar:///tmp/evil.phar',
     ],
 

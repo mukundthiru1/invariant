@@ -379,7 +379,7 @@ export const ATTACK_CHAINS: ChainDefinition[] = [
         severity: 'critical',
         steps: [
             {
-                classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle'],
+                classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle', 'yaml_deserialization'],
                 description: 'Inject serialized object with gadget chain for code execution',
                 defense: 'block',
             },
@@ -593,7 +593,7 @@ export const ATTACK_CHAINS: ChainDefinition[] = [
         severity: 'critical',
         steps: [
             {
-                classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle', 'log_jndi_lookup'],
+                classes: ['deser_java_gadget', 'deser_php_object', 'deser_python_pickle', 'yaml_deserialization', 'log_jndi_lookup'],
                 description: 'Initial access via deserialization or JNDI injection in third-party component',
                 defense: 'block',
             },
@@ -711,7 +711,7 @@ export const ATTACK_CHAINS: ChainDefinition[] = [
         steps: [
             {
                 classes: ['sql_stacked_execution', 'ssti_jinja_twig', 'ssti_el_expression',
-                    'deser_java_gadget', 'deser_php_object', 'log_jndi_lookup'],
+                    'deser_java_gadget', 'deser_php_object', 'yaml_deserialization', 'log_jndi_lookup'],
                 description: 'Exploit RCE-class vulnerability for initial code execution',
                 defense: 'block',
             },

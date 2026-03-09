@@ -20,10 +20,35 @@ describe('SSRF classes regressions', () => {
             'http://10.1',
             'http://[0000:0000:0000:0000:0000:0000:0000:0001]',
             'http://[::ffff:0:0]',
+            'http://[::1]/',
+            'http://[::ffff:127.0.0.1]/',
+            'http://[0:0:0:0:0:ffff:7f00:1]/',
+            'http://2130706433/',
+            'http://0x7f000001/',
+            'http://bit.ly/',
+            'http://tinyurl.com/',
+            'http://t.co/',
+            'http://kubernetes.default.svc/',
+            'https://10.0.0.1:6443/api/',
         ]
 
         for (const payload of payloads) {
             expect(ssrfInternalReach.detect(payload), payload).toBe(true)
+        }
+    })
+
+    it('detects cloud metadata endpoint variants', () => {
+        const payloads = [
+            'http://169.254.169.254/latest/api/token',
+            'http://metadata.google.internal/',
+            'http://169.254.169.254/computeMetadata/v1/',
+            'http://169.254.169.254/metadata/identity/',
+            'http://metadata.digitalocean.com/metadata/v1/',
+            'http://169.254.169.254/opc/v2/instance/',
+        ]
+
+        for (const payload of payloads) {
+            expect(ssrfCloudMetadata.detect(payload), payload).toBe(true)
         }
     })
 
@@ -33,6 +58,8 @@ describe('SSRF classes regressions', () => {
             'expect://ls',
             'data://text/plain;base64,SGVsbG8=',
             'zip://archive.zip#payload.php',
+            'gopher://127.0.0.1:6379/_FLUSHALL',
+            'dict://127.0.0.1:11211/stat',
         ]
 
         for (const payload of payloads) {

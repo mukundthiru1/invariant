@@ -9,6 +9,9 @@ const MYSQL_EXTRACT_UPDATE_PATTERN = /\b(?:EXTRACTVALUE|UPDATEXML)\s*\(\s*1\s*,\
 const MYSQL_RANDOM_ERROR_PATTERN = /FLOOR\s*\(\s*RAND\s*\(\s*0\s*\)\s*\*\s*2\s*\)/i
 const MYSQL_GROUP_BY_X_PATTERN = /\bGROUP\s+BY\s+\w+/i
 const MYSQL_SYSTEM_FUNC_PATTERN = /\b(?:VERSION|USER|DATABASE)\b|@@datadir/i
+const MYSQL_CHARSET_BYPASS_PATTERN = /\bSET\s+NAMES\s+utf8\b[\s;]+(?:SELECT|INSERT|UPDATE|DELETE)\b/i
+const MYSQL_CONVERT_UTF8_PATTERN = /\bCONVERT\s*\(\s*.+?\s+USING\s+utf8\s*\)/i
+const SQL_HEX_SELECT_PATTERN = /\b0x53454c454354\b/i
 
 export const sqlMysqlSpecific: InvariantClassModule = {
     id: 'sql_mysql_specific',
@@ -24,6 +27,9 @@ export const sqlMysqlSpecific: InvariantClassModule = {
         ` ' PROCEDURE ANALYSE(extractvalue(1,concat(0x7e,(SELECT version()))),1)-- -`,
         ` ' AND ExtractValue(1, concat(0x7e, (select @@datadir)))-- -`,
         ` ' AND (SELECT 1 FROM(SELECT COUNT(*),concat((SELECT database()),0x3a,floor(rand(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -`,
+        `SET NAMES utf8; SELECT user();`,
+        `' AND CONVERT((SELECT password FROM users LIMIT 1) USING utf8)--`,
+        `/*!50000SELECT*/ 0x53454c454354`,
     ],
 
     knownBenign: [
@@ -37,6 +43,9 @@ export const sqlMysqlSpecific: InvariantClassModule = {
         return MYSQL_PROC_ANALYSE_PATTERN.test(d)
             || (MYSQL_EXTRACT_UPDATE_PATTERN.test(d) && MYSQL_SYSTEM_FUNC_PATTERN.test(d))
             || (MYSQL_RANDOM_ERROR_PATTERN.test(d) && MYSQL_GROUP_BY_X_PATTERN.test(d))
+            || MYSQL_CHARSET_BYPASS_PATTERN.test(d)
+            || MYSQL_CONVERT_UTF8_PATTERN.test(d)
+            || SQL_HEX_SELECT_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
@@ -44,6 +53,9 @@ export const sqlMysqlSpecific: InvariantClassModule = {
         const detected = MYSQL_PROC_ANALYSE_PATTERN.test(d)
             || (MYSQL_EXTRACT_UPDATE_PATTERN.test(d) && MYSQL_SYSTEM_FUNC_PATTERN.test(d))
             || (MYSQL_RANDOM_ERROR_PATTERN.test(d) && MYSQL_GROUP_BY_X_PATTERN.test(d))
+            || MYSQL_CHARSET_BYPASS_PATTERN.test(d)
+            || MYSQL_CONVERT_UTF8_PATTERN.test(d)
+            || SQL_HEX_SELECT_PATTERN.test(d)
 
         if (!detected) return null
 
@@ -62,6 +74,9 @@ export const sqlMysqlSpecific: InvariantClassModule = {
             `' AND (SELECT 1 FROM(SELECT COUNT(*),concat((SELECT database()),0x3a,floor(rand(0)*2))x FROM information_schema.tables GROUP BY x)a)-- -`,
             `' AND UpdateXML(1,concat(0x7e, (SELECT user())),1)-- -`,
             `' OR 1=1 AND (SELECT 1 FROM(SELECT FLOOR(RAND(0)*2) x)q GROUP BY x)-- -`,
+            `SET NAMES utf8; SELECT version();`,
+            `' AND CONVERT((SELECT @@version) USING utf8)--`,
+            `' UNION SELECT 0x53454c454354--`,
         ]
         const result: string[] = []
         for (let i = 0; i < count; i++) result.push(variants[i % variants.length])

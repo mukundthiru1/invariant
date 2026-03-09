@@ -37,6 +37,9 @@ const FRAME_ANCESTORS_RE = /\bframe-ancestors\b/i
 const DUPLICATE_QUERY_PARAM_RE = /[?&]([^=&]+)=[^&]*/g
 const CORS_WILDCARD_RE = /(?:^|\n|\r)\s*(?:access-control-allow-origin|acao)\s*:\s*\*/i
 const CORS_CREDENTIALS_RE = /(?:^|\n|\r)\s*(?:access-control-allow-credentials|acac)\s*:\s*true/i
+const CORS_NULL_ORIGIN_RE = /(?:^|\n|\r)\s*(?:access-control-allow-origin|acao)\s*:\s*null\s*$/im
+const CORS_SUBDOMAIN_WILDCARD_RE = /(?:^|\n|\r)\s*(?:access-control-allow-origin|acao)\s*:\s*\*\.[a-z0-9.-]+\.[a-z]{2,}\s*$/im
+const CORS_REGEX_BYPASS_RE = /(?:^|\n|\r)\s*origin\s*:\s*https?:\/\/evil-[a-z0-9.-]*([a-z0-9-]+\.[a-z]{2,})(?::\d+)?(?:\/|\s|$)[\s\S]{0,400}(?:^|\n|\r)\s*(?:access-control-allow-origin|acao)\s*:\s*https?:\/\/evil-[a-z0-9.-]*\1(?::\d+)?(?:\/|\s|$)/im
 const SUBDOMAIN_CNAME_PROVIDER_RE = /CNAME\s+[^\s]+\.(?:github\.io|s3\.amazonaws\.com|amazonaws\.com|herokuapp\.com|tumblr\.com|azurewebsites\.net|cloudfront\.net|fastly\.net|shopify\.com|readme\.io)/i
 const SUBDOMAIN_TAKEOVER_ERROR_RE = /(NoSuchBucket|No such app|Not Found|404|There is no app|project not found)/i
 const NEGATIVE_NUMERIC_PARAM_RE = /(?:quantity|price|amount|count|age|limit|size)\s*=\s*-\d+/i
@@ -841,25 +844,58 @@ export const insecureCorsWildcard: InvariantClassModule = {
         'Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Credentials: true',
         'access-control-allow-origin: *\naccess-control-allow-credentials: true',
         'ACAO: *\nACAC: true',
+        'Access-Control-Allow-Origin: null',
+        'Access-Control-Allow-Origin: *.example.com',
+        'Origin: https://evil-example.com\r\nAccess-Control-Allow-Origin: https://evil-example.com',
     ],
     knownBenign: [
         'Access-Control-Allow-Origin: https://trusted.com',
         'Access-Control-Allow-Origin: *\r\nContent-Type: application/json',
-        'Access-Control-Allow-Origin: null',
+        'Origin: https://app.example.com\r\nAccess-Control-Allow-Origin: https://app.example.com',
     ],
     detect: (input: string): boolean => {
         const decoded = deepDecode(input)
-        return CORS_WILDCARD_RE.test(decoded) && CORS_CREDENTIALS_RE.test(decoded)
+        const wildcardWithCredentials = CORS_WILDCARD_RE.test(decoded) && CORS_CREDENTIALS_RE.test(decoded)
+        const nullOrigin = CORS_NULL_ORIGIN_RE.test(decoded)
+        const subdomainWildcard = CORS_SUBDOMAIN_WILDCARD_RE.test(decoded)
+        const regexBypassReflection = CORS_REGEX_BYPASS_RE.test(decoded)
+        return wildcardWithCredentials || nullOrigin || subdomainWildcard || regexBypassReflection
     },
     detectL2: (input: string): DetectionLevelResult | null => {
         const decoded = deepDecode(input)
-        if (!CORS_WILDCARD_RE.test(decoded) || !CORS_CREDENTIALS_RE.test(decoded)) return null
-        return {
-            detected: true,
-            confidence: 0.9,
-            explanation: 'L2 CORS policy analysis found wildcard origin combined with credential allowance',
-            evidence: decoded.slice(0, 160),
+        if (CORS_WILDCARD_RE.test(decoded) && CORS_CREDENTIALS_RE.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.9,
+                explanation: 'L2 CORS policy analysis found wildcard origin combined with credential allowance',
+                evidence: decoded.slice(0, 160),
+            }
         }
+        if (CORS_NULL_ORIGIN_RE.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.87,
+                explanation: 'L2 CORS analysis found explicit null origin allowance, enabling opaque/sandboxed origin access',
+                evidence: 'access-control-allow-origin: null',
+            }
+        }
+        if (CORS_SUBDOMAIN_WILDCARD_RE.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.86,
+                explanation: 'L2 CORS analysis found invalid subdomain wildcard origin pattern that often indicates unsafe origin matching logic',
+                evidence: decoded.slice(0, 160),
+            }
+        }
+        if (CORS_REGEX_BYPASS_RE.test(decoded)) {
+            return {
+                detected: true,
+                confidence: 0.89,
+                explanation: 'L2 CORS analysis found attacker-controlled origin reflected in allow-origin with suffix-style domain confusion',
+                evidence: decoded.slice(0, 160),
+            }
+        }
+        return null
     },
     generateVariants: (count: number): string[] => {
         const variants = [
@@ -867,6 +903,9 @@ export const insecureCorsWildcard: InvariantClassModule = {
             'access-control-allow-origin: *\naccess-control-allow-credentials: true',
             'ACAO: *\nACAC: true',
             'access-control-allow-credentials: true\nacao: *',
+            'Access-Control-Allow-Origin: null',
+            'Access-Control-Allow-Origin: *.example.com',
+            'origin: https://evil-example.com\nacao: https://evil-example.com',
         ]
         return variants.slice(0, count)
     },

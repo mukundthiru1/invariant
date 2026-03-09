@@ -8,6 +8,7 @@ import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.j
 const TIME_ORACLE_CLASSIC_PATTERN = /(?:SLEEP\s*\(|WAITFOR\s+DELAY|BENCHMARK\s*\(|PG_SLEEP\s*\(|DBMS_PIPE\.RECEIVE_MESSAGE)/i
 const TIME_ORACLE_OBFUSCATED_FUNCTION_PATTERN = /(?:^|['"`;\s])(?:AND|OR)?\s*(?:S\s*L\s*E\s*E\s*P|P\s*G\s*_?\s*S\s*L\s*E\s*E\s*P|B\s*E\s*N\s*C\s*H\s*M\s*A\s*R\s*K|D\s*B\s*M\s*S\s*_?\s*P\s*I\s*P\s*E\s*\.\s*R\s*E\s*C\s*E\s*I\s*V\s*E\s*_?\s*M\s*E\s*S\s*S\s*A\s*G\s*E|D\s*B\s*M\s*S\s*_?\s*L\s*O\s*C\s*K\s*\.\s*S\s*L\s*E\s*E\s*P)\s*\(/i
 const TIME_ORACLE_WAITFOR_PATTERN = /(?:^|['"`;\s])\s*W\s*A\s*I\s*T\s*F\s*O\s*R\s*D\s*E\s*L\s*A\s*Y\s*['"]?\d{1,2}:\d{1,2}:\d{1,2}['"]?/i
+const TIME_ORACLE_WAITFOR_DELAY_MSSQL_PATTERN = /\bWAITFOR\s+DELAY\s*['"]\s*\d{1,2}\s*:\s*\d{1,2}\s*:\s*\d{1,2}\s*['"]/i
 
 export const sqlTimeOracle: InvariantClassModule = {
     id: 'sql_time_oracle',
@@ -46,7 +47,8 @@ export const sqlTimeOracle: InvariantClassModule = {
         const classic = TIME_ORACLE_CLASSIC_PATTERN.test(d)
         const obfuscatedFuncs = TIME_ORACLE_OBFUSCATED_FUNCTION_PATTERN.test(d)
         const obfuscatedWaitfor = TIME_ORACLE_WAITFOR_PATTERN.test(d)
-        return classic || obfuscatedFuncs || obfuscatedWaitfor
+        const explicitWaitfor = TIME_ORACLE_WAITFOR_DELAY_MSSQL_PATTERN.test(d)
+        return classic || obfuscatedFuncs || obfuscatedWaitfor || explicitWaitfor
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {

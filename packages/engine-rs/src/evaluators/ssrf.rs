@@ -1269,6 +1269,76 @@ impl L2Evaluator for SsrfEvaluator {
 
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
         let lowered_decoded = decoded.to_lowercase();
+
+        static SSRF_IPV6_MAPPED_METADATA_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)https?://\[\s*::ffff:169\.254\.169\.254\s*\](?:[/:?#]|$)")
+                    .unwrap()
+            });
+        for m in SSRF_IPV6_MAPPED_METADATA_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_ipv6_mapped_metadata".into(),
+                confidence: 0.96,
+                detail: "IPv6-mapped metadata endpoint target detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "IPv6 mapped notation ::ffff:169.254.169.254 bypasses naive IPv4-only metadata filters"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "SSRF policy must normalize IPv6-mapped IPv4 hosts before metadata/IP range checks"
+                            .into(),
+                }],
+            });
+        }
+
+        static SSRF_DECIMAL_LOOPBACK_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)https?://2130706433(?:[/:?#]|$)").unwrap());
+        for m in SSRF_DECIMAL_LOOPBACK_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_decimal_ip_loopback".into(),
+                confidence: 0.95,
+                detail: "Decimal integer IPv4 SSRF bypass target detected (2130706433)".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Single-integer decimal host 2130706433 resolves to loopback 127.0.0.1"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "SSRF protection must canonicalize integer IPv4 host representations".into(),
+                }],
+            });
+        }
+
+        static SSRF_IMDSV2_TOKEN_URL_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)https?://169\.254\.169\.254/latest/api/token(?:[/?#]|$)")
+                    .unwrap()
+            });
+        for m in SSRF_IMDSV2_TOKEN_URL_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_aws_imdsv2_token_url".into(),
+                confidence: 0.99,
+                detail: "Direct AWS IMDSv2 token URL target detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Direct access to /latest/api/token can acquire IMDSv2 token for metadata credential theft"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Block all requests to AWS metadata token endpoint in SSRF contexts".into(),
+                }],
+            });
+        }
         
         static CONTAINER_K8S_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?i)(?:unix:///var/run/docker\.sock|tcp://localhost:2375|localhost:2376|kubernetes\.default\.svc|localhost:2379|localhost:4001|localhost:8500|localhost:15000|localhost:9901|localhost:9001|169\.254\.76\.1)").unwrap()
@@ -1763,8 +1833,16 @@ impl L2Evaluator for SsrfEvaluator {
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "internal_reach" | "ssrf_container_internal" | "ssrf_ipv6_zone_id" | "ssrf_aws_vpc_endpoint" | "ssrf_ipv6_zone_localhost" => Some(InvariantClass::SsrfInternalReach),
-            "cloud_metadata" | "ssrf_cloud_metadata_alt_path" => Some(InvariantClass::SsrfCloudMetadata),
+            "internal_reach"
+            | "ssrf_container_internal"
+            | "ssrf_ipv6_zone_id"
+            | "ssrf_aws_vpc_endpoint"
+            | "ssrf_ipv6_zone_localhost"
+            | "ssrf_decimal_ip_loopback"
+            | "ssrf_ipv6_mapped_metadata" => Some(InvariantClass::SsrfInternalReach),
+            "cloud_metadata" | "ssrf_cloud_metadata_alt_path" | "ssrf_aws_imdsv2_token_url" => {
+                Some(InvariantClass::SsrfCloudMetadata)
+            }
             "protocol_smuggle" => Some(InvariantClass::SsrfProtocolSmuggle),
             _ => None,
         }
@@ -1816,6 +1894,16 @@ mod tests {
         assert!(
             dets.iter().any(|d| d.detection_type == "internal_reach"),
             "Decimal IP should be resolved to internal range"
+        );
+    }
+
+    #[test]
+    fn decimal_ip_explicit_pattern_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://2130706433/");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_decimal_ip_loopback")
         );
     }
 
@@ -1881,6 +1969,16 @@ mod tests {
         assert!(
             dets.iter().any(|d| d.detection_type == "internal_reach"),
             "IPv6 mapped IPv4 should be detected"
+        );
+    }
+
+    #[test]
+    fn ipv6_mapped_metadata_explicit_pattern_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://[::ffff:169.254.169.254]/");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_ipv6_mapped_metadata")
         );
     }
 
@@ -2010,6 +2108,16 @@ mod tests {
         assert!(
             dets.iter().any(|d| d.detection_type == "cloud_metadata"),
             "AWS IMDSv2 token workflow should be blocked"
+        );
+    }
+
+    #[test]
+    fn aws_imdsv2_token_url_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://169.254.169.254/latest/api/token");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_aws_imdsv2_token_url")
         );
     }
 

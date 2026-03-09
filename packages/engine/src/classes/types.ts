@@ -61,6 +61,7 @@ export type InvariantClass =
     | 'deser_java_gadget'
     | 'deser_php_object'
     | 'deser_python_pickle'
+    | 'yaml_deserialization'
 
     // Auth bypass invariants
     | 'auth_none_algorithm'
@@ -96,12 +97,14 @@ export type InvariantClass =
     | 'clickjacking_missing_header'
     | 'http_parameter_pollution'
     | 'insecure_cors_wildcard'
+    | 'cors_origin_misconfiguration'
     | 'subdomain_takeover_indicator'
     | 'integer_overflow_param'
     | 'jsonp_hijacking'
 
     // Prototype pollution
     | 'proto_pollution'
+    | 'prototype_pollution_via_query'
 
     // Log injection
     | 'log_jndi_lookup'
@@ -123,6 +126,7 @@ export type InvariantClass =
     | 'xml_injection'
     | 'xxe_injection'
     | 'http_smuggling'
+    | 'http_request_smuggling'
 
     // CRLF
     | 'crlf_header_injection'
@@ -131,6 +135,8 @@ export type InvariantClass =
     // GraphQL
     | 'graphql_introspection'
     | 'graphql_batch_abuse'
+    | 'graphql_injection'
+    | 'graphql_dos'
 
     // Open redirect
     | 'open_redirect_bypass'
@@ -141,6 +147,9 @@ export type InvariantClass =
     | 'idor_parameter_probe'
     | 'http2_header_injection'
     | 'websocket_protocol_confusion'
+    | 'websocket_origin_bypass'
+    | 'websocket_message_injection'
+    | 'websocket_dos'
 
     // ReDoS
     | 'regex_dos'
@@ -268,6 +277,7 @@ export type InvariantClass =
     | 'clickjacking_missing_header'
     | 'http_parameter_pollution'
     | 'insecure_cors_wildcard'
+    | 'cors_origin_misconfiguration'
     | 'subdomain_takeover_indicator'
     | 'integer_overflow_param'
     | 'jsonp_hijacking'

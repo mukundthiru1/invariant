@@ -38,6 +38,9 @@ export type DriftType =
     | 'privilege_escalation'    // Endpoint became more privileged
     | 'privilege_degradation'   // Endpoint became less privileged (concern)
     | 'surface_expansion'       // Attack surface grew
+    | 'endpoint_enumeration_suspected' // Sudden burst of new endpoints
+    | 'unusual_method_detected' // Known endpoint observed with new HTTP method
+    | 'new_parameter_detected'  // New request parameter names appeared
     | 'posture_improvement'     // Security posture improved
 
 export type DriftSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info'
@@ -75,6 +78,7 @@ export interface EndpointSnapshot {
     authTypes: Record<string, number>
     sensitive: boolean
     requestCount: number
+    parameterNames?: string[]
 }
 
 
@@ -96,6 +100,8 @@ export class DriftDetector {
 
         // 3. Surface changes (endpoints)
         events.push(...this.detectSurfaceDrift(previous, current, ts))
+        events.push(...this.detectMethodDrift(previous, current, ts))
+        events.push(...this.detectParameterDrift(previous, current, ts))
 
         // 4. Tech stack changes
         events.push(...this.detectTechDrift(previous, current, ts))
@@ -251,7 +257,7 @@ export class DriftDetector {
                     type: 'endpoint_added',
                     severity: endpoint.sensitive ? 'high' : 'medium',
                     path: pattern,
-                    description: `New endpoint discovered: ${pattern} (${Object.keys(endpoint.methods).join(', ')})`,
+                    description: `New endpoint discovered: ${pattern} (${endpoint.methods.join(', ')})`,
                     previousValue: null,
                     currentValue: pattern,
                     riskDelta: endpoint.sensitive ? 15 : 5,
@@ -291,10 +297,92 @@ export class DriftDetector {
             })
         }
 
+        // Sudden endpoint burst can indicate path enumeration/scanning
+        const growthRatio = prevPatterns.size > 0 ? surfaceGrowth / prevPatterns.size : 0
+        if (surfaceGrowth >= 10 || (surfaceGrowth >= 5 && growthRatio >= 0.5)) {
+            events.push({
+                type: 'endpoint_enumeration_suspected',
+                severity: 'high',
+                path: '/',
+                description: `Sudden endpoint growth suggests path enumeration (${prevPatterns.size} → ${currPatterns.size})`,
+                previousValue: `${prevPatterns.size} endpoints`,
+                currentValue: `${currPatterns.size} endpoints`,
+                riskDelta: Math.max(15, surfaceGrowth * 2),
+                detectedAt: ts,
+            })
+        }
+
         return events
     }
 
     // ── Tech Drift ───────────────────────────────────────────────
+
+    private detectMethodDrift(
+        prev: PostureSnapshot,
+        curr: PostureSnapshot,
+        ts: string,
+    ): DriftEvent[] {
+        const events: DriftEvent[] = []
+        const prevMap = new Map(prev.endpoints.map(e => [e.pattern, e]))
+
+        for (const endpoint of curr.endpoints) {
+            const prevEndpoint = prevMap.get(endpoint.pattern)
+            if (!prevEndpoint) continue
+
+            const prevMethods = new Set(prevEndpoint.methods.map(m => m.toUpperCase()))
+            for (const method of endpoint.methods) {
+                const normalized = method.toUpperCase()
+                if (prevMethods.has(normalized)) continue
+
+                events.push({
+                    type: 'unusual_method_detected',
+                    severity: endpoint.sensitive ? 'high' : 'medium',
+                    path: endpoint.pattern,
+                    description: `Known endpoint ${endpoint.pattern} now serves unusual method ${normalized}`,
+                    previousValue: [...prevMethods].join(', ') || null,
+                    currentValue: normalized,
+                    riskDelta: endpoint.sensitive ? 18 : 10,
+                    detectedAt: ts,
+                })
+            }
+        }
+
+        return events
+    }
+
+    private detectParameterDrift(
+        prev: PostureSnapshot,
+        curr: PostureSnapshot,
+        ts: string,
+    ): DriftEvent[] {
+        const events: DriftEvent[] = []
+        const prevMap = new Map(prev.endpoints.map(e => [e.pattern, e]))
+
+        for (const endpoint of curr.endpoints) {
+            const prevEndpoint = prevMap.get(endpoint.pattern)
+            if (!prevEndpoint) continue
+
+            const prevParams = new Set((prevEndpoint.parameterNames ?? []).map(p => p.toLowerCase()))
+            const currParams = endpoint.parameterNames ?? []
+            for (const name of currParams) {
+                const normalized = name.toLowerCase()
+                if (prevParams.has(normalized)) continue
+
+                events.push({
+                    type: 'new_parameter_detected',
+                    severity: endpoint.sensitive ? 'high' : 'medium',
+                    path: endpoint.pattern,
+                    description: `Endpoint ${endpoint.pattern} has new parameter name "${name}" not seen in training window`,
+                    previousValue: [...prevParams].join(', ') || null,
+                    currentValue: name,
+                    riskDelta: endpoint.sensitive ? 14 : 8,
+                    detectedAt: ts,
+                })
+            }
+        }
+
+        return events
+    }
 
     private detectTechDrift(
         prev: PostureSnapshot,

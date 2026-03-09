@@ -9,6 +9,10 @@ interface ParsedJwtToken {
     signature: string
 }
 
+const JWT_BOMB_THRESHOLD_BYTES = 16 * 1024
+const BOMBED_HEADER_TOKEN = `${Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT', pad: 'A'.repeat(17000) })).toString('base64url')}.e30.signature`
+const BOMBED_PAYLOAD_TOKEN = `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.${Buffer.from(JSON.stringify({ sub: 'user', pad: 'B'.repeat(17000) })).toString('base64url')}.signature`
+
 function decodeBase64Url(value: string): string | null {
     try {
         const b64 = value.replace(/-/g, '+').replace(/_/g, '/')
@@ -17,6 +21,23 @@ function decodeBase64Url(value: string): string | null {
         return Buffer.from(padded, 'base64').toString('utf8')
     } catch {
         return null
+    }
+}
+
+function decodeLooseBase64(value: string): string | null {
+    const compact = value.trim().replace(/\s+/g, '')
+    if (!/^[A-Za-z0-9+/_=-]{12,}$/.test(compact)) return null
+    return decodeBase64Url(compact)
+}
+
+function decodedSegmentSize(segment: string): number {
+    try {
+        const b64 = segment.replace(/-/g, '+').replace(/_/g, '/')
+        const pad = b64.length % 4
+        const padded = pad === 0 ? b64 : b64 + '='.repeat(4 - pad)
+        return Buffer.from(padded, 'base64').length
+    } catch {
+        return 0
     }
 }
 
@@ -78,7 +99,7 @@ function extractJwtLikeHeaders(input: string): Record<string, unknown>[] {
         }
     }
 
-    const headerPattern = /\{\s*"(?:alg|kid|jwk|jku|typ)"[\s\S]{0,600}?\}/g
+    const headerPattern = /\{\s*"(?:alg|kid|jwk|jku|jwks_uri|x5u|x5c|typ|iss|sub)"[\s\S]{0,1200}?\}/g
     let headerMatch: RegExpExecArray | null
     while ((headerMatch = headerPattern.exec(decoded)) !== null) {
         try {
@@ -109,12 +130,46 @@ function extractJwtLikeHeaders(input: string): Record<string, unknown>[] {
     return headers
 }
 
+function isKidPathTraversal(kid: string): boolean {
+    return /\.\.[\\/]/.test(kid) || /(?:^|[\\/])(?:etc[\\/]passwd|dev[\\/]null)\b/i.test(kid)
+}
+
+function isKidSqlInjection(kid: string): boolean {
+    return /(?:union\s+select|'\s*(?:or|and)\b|;\s*(?:drop|select|insert|update|delete)\b|--\s*-*|\/\*)/i.test(kid)
+}
+
 function isKidSuspicious(kid: string): boolean {
-    if (/\.\.[\\/]/.test(kid)) return true
-    if (/(?:'\s*(?:or|and)\s+['"]?\d+['"]?\s*=\s*['"]?\d+['"]?|union\s+select|select\s+.+--|--\s*$)/i.test(kid)) return true
-    if (/^\s*\|[^\s]+\b/i.test(kid)) return true
-    if (/[$][(][^)]+[)]/.test(kid)) return true
-    if (/\bhttps?:\/\//i.test(kid) || /^\s*\/\//.test(kid)) return true
+    return isKidPathTraversal(kid) || isKidSqlInjection(kid)
+}
+
+function isExternalHttpUrl(value: string): boolean {
+    return /^(?:https?:)?\/\//i.test(value.trim())
+}
+
+function isSuspiciousX5u(value: string): boolean {
+    if (isExternalHttpUrl(value)) return true
+    const decoded = decodeLooseBase64(value)
+    return decoded ? isExternalHttpUrl(decoded) : false
+}
+
+function hasNestedJwtClaim(payload: Record<string, unknown>): boolean {
+    const jwtValue = /^\s*eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9._-]*\s*$/
+    return (typeof payload.sub === 'string' && jwtValue.test(payload.sub)) ||
+        (typeof payload.iss === 'string' && jwtValue.test(payload.iss))
+}
+
+function hasJwtBombingShape(token: ParsedJwtToken): boolean {
+    return decodedSegmentSize(token.headerB64) > JWT_BOMB_THRESHOLD_BYTES ||
+        decodedSegmentSize(token.payloadB64) > JWT_BOMB_THRESHOLD_BYTES
+}
+
+function hasAlgConfusionSignal(header: Record<string, unknown>, fullInput: string): boolean {
+    const alg = String(header.alg ?? '').toUpperCase()
+    if (!/^HS(?:256|384|512)$/.test(alg)) return false
+    if (typeof header.kid === 'string' && /(?:rsa|public|pub[_-]?key|asymmetric|rs256)/i.test(header.kid)) return true
+    if (/(?:rs(?:256|384|512)\s*(?:-|=)?>\s*hs(?:256|384|512)|from\s+rs(?:256|384|512)\s+to\s+hs(?:256|384|512))/i.test(fullInput)) return true
+    if (/-----BEGIN\s+(?:RSA\s+)?PUBLIC\s+KEY-----/i.test(fullInput)) return true
+    if (/(?:rsa\s+)?public\s+key\s+(?:as|for|used\s+as)\s+(?:hmac|secret|symmetric)/i.test(fullInput)) return true
     return false
 }
 
@@ -129,18 +184,18 @@ function isWeakSignature(signature: string): boolean {
 
 export const jwtKidInjection: InvariantClassModule = {
     id: 'jwt_kid_injection',
-    description: 'JWT kid header injection (SQL/path/URL) can force key lookup against attacker-controlled resources',
+    description: 'JWT kid header injection (SQL/path traversal) can force key lookup against attacker-controlled key material',
     category: 'auth',
     severity: 'critical',
     calibration: { baseConfidence: 0.92 },
     mitre: ['T1550.001'],
-    cwe: 'CWE-20',
+    cwe: 'CWE-22',
 
     knownPayloads: [
-        'eyJhbGciOiJIUzI1NiIsImtpZCI6Ii4uLy4uLy4uL2Rldi9udWxsIn0...',
-        'kid=../../../dev/null',
+        '{"kid":"\' UNION SELECT \'attackersecret\'-- -"}',
+        '{"kid":"../../dev/null"}',
+        '{"kid":"../../../etc/passwd"}',
         'kid=1 UNION SELECT password FROM users--',
-        '{"alg":"HS256","kid":"http://evil.com/key"}',
     ],
 
     knownBenign: [
@@ -162,16 +217,18 @@ export const jwtKidInjection: InvariantClassModule = {
         }
 
         const rawKid = decoded.match(/\bkid\s*(?:=|:)\s*['"]?([^'"\r\n&]+)['"]?/i)
-        if (!rawKid) return false
+        if (rawKid && isKidSuspicious(rawKid[1])) return true
 
-        return isKidSuspicious(rawKid[1])
+        if (/\bkid\s*(?:=|:)\s*['"][^'"]*(?:union\s+select|'\s*(?:or|and)\b|;\s*(?:drop|select|insert|update|delete)\b|--\s*-*)[^'"]*['"]/i.test(decoded)) return true
+        if (/\bkid\s*(?:=|:)\s*['"]?(?:\.\.[\\/][^'"&\r\n]*)/i.test(decoded)) return true
+        return false
     },
 
     generateVariants: (count: number): string[] => {
         const variants = [
             'kid=../../../dev/null',
             'kid=1 UNION SELECT password FROM users--',
-            '{"alg":"HS256","kid":"http://evil.com/key"}',
+            '{"kid":"../../../etc/passwd"}',
             '{"alg":"HS256","kid":"\' OR 1=1--"}',
         ]
         return Array.from({ length: count }, (_, i) => variants[i % variants.length])
@@ -192,6 +249,9 @@ export const jwtJwkEmbedding: InvariantClassModule = {
         '{"alg":"RS256","jwk":{"kty":"RSA","n":"attacker","e":"AQAB"}}',
         '{"alg":"RS256","jku":"https://evil.com/key"}',
         '{"alg":"ES256","jku":"http://evil.com/jwks.json"}',
+        '{"alg":"RS256","jwks_uri":"https://attacker.com/jwks"}',
+        '{"alg":"RS256","x5u":"aHR0cHM6Ly9ldmlsLmNvbS9jZXJ0LnBlbQ=="}',
+        '{"alg":"RS256","x5c":["MIIB","attacker-cert"]}',
     ],
 
     knownBenign: [
@@ -211,12 +271,25 @@ export const jwtJwkEmbedding: InvariantClassModule = {
 
             if (header.jwk && typeof header.jwk === 'object') return true
             if (typeof header.jku === 'string' && /^(?:https?:)?\/\//i.test(header.jku)) return true
-            if (typeof header.x5u === 'string' && /^(?:https?:)?\/\//i.test(header.x5u)) return true
+            if (typeof header.jwks_uri === 'string' && isExternalHttpUrl(header.jwks_uri)) return true
+            if (typeof header.x5u === 'string' && isSuspiciousX5u(header.x5u)) return true
+            if (Array.isArray(header.x5c) && header.x5c.some(item =>
+                typeof item === 'string' && (
+                    item.length < 64 ||
+                    /\b(?:attacker|evil|forged|self-?signed)\b/i.test(item) ||
+                    /^(?:https?:)?\/\//i.test(item)
+                ))) return true
         }
 
         if (/"alg"\s*:\s*"(?:RS|ES|PS)\d+"[\s\S]{0,160}"jwk"\s*:\s*\{/i.test(decoded)) return true
         if (/\bjku\s*(?:=|:)\s*['"]?(?:https?:)?\/\//i.test(decoded)) return true
+        if (/\bjwks_uri\s*(?:=|:)\s*['"]?(?:https?:)?\/\//i.test(decoded)) return true
         if (/\bx5u\s*(?:=|:)\s*['"]?(?:https?:)?\/\//i.test(decoded)) return true
+        if (/\bx5u\s*(?:=|:)\s*['"]?[A-Za-z0-9+/_=-]{16,}['"]?/i.test(decoded)) {
+            const x5uMatch = decoded.match(/\bx5u\s*(?:=|:)\s*['"]?([A-Za-z0-9+/_=-]{16,})['"]?/i)
+            if (x5uMatch && isSuspiciousX5u(x5uMatch[1])) return true
+        }
+        if (/\bx5c\s*(?:=|:)\s*\[[^\]]{1,220}\]/i.test(decoded) && /\b(?:attacker|evil|forged)\b/i.test(decoded)) return true
 
         return false
     },
@@ -227,6 +300,7 @@ export const jwtJwkEmbedding: InvariantClassModule = {
             '{"alg":"RS256","jku":"https://evil.com/key"}',
             '{"alg":"ES256","jku":"http://evil.com/jwks.json"}',
             '{"alg":"RS256","x5u":"https://evil.com/cert.pem"}',
+            '{"alg":"RS256","jwks_uri":"https://attacker.com/jwks"}',
         ]
         return Array.from({ length: count }, (_, i) => variants[i % variants.length])
     },
@@ -246,6 +320,10 @@ export const jwtWeakSecret: InvariantClassModule = {
         'Authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
         '?jwt=eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.secret123',
         '?auth=eyJhbGciOiJIUzM4NCJ9.eyJ1c2VyIjoidGVzdCJ9.1234567890',
+        '{"alg":"HS256","typ":"JWT"} RS256->HS256 with -----BEGIN PUBLIC KEY----- used as HMAC secret',
+        'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJleUpoYkdjaU9pSklVekkxTmlKOS5leUp6ZFdJaU9pSmhkbWx1SW4wLnNpZyJ9.signature',
+        BOMBED_HEADER_TOKEN,
+        BOMBED_PAYLOAD_TOKEN,
     ],
 
     knownBenign: [
@@ -259,6 +337,8 @@ export const jwtWeakSecret: InvariantClassModule = {
         const queryJwt = /[?&](?:token|jwt|auth)=eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9._-]*/i.test(decoded)
 
         for (const token of extractJwtTokens(decoded)) {
+            if (hasJwtBombingShape(token)) return true
+
             const decodedHeader = decodeBase64Url(token.headerB64)
             if (!decodedHeader) continue
 
@@ -276,7 +356,22 @@ export const jwtWeakSecret: InvariantClassModule = {
 
             if (queryJwt) return true
             if (isWeakSignature(token.signature)) return true
+            if (hasAlgConfusionSignal(header, decoded)) return true
+
+            const decodedPayload = decodeBase64Url(token.payloadB64)
+            if (!decodedPayload) continue
+            try {
+                const payloadObj = JSON.parse(decodedPayload) as Record<string, unknown>
+                if (payloadObj && typeof payloadObj === 'object' && hasNestedJwtClaim(payloadObj)) {
+                    return true
+                }
+            } catch {
+                continue
+            }
         }
+
+        if (/"(?:sub|iss)"\s*:\s*"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9._-]*"/i.test(decoded)) return true
+        if (/"alg"\s*:\s*"HS(?:256|384|512)"/i.test(decoded) && /(?:rs(?:256|384|512)\s*(?:-|=)?>\s*hs(?:256|384|512)|public\s+key\s+(?:as|used\s+as)\s+hmac\s+secret|-----BEGIN\s+(?:RSA\s+)?PUBLIC\s+KEY-----)/i.test(decoded)) return true
 
         const standaloneHeader = decoded.match(/\b(?:Authorization\s*:\s*)?(eyJ[A-Za-z0-9_-]{16,})\b/i)
         if (!standaloneHeader) return false
@@ -292,6 +387,7 @@ export const jwtWeakSecret: InvariantClassModule = {
             '?jwt=eyJhbGciOiJIUzI1NiJ9.eyJyb2xlIjoiYWRtaW4ifQ.secret123',
             '?auth=eyJhbGciOiJIUzM4NCJ9.eyJ1c2VyIjoidGVzdCJ9.1234567890',
             'Authorization: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9',
+            '{"alg":"HS256","typ":"JWT"} RS256->HS256 with -----BEGIN PUBLIC KEY----- used as HMAC secret',
         ]
         return Array.from({ length: count }, (_, i) => variants[i % variants.length])
     },

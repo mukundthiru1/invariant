@@ -20,7 +20,7 @@
  */
 import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
-import { l2HttpSmuggling } from '../../evaluators/l2-adapters.js'
+import { l2HttpSmuggling, l2HttpRequestSmuggling } from '../../evaluators/l2-adapters.js'
 
 
 // ── Shared Utilities ─────────────────────────────────────────────
@@ -558,5 +558,61 @@ export const httpSmuggleExpect: InvariantClassModule = {
             variants.push(templates[i % templates.length])
         }
         return variants
+    },
+}
+
+export const http_request_smuggling: InvariantClassModule = {
+    id: 'http_request_smuggling',
+    description: 'HTTP request smuggling via CL.TE, TE.CL, transfer-encoding ambiguity, and invalid chunk framing',
+    category: 'injection',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.94 },
+
+    mitre: ['T1190'],
+    cwe: 'CWE-444',
+
+    knownPayloads: [
+        'POST / HTTP/1.1\r\nHost: victim\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: victim\r\n\r\n',
+        'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\nContent-Length: 6\r\n\r\n0\r\n\r\nPOST /internal HTTP/1.1\r\nHost: victim\r\n\r\n',
+        'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked, gzip\r\nContent-Length: 12\r\n\r\nz\r\ninvalid\r\n0\r\n\r\n',
+        'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\nbody\r\n0\r\n\r\n',
+    ],
+
+    knownBenign: [
+        'POST /upload HTTP/1.1\r\nHost: victim\r\nContent-Length: 10\r\n\r\n0123456789',
+        'POST /upload HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n',
+        'GET /health HTTP/1.1\r\nHost: victim\r\nConnection: keep-alive\r\n\r\n',
+    ],
+
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        const hasCL = /\bcontent-length\s*:\s*\d+/i.test(d)
+        const teMatch = d.match(/\btransfer-encoding\s*:\s*([^\r\n]+)/i)
+        const hasTE = Boolean(teMatch)
+        const teValue = teMatch?.[1]?.toLowerCase() ?? ''
+        const hasChunked = /\bchunked\b/.test(teValue)
+
+        const clte = hasCL && hasTE && hasChunked
+        const tecl = /transfer-encoding\s*:[^\r\n]*\r?\n[^\r\n]*content-length\s*:/i.test(d) && hasChunked
+        const chunkedGzipCombo = /\btransfer-encoding\s*:\s*[^\r\n]*chunked[^\r\n]*gzip/i.test(d) || (hasChunked && /\bcontent-encoding\s*:\s*gzip\b/i.test(d))
+        const invalidChunkSize = /\r?\n(?:ZZ|GG|INVALID|NOTHEX|0x[0-9a-f]+)\r?\n/i.test(d) && hasChunked
+
+        return clte || tecl || chunkedGzipCombo || invalidChunkSize
+    },
+
+    detectL2: l2HttpRequestSmuggling,
+
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            'POST / HTTP/1.1\r\nHost: victim\r\nContent-Length: 4\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: victim\r\n\r\n',
+            'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\nContent-Length: 6\r\n\r\n0\r\n\r\nPOST /internal HTTP/1.1\r\nHost: victim\r\n\r\n',
+            'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked, gzip\r\nContent-Length: 11\r\n\r\n0\r\n\r\n',
+            'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\n\r\nZZ\r\nAAAA\r\n0\r\n\r\n',
+            'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding:\tchunked\r\nContent-Length: 3\r\n\r\n0\r\n\r\nGET /x HTTP/1.1',
+            'POST / HTTP/1.1\r\nHost: victim\r\nTransfer-Encoding: chunked\r\nContent-Encoding: gzip\r\nContent-Length: 8\r\n\r\n1\r\na\r\n0\r\n\r\n',
+        ]
+        const out: string[] = []
+        for (let i = 0; i < count; i++) out.push(variants[i % variants.length])
+        return out
     },
 }

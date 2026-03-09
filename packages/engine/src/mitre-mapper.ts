@@ -161,6 +161,8 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     xss_protocol_handler: { invariantClass: 'xss_protocol_handler', techniques: [T1189], rationale: 'javascript: protocol handler executes in page context' },
     xss_template_expression: { invariantClass: 'xss_template_expression', techniques: [T1189, T1059], rationale: 'Template expression injection can escalate to RCE via SSTI' },
     xss_attribute_escape: { invariantClass: 'xss_attribute_escape', techniques: [T1189], rationale: 'Attribute escape breaks out of HTML attribute context' },
+    dom_xss: { invariantClass: 'dom_xss', techniques: [T1189, T1059_007], rationale: 'DOM-based XSS executes attacker-controlled JavaScript via client-side sink usage' },
+    angularjs_sandbox_escape: { invariantClass: 'angularjs_sandbox_escape', techniques: [T1189, T1059_007], rationale: 'AngularJS expression sandbox bypasses enable arbitrary JavaScript execution in browser context' },
     css_injection: { invariantClass: 'css_injection', techniques: [T1059, T1185], rationale: 'CSS injection exfiltrates data via attribute selectors or executes code via expression()/behavior:' },
 
     // Command Injection (3 classes)
@@ -216,6 +218,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     password_spray_indicator: { invariantClass: 'password_spray_indicator', techniques: [T1110_003], rationale: 'Common password attempts across login events indicate password spraying activity' },
     credential_stuffing: { invariantClass: 'credential_stuffing', techniques: [T1110_004], rationale: 'Automated high-volume credential pair attempts indicate credential stuffing attacks' },
     cors_origin_abuse: { invariantClass: 'cors_origin_abuse', techniques: [T1189], rationale: 'CORS misconfiguration allows cross-origin credential theft' },
+    cors_origin_misconfiguration: { invariantClass: 'cors_origin_misconfiguration', techniques: [T1189], rationale: 'Overly permissive CORS origin handling allows attacker-controlled origins to read sensitive responses' },
     mass_assignment: { invariantClass: 'mass_assignment', techniques: [T1068], rationale: 'Mass assignment escalates privileges by setting admin fields' },
     price_manipulation: { invariantClass: 'price_manipulation', techniques: [T1565], rationale: 'Negative/zero/tiny price fields and invalid discount amplification indicate transaction value tampering' },
     idor_parameter_probe: { invariantClass: 'idor_parameter_probe', techniques: [T1087, T1190], rationale: 'Sequential object ID probing and ID parameter abuse indicate broken object authorization discovery attempts' },
@@ -226,6 +229,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     deser_java_gadget: { invariantClass: 'deser_java_gadget', techniques: [T1059, T1190], rationale: 'Java deserialization gadget chains enable RCE' },
     deser_php_object: { invariantClass: 'deser_php_object', techniques: [T1059, T1190], rationale: 'PHP object injection via unserialize()' },
     deser_python_pickle: { invariantClass: 'deser_python_pickle', techniques: [T1059, T1190], rationale: 'Python pickle deserialization executes arbitrary __reduce__' },
+    yaml_deserialization: { invariantClass: 'yaml_deserialization', techniques: [T1059, T1190], rationale: 'YAML gadget-based deserialization (SnakeYAML/Psych/PyYAML style) enables RCE' },
 
     // CRLF (2 classes)
     crlf_header_injection: { invariantClass: 'crlf_header_injection', techniques: [T1557], rationale: 'CRLF injection manipulates HTTP response headers' },
@@ -235,12 +239,14 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     http_smuggle_cl_te: { invariantClass: 'http_smuggle_cl_te', techniques: [T1557, T1190], rationale: 'CL.TE desync enables request smuggling through proxy chains' },
     http_smuggle_h2: { invariantClass: 'http_smuggle_h2', techniques: [T1557], rationale: 'H2.CL downgrade attack exploits HTTP/2 to HTTP/1.1 conversion' },
     http_smuggling: { invariantClass: 'http_smuggling', techniques: [T1557, T1190], rationale: 'Legacy HTTP smuggling alias: parser differentials create proxy/backend request desynchronization' },
+    http_request_smuggling: { invariantClass: 'http_request_smuggling', techniques: [T1557, T1190], rationale: 'CL.TE/TE.CL and chunk framing ambiguities cause frontend/backend desynchronization' },
 
     // Log4Shell (1 class)
     log_jndi_lookup: { invariantClass: 'log_jndi_lookup', techniques: [T1190, T1059, T1105], rationale: 'JNDI lookup enables remote class loading and RCE' },
 
     // Prototype Pollution (1 class)
     proto_pollution: { invariantClass: 'proto_pollution', techniques: [T1068, T1190], rationale: 'Prototype pollution modifies Object.prototype to escalate privileges' },
+    prototype_pollution_via_query: { invariantClass: 'prototype_pollution_via_query', techniques: [T1068, T1190], rationale: 'Query-string prototype path injection reaches __proto__ or constructor.prototype in parser merge flows' },
 
     // Open Redirect (1 class)
     open_redirect_bypass: { invariantClass: 'open_redirect_bypass', techniques: [T1189], rationale: 'Open redirect chains with phishing for credential theft' },
@@ -251,6 +257,8 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     // GraphQL (2 classes)
     graphql_introspection: { invariantClass: 'graphql_introspection', techniques: [T1046, T1592], rationale: 'GraphQL introspection reveals entire API schema' },
     graphql_batch_abuse: { invariantClass: 'graphql_batch_abuse', techniques: [T1499], rationale: 'GraphQL batch/nested queries cause denial of service' },
+    graphql_injection: { invariantClass: 'graphql_injection', techniques: [T1190, T1046], rationale: 'GraphQL probing and introspection abuse exploit public API query surfaces for schema and data discovery' },
+    graphql_dos: { invariantClass: 'graphql_dos', techniques: [T1499], rationale: 'Extreme GraphQL depth, fragment cycles, and alias bombs exhaust resolver and application resources' },
 
     // ReDoS (1 class)
     regex_dos: { invariantClass: 'regex_dos', techniques: [T1499], rationale: 'Catastrophic regex backtracking causes CPU exhaustion' },
@@ -322,6 +330,9 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     // WebSocket (2 classes)
     ws_injection: { invariantClass: 'ws_injection', techniques: [T1190, T1059_007], rationale: 'WebSocket message injection exploits bidirectional channel for code execution' },
     ws_hijack: { invariantClass: 'ws_hijack', techniques: [T1185, T1557], rationale: 'WebSocket hijacking takes over established connections for session theft' },
+    websocket_origin_bypass: { invariantClass: 'websocket_origin_bypass', techniques: [T1185, T1190], rationale: 'Missing or weak Origin validation enables cross-site WebSocket hijacking and cross-origin abuse' },
+    websocket_message_injection: { invariantClass: 'websocket_message_injection', techniques: [T1190, T1068], rationale: 'Prototype pollution payloads in WS messages manipulate server-side object behavior for privilege escalation' },
+    websocket_dos: { invariantClass: 'websocket_dos', techniques: [T1499], rationale: 'Large WS frames, reconnect storms, and ping floods exhaust websocket server capacity' },
 
     // JWT Abuse (3 classes)
     jwt_kid_injection: { invariantClass: 'jwt_kid_injection', techniques: [T1550_001], rationale: 'JWT kid parameter injection manipulates key retrieval toward attacker-controlled key sources' },
