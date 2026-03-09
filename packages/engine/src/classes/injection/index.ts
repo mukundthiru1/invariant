@@ -85,8 +85,6 @@ import {
     log4shellVariant,
     spring4shell,
     springExpressionInjection,
-    xpathInjection,
-    ognlInjection,
     velocityInjection,
     freemarkerInjection,
     expressionLanguageGeneric,
@@ -98,6 +96,8 @@ import {
     graphqlDepthBomb,
     fileInclusionRfi,
 } from './exploit-signatures.js'
+import { xpathInjection } from './xpath-injection.js'
+import { ognlInjection } from './ognl-injection.js'
 import {
     massAssignment,
     priceManipulation,
@@ -169,8 +169,6 @@ export {
     log4shellVariant,
     spring4shell,
     springExpressionInjection,
-    xpathInjection,
-    ognlInjection,
     velocityInjection,
     freemarkerInjection,
     expressionLanguageGeneric,
@@ -182,6 +180,8 @@ export {
     graphqlDepthBomb,
     fileInclusionRfi,
 } from './exploit-signatures.js'
+export { xpathInjection } from './xpath-injection.js'
+export { ognlInjection } from './ognl-injection.js'
 export {
     massAssignment,
     priceManipulation,

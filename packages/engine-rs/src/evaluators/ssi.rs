@@ -176,6 +176,28 @@ fn detect_ssi_obfuscated(input: &str) -> Option<RustDetection> {
     None
 }
 
+fn detect_ssi_time_disclosure(input: &str) -> Option<f32> {
+    let lower = input.to_ascii_lowercase();
+    let has_date_local = lower.contains("<!--#echo var='date_local'")
+        || lower.contains("<!--#echo var=\"date_local\"");
+    let has_last_modified = lower.contains("<!--#echo var='last_modified'")
+        || lower.contains("<!--#echo var=\"last_modified\"");
+    if has_date_local || has_last_modified {
+        Some(0.86)
+    } else {
+        None
+    }
+}
+
+fn detect_ssi_printenv_disclosure(input: &str) -> Option<f32> {
+    let lower = input.to_ascii_lowercase();
+    if lower.contains("<!--#printenv") {
+        Some(0.90)
+    } else {
+        None
+    }
+}
+
 impl L2Evaluator for SsiEvaluator {
     fn id(&self) -> &'static str {
         "ssi"
@@ -329,6 +351,44 @@ impl L2Evaluator for SsiEvaluator {
         if let Some(det) = detect_ssi_obfuscated(input).or_else(|| detect_ssi_obfuscated(&decoded)) {
             dets.push(det);
         }
+        if let Some(confidence) = detect_ssi_time_disclosure(&decoded) {
+            let position = lower
+                .find("<!--#echo var='date_local'")
+                .or_else(|| lower.find("<!--#echo var=\"date_local\""))
+                .or_else(|| lower.find("<!--#echo var='last_modified'"))
+                .or_else(|| lower.find("<!--#echo var=\"last_modified\""))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_time_disclosure".into(),
+                confidence: confidence.into(),
+                detail: "SSI echo directive leaks server time metadata (DATE_LOCAL/LAST_MODIFIED)"
+                    .into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[position..decoded.len().min(position + 100)].to_string(),
+                    interpretation: "SSI DATE_LOCAL/LAST_MODIFIED variables disclose server-side time and file metadata useful for fingerprinting or cache/proxy timing attacks.".into(),
+                    offset: position,
+                    property: "Untrusted input must not control SSI echo directives for server metadata variables.".into(),
+                }],
+            });
+        }
+        if let Some(confidence) = detect_ssi_printenv_disclosure(&decoded) {
+            let position = lower.find("<!--#printenv").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "ssi_printenv_disclosure".into(),
+                confidence: confidence.into(),
+                detail: "SSI printenv directive leaks process environment variables".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[position..decoded.len().min(position + 100)].to_string(),
+                    interpretation: "SSI printenv exposes environment variables that can include secrets, keys, service endpoints, and deployment metadata.".into(),
+                    offset: position,
+                    property: "SSI printenv directives must be blocked from untrusted input and templates.".into(),
+                }],
+            });
+        }
 
         dets
     }
@@ -458,5 +518,23 @@ mod tests {
         let eval = SsiEvaluator;
         let dets = eval.detect("<!-- #include virtual='/etc/passwd' -->");
         assert!(dets.iter().any(|d| d.detection_type == "ssi_obfuscated"));
+    }
+
+    #[test]
+    fn detects_ssi_time_disclosure_date_local_or_last_modified() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#echo var='DATE_LOCAL'--> <!--#echo var='LAST_MODIFIED'-->");
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "ssi_time_disclosure"));
+    }
+
+    #[test]
+    fn detects_ssi_printenv_disclosure_specific_detector() {
+        let eval = SsiEvaluator;
+        let dets = eval.detect("<!--#printenv-->");
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "ssi_printenv_disclosure"));
     }
 }

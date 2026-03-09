@@ -327,6 +327,63 @@ fn detect_race_condition_file_overwrite(input: &str) -> Option<RustDetection> {
     })
 }
 
+fn detect_toctou_file_check(input: &str) -> Option<f32> {
+    static ACCESS_OPEN_SAME_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?is)\baccess\s*\(\s*['"]([^'"]{1,220})['"]\s*\)[^\n\r;]{0,260}\bopen\s*\(\s*['"]\1['"]"#,
+        )
+        .unwrap()
+    });
+    static EXISTS_OPEN_SAME_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r#"(?is)\bos\.path\.exists\s*\(\s*['"]([^'"]{1,220})['"]\s*\)[^\n\r;]{0,260}\bopen\s*\(\s*['"]\1['"]"#,
+        )
+        .unwrap()
+    });
+
+    let lower = input.to_ascii_lowercase();
+    let suspicious_context = lower.contains("if ")
+        || lower.contains("check")
+        || lower.contains("then")
+        || lower.contains("race")
+        || lower.contains("concurrent")
+        || lower.contains("parallel")
+        || lower.contains("toctou");
+    if !suspicious_context {
+        return None;
+    }
+
+    if ACCESS_OPEN_SAME_PATH_RE.is_match(input) || EXISTS_OPEN_SAME_PATH_RE.is_match(input) {
+        Some(0.89)
+    } else {
+        None
+    }
+}
+
+fn detect_race_condition_via_symlink(input: &str) -> Option<f32> {
+    static PREDICTABLE_TMP_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)/tmp/(?:tmp|temp|file|test|data|cache|log|session|token|lock|link)[a-z0-9._-]*",
+        )
+        .unwrap()
+    });
+    static SYMLINK_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\bos\.symlink\s*\(|\bsymlink\s*\(|\bln\s+-s\b").unwrap()
+    });
+
+    let lower = input.to_ascii_lowercase();
+    let has_race_hint = lower.contains("race")
+        || lower.contains("concurrent")
+        || lower.contains("parallel")
+        || lower.contains("window")
+        || lower.contains("replace");
+    if PREDICTABLE_TMP_RE.is_match(&lower) && SYMLINK_RE.is_match(&lower) && has_race_hint {
+        Some(0.87)
+    } else {
+        None
+    }
+}
+
 pub fn evaluate_race_condition(input: &str) -> Option<L2EvalResult> {
     let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
     let lower = decoded.to_lowercase();
@@ -640,6 +697,48 @@ impl L2Evaluator for RaceConditionEvaluator {
         if let Some(det) = detect_race_condition_file_overwrite(&decoded) {
             dets.push(det);
         }
+        if let Some(confidence) = detect_toctou_file_check(&decoded) {
+            let position = decoded
+                .to_ascii_lowercase()
+                .find("access(")
+                .or_else(|| decoded.to_ascii_lowercase().find("os.path.exists"))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "race_toctou_file_check".into(),
+                confidence: confidence.into(),
+                detail: "Detected check-then-open TOCTOU pattern on the same file path".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(&decoded),
+                    interpretation: "File existence/permission is checked and then the same path is opened, creating a race window where attackers can replace or retarget the file between operations.".into(),
+                    offset: position,
+                    property: "Use atomic open semantics (e.g., O_NOFOLLOW/O_CREAT|O_EXCL, secure temp APIs) and avoid non-atomic check-then-open flows.".into(),
+                }],
+            });
+        }
+        if let Some(confidence) = detect_race_condition_via_symlink(&decoded) {
+            let position = decoded
+                .to_ascii_lowercase()
+                .find("os.symlink")
+                .or_else(|| decoded.to_ascii_lowercase().find("symlink("))
+                .or_else(|| decoded.to_ascii_lowercase().find("ln -s"))
+                .or_else(|| decoded.to_ascii_lowercase().find("/tmp/"))
+                .unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "race_condition_via_symlink".into(),
+                confidence: confidence.into(),
+                detail: "Predictable /tmp path with symlink operation suggests symlink race attack".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: preview(&decoded),
+                    interpretation: "Predictable names in /tmp combined with symlink creation indicate a classic symlink race where privileged operations may follow attacker-controlled links.".into(),
+                    offset: position,
+                    property: "Avoid predictable temporary paths and enforce no-follow/openat-safe semantics before filesystem writes.".into(),
+                }],
+            });
+        }
 
         dets
     }
@@ -652,7 +751,9 @@ impl L2Evaluator for RaceConditionEvaluator {
             | "race_limit_bypass_parallel"
             | "race_price_manipulation"
             | "race_account_enumeration"
-            | "race_file_overwrite" => Some(InvariantClass::ApiMassEnum),
+            | "race_file_overwrite"
+            | "race_toctou_file_check"
+            | "race_condition_via_symlink" => Some(InvariantClass::ApiMassEnum),
             "race_token_reuse" | "race_inventory_toctou" | "race_gift_card_balance" => {
                 Some(InvariantClass::ApiMassEnum)
             }
@@ -895,5 +996,25 @@ mod tests {
     fn no_file_overwrite_without_privileged_target() {
         let input = "multipart/form-data concurrent upload path=/tmp/uploads filename=a.txt filename=a.txt";
         assert!(detect_race_condition_file_overwrite(input).is_none());
+    }
+
+    #[test]
+    fn detects_toctou_file_check_access_then_open() {
+        let eval = RaceConditionEvaluator;
+        let input = "if access('/tmp/report.txt') == 0 { open('/tmp/report.txt', 'w') } // race";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_toctou_file_check"));
+    }
+
+    #[test]
+    fn detects_race_condition_via_symlink_predictable_tmp() {
+        let eval = RaceConditionEvaluator;
+        let input = "parallel worker creates /tmp/session and then os.symlink('/etc/passwd', '/tmp/session') in race window";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_condition_via_symlink"));
     }
 }

@@ -173,6 +173,32 @@ fn detect_cors_pre_domain_bypass(input: &str) -> Option<RustDetection> {
     })
 }
 
+fn detect_cors_credentials_wildcard(input: &str) -> Option<f32> {
+    let acao_values = header_values(input, "Access-Control-Allow-Origin");
+    let acac_values = header_values(input, "Access-Control-Allow-Credentials");
+    let has_credentials = acac_values.iter().any(|v| v.eq_ignore_ascii_case("true"));
+    if !has_credentials {
+        return None;
+    }
+
+    let has_wildcard_or_broad = acao_values.iter().any(|origin| {
+        let value = origin.trim().to_ascii_lowercase();
+        value == "*"
+            || value == "null"
+            || value.contains('*')
+            || value.starts_with("https://*")
+            || value.starts_with("http://*")
+            || value.contains("://*.") // wildcard subdomain allowance
+            || value.ends_with(".*") // broad suffix
+    });
+
+    if has_wildcard_or_broad {
+        Some(0.91)
+    } else {
+        None
+    }
+}
+
 fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
     let mut hits = Vec::new();
 
@@ -428,13 +454,33 @@ impl L2Evaluator for CorsEvaluator {
         if let Some(det) = detect_cors_pre_domain_bypass(input) {
             results.push(det);
         }
+        if let Some(confidence) = detect_cors_credentials_wildcard(input) {
+            let position = input
+                .to_ascii_lowercase()
+                .find("access-control-allow-credentials")
+                .or_else(|| input.to_ascii_lowercase().find("access-control-allow-origin"))
+                .unwrap_or(0);
+            results.push(L2Detection {
+                detection_type: "cors_credentials_wildcard".into(),
+                confidence: confidence.into(),
+                detail: "CORS credentials are enabled with wildcard or broad origin policy".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: input[position..input.len().min(position + 160)].to_string(),
+                    interpretation: "Allowing credentials together with wildcard or overly broad origins can expose authenticated cross-origin data to untrusted sites.".into(),
+                    offset: position,
+                    property: "When credentials are allowed, ACAO must be a strict explicit origin allowlist entry, never wildcard or broad matching.".into(),
+                }],
+            });
+        }
 
         results
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "cors_misconfiguration" | "cors_dns_rebinding_origin" | "cors_multiple_origin_headers" | "cors_acao_wildcard_credentials" | "cors_subdomain_takeover_origin" | "cors_null_origin_bypass" | "cors_pre_domain_bypass" => Some(InvariantClass::CorsOriginAbuse),
+            "cors_misconfiguration" | "cors_dns_rebinding_origin" | "cors_multiple_origin_headers" | "cors_acao_wildcard_credentials" | "cors_subdomain_takeover_origin" | "cors_null_origin_bypass" | "cors_pre_domain_bypass" | "cors_credentials_wildcard" => Some(InvariantClass::CorsOriginAbuse),
             _ => None,
         }
     }
@@ -686,5 +732,16 @@ mod tests {
                 .iter()
                 .any(|d| d.detection_type == "cors_pre_domain_bypass")
         );
+    }
+
+    #[test]
+    fn detects_cors_credentials_wildcard_detector() {
+        let eval = CorsEvaluator;
+        let input =
+            "Access-Control-Allow-Credentials: true\nAccess-Control-Allow-Origin: https://*.example.com";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "cors_credentials_wildcard"));
     }
 }

