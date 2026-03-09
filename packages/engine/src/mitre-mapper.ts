@@ -289,7 +289,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     xml_bomb_dos: { invariantClass: 'xml_bomb_dos', techniques: [T1499], rationale: 'Entity expansion bomb payloads exhaust parser memory/CPU and cause application-layer DoS' },
 
     // HTTP Method Abuse (4 classes)
-    http_verb_tampering: { invariantClass: 'http_verb_tampering', techniques: [T1190], rationale: 'HTTP verb override/tampering bypasses method-based authorization controls' },
+    http_verb_tampering: { invariantClass: 'http_verb_tampering', techniques: [T1190], rationale: 'HTTP method override headers bypass WAF restrictions and ACLs tied to specific verbs' },
     webdav_method_abuse: { invariantClass: 'webdav_method_abuse', techniques: [T1190], rationale: 'Dangerous WebDAV methods expand exposed attack surface on public-facing apps' },
     trace_xst_attack: { invariantClass: 'trace_xst_attack', techniques: [T1185], rationale: 'TRACE/XST probing can expose session material and enable browser session abuse' },
     response_header_injection: { invariantClass: 'response_header_injection', techniques: [T1557], rationale: 'Header injection via CRLF/control separators manipulates downstream HTTP response handling' },
@@ -313,7 +313,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     memory_disclosure_endpoint: { invariantClass: 'memory_disclosure_endpoint', techniques: [T1005, T1592], rationale: 'Heap/thread dump and debug endpoints disclose in-memory secrets and host internals' },
     kubernetes_secret_exposure: { invariantClass: 'kubernetes_secret_exposure', techniques: [T1552_001, T1210], rationale: 'Kubernetes secrets and authz API probing can expose credentials and cluster trust relationships' },
     aws_metadata_ssrf_advanced: { invariantClass: 'aws_metadata_ssrf_advanced', techniques: [T1552, T1190], rationale: 'Advanced metadata SSRF patterns target IMDS and cloud identity material for credential theft' },
-    graphql_depth_bomb: { invariantClass: 'graphql_depth_bomb', techniques: [T1499], rationale: 'Excessive GraphQL nesting and alias amplification are application-layer DoS primitives' },
+    graphql_depth_bomb: { invariantClass: 'graphql_depth_bomb', techniques: [T1499], rationale: 'Deep nested GraphQL queries exhaust server resources through recursive resolver execution' },
     file_inclusion_rfi: { invariantClass: 'file_inclusion_rfi', techniques: [T1190, T1059], rationale: 'Remote file inclusion and stream wrapper abuse can load attacker-controlled code into application runtime' },
 
     // Supply Chain (3 classes)
@@ -335,7 +335,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
 
     // WebSocket (2 classes)
     ws_injection: { invariantClass: 'ws_injection', techniques: [T1190, T1059_007], rationale: 'WebSocket message injection exploits bidirectional channel for code execution' },
-    ws_hijack: { invariantClass: 'ws_hijack', techniques: [T1185, T1557], rationale: 'WebSocket hijacking takes over established connections for session theft' },
+    ws_hijack: { invariantClass: 'ws_hijack', techniques: [T1557], rationale: 'Cross-origin WebSocket hijacking exploits CORS-lax upgrade handshakes' },
     websocket_origin_bypass: { invariantClass: 'websocket_origin_bypass', techniques: [T1185, T1190], rationale: 'Missing or weak Origin validation enables cross-site WebSocket hijacking and cross-origin abuse' },
     websocket_message_injection: { invariantClass: 'websocket_message_injection', techniques: [T1190, T1068], rationale: 'Prototype pollution payloads in WS messages manipulate server-side object behavior for privilege escalation' },
     websocket_dos: { invariantClass: 'websocket_dos', techniques: [T1499], rationale: 'Large WS frames, reconnect storms, and ping floods exhaust websocket server capacity' },
@@ -416,8 +416,6 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     web_cache_deception: { invariantClass: 'web_cache_deception', techniques: [T1185], rationale: 'Static-extension path tricks CDNs into caching sensitive responses accessible to attackers' },
     dependency_hijacking: { invariantClass: 'dependency_hijacking', techniques: [T1195_001], rationale: 'Internal package names published to public registries hijack build pipelines via confusion attacks' },
     git_history_tampering: { invariantClass: 'git_history_tampering', techniques: [T1070], rationale: 'Force-push, rebase, and filter-branch rewrites destroy forensic audit history and conceal malicious commits' },
-    xpath_injection: { invariantClass: 'xpath_injection', techniques: [T1190], rationale: 'XPath boolean injection bypasses XML data access controls and leaks document structure' },
-    ognl_injection: { invariantClass: 'ognl_injection', techniques: [T1190], rationale: 'OGNL expression injection via Struts2/WebWork enables RCE through EL evaluation' },
 
     // Previously unmapped classes
     jwt_claim_confusion: { invariantClass: 'jwt_claim_confusion', techniques: [T1550_004], rationale: 'JWT claim set confusion exploits parser inconsistency to forge audience/issuer assertions' },

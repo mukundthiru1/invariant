@@ -57,7 +57,6 @@ import { dnsRebinding } from './dns-rebinding.js'
 import { dependencyHijacking } from './dependency-hijacking.js'
 import {
     xmlBombDos,
-    httpVerbTampering,
     webdavMethodAbuse,
     traceXstAttack,
     dnsTunnelingIndicator,
@@ -93,11 +92,11 @@ import {
     memoryDisclosureEndpoint,
     kubernetesSecretExposure,
     awsMetadataSsrfAdvanced,
-    graphqlDepthBomb,
     fileInclusionRfi,
 } from './exploit-signatures.js'
 import { xpathInjection } from './xpath-injection.js'
 import { ognlInjection } from './ognl-injection.js'
+import { apiMassAssignment, apiBfla, apiVersionDowngrade } from './api-logic-abuse.js'
 import {
     massAssignment,
     priceManipulation,
@@ -141,7 +140,6 @@ export { csvInjection } from './csv-injection.js'
 export { gitHistoryTampering } from './git-history-tampering.js'
 export {
     xmlBombDos,
-    httpVerbTampering,
     webdavMethodAbuse,
     traceXstAttack,
     dnsTunnelingIndicator,
@@ -177,11 +175,11 @@ export {
     memoryDisclosureEndpoint,
     kubernetesSecretExposure,
     awsMetadataSsrfAdvanced,
-    graphqlDepthBomb,
     fileInclusionRfi,
 } from './exploit-signatures.js'
 export { xpathInjection } from './xpath-injection.js'
 export { ognlInjection } from './ognl-injection.js'
+export { apiMassAssignment, apiBfla, apiVersionDowngrade } from './api-logic-abuse.js'
 export {
     massAssignment,
     priceManipulation,
@@ -274,7 +272,6 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     credentialStuffing,
     // Nation-state / Advanced Threats
     xmlBombDos,
-    httpVerbTampering,
     webdavMethodAbuse,
     traceXstAttack,
     dnsTunnelingIndicator,
@@ -309,7 +306,9 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     memoryDisclosureEndpoint,
     kubernetesSecretExposure,
     awsMetadataSsrfAdvanced,
-    graphqlDepthBomb,
     fileInclusionRfi,
+    apiMassAssignment,
+    apiBfla,
+    apiVersionDowngrade,
     ...WEB_ATTACKS_CLASSES,
 ]
