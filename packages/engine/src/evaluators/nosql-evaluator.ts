@@ -31,6 +31,8 @@ export interface NoSQLDetection {
     confidence: number
 }
 
+export type NoSqlDetection = NoSQLDetection
+
 
 // ── MongoDB Operator Taxonomy ────────────────────────────────────
 //
@@ -88,6 +90,30 @@ const REDIS_DANGEROUS_COMMANDS: Array<{ label: string; pattern: RegExp }> = [
 ]
 
 const REDIS_SSRF_TRANSPORT = /(?:\b(?:gopher|redis|dict):\/\/|\b(?:127\.0\.0\.1|localhost|::1)(?::6379)?\b|%0d%0a|\r?\n)/i
+
+const CYPHER_TRAVERSAL_PATTERNS = [
+    /\bMATCH\b[\s\S]{0,280}\b\w+:(?:User|Users|Account|Accounts|Session|Sessions)\b[\s\S]{0,280}\bWHERE\b[\s\S]{0,160}\b\w+\.(?:password|passwd|token|admin|session|role)\s*(?:=|<>|<|>|IN)/i,
+]
+
+const GREMLIN_TRAVERSAL_PATTERNS = [
+    /\bg\.V\s*\(\s*\)\.hasLabel\s*\(\s*(?:"[^"]+"|'[^']+'|\w+)\s*\)/i,
+]
+
+const AGGREGATION_ABUSE_PATTERNS = [
+    /\baggregate\b[\s\S]{0,800}(?:\$lookup|\$graphLookup)[\s\S]{0,800}(?:from|fromCollection)\s*["']?\s*[:=]\s*["'](?:users|accounts|sessions|credentials|tokens|passwords)/i,
+    /(?:\$lookup|\$graphLookup)[\s\S]{0,400}["']from["']\s*:\s*["'](?:users|accounts|sessions|credentials|tokens|passwords)/i,
+]
+
+const MAPREDUCE_INJECTION_PATTERNS = [
+    /\bmapReduce\b[\s\S]{0,900}(?:map|reduce|finalize)\s*["']?\s*[:=]\s*function\s*\([^)]*\)\s*\{[\s\S]{0,1200}(?:\beval\s*\(|\bemit\s*\(\s*["'](?:password|passwd|token|session|admin|api[_-]?key|secret))/i,
+    /\bmapReduce\b[\s\S]{0,400}function\s*\([^)]*\)[\s\S]{0,400}(?:emit|eval)\s*\(/i,
+]
+
+const SENSITIVE_NOSQL_COLLECTIONS = [
+    'users',
+    'accounts',
+    'sessions',
+]
 
 
 // ── JSON Key Extractor ───────────────────────────────────────────
@@ -265,6 +291,56 @@ function containsJavaScript(value: string): { isJS: boolean; pattern: string } {
     return { isJS: false, pattern: '' }
 }
 
+export function detectNoSqlGraphTraversal(input: string): NoSqlDetection | null {
+    const normalized = input.replace(/[\r\n]+/g, ' ')
+
+    const isCypherTraversal = CYPHER_TRAVERSAL_PATTERNS.some(pattern => pattern.test(normalized))
+    const isGremlinTraversal = GREMLIN_TRAVERSAL_PATTERNS.some(pattern => pattern.test(normalized))
+
+    if (!isCypherTraversal && !isGremlinTraversal) return null
+
+    return {
+        type: 'operator_injection',
+        detail: `Graph traversal injection detected in ${isCypherTraversal ? 'Cypher' : 'Gremlin'} query context`,
+        operator: isCypherTraversal ? 'MATCH/WHERE' : 'g.V().hasLabel',
+        confidence: 0.9,
+    }
+}
+
+export function detectNoSqlAggregationAbuse(input: string): NoSqlDetection | null {
+    const normalized = input.replace(/[\r\n]+/g, ' ')
+    const hasAbusiveOperator = AGGREGATION_ABUSE_PATTERNS.some(pattern => pattern.test(normalized))
+
+    if (!hasAbusiveOperator) return null
+
+    const sensitive = SENSITIVE_NOSQL_COLLECTIONS.find(collection =>
+        new RegExp(`\\b${collection}\\b`, 'i').test(normalized),
+    )
+
+    if (!sensitive) return null
+
+    return {
+        type: 'operator_injection',
+        detail: `Aggregation abuse detected with sensitive ${sensitive} collection in pipeline lookup`,
+        operator: '$lookup/$graphLookup',
+        confidence: 0.88,
+    }
+}
+
+export function detectNoSqlMapReduceInjection(input: string): NoSqlDetection | null {
+    const normalized = input.replace(/[\r\n]+/g, ' ')
+    const hasMapReduceCode = MAPREDUCE_INJECTION_PATTERNS.some(pattern => pattern.test(normalized))
+
+    if (!hasMapReduceCode) return null
+
+    return {
+        type: 'js_injection',
+        detail: 'mapReduce payload contains JavaScript execution primitives against sensitive keys',
+        operator: 'mapReduce',
+        confidence: 0.91,
+    }
+}
+
 
 // ── Detection Logic ──────────────────────────────────────────────
 
@@ -411,6 +487,21 @@ export function detectNoSQLInjection(input: string): NoSQLDetection[] {
 
     try {
         detections.push(...detectCouchAndElasticInjection(decoded))
+    } catch { /* never crash */ }
+
+    try {
+        const graphTraversal = detectNoSqlGraphTraversal(decoded)
+        if (graphTraversal) detections.push(graphTraversal)
+    } catch { /* never crash */ }
+
+    try {
+        const aggregationAbuse = detectNoSqlAggregationAbuse(decoded)
+        if (aggregationAbuse) detections.push(aggregationAbuse)
+    } catch { /* never crash */ }
+
+    try {
+        const mapReduceInjection = detectNoSqlMapReduceInjection(decoded)
+        if (mapReduceInjection) detections.push(mapReduceInjection)
     } catch { /* never crash */ }
 
     return detections

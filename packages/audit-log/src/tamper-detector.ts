@@ -61,3 +61,78 @@ export function buildWebhookRepoApi(payload: PushWebhookPayload): { hasCommit: (
     },
   }
 }
+
+type RebaseAwarePushCommit = PushCommit & {
+  timestamp?: string
+  ts?: string
+  message?: string
+  parents?: Array<string | { id?: string; sha?: string }>
+}
+
+type RebaseAwarePushWebhookPayload = PushWebhookPayload & {
+  commits?: RebaseAwarePushCommit[]
+}
+
+function parseCommitTime(value: string | undefined): number | null {
+  if (!value) return null
+  const parsed = Date.parse(value)
+  return Number.isNaN(parsed) ? null : parsed
+}
+
+function commitMentionsRebaseMarkers(commits: RebaseAwarePushCommit[]): boolean {
+  const marker = /\b(rebase|squash|amend|fixup)\b/i
+  return commits.some(commit => marker.test(commit.message ?? ''))
+}
+
+function beforeIsAncestorInPush(before: string, commits: RebaseAwarePushCommit[]): boolean {
+  for (const commit of commits) {
+    if (commit.id === before) {
+      return true
+    }
+
+    for (const parent of commit.parents ?? []) {
+      if (typeof parent === 'string' && parent === before) {
+        return true
+      }
+      if (typeof parent === 'object' && (parent.id === before || parent.sha === before)) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+export function detectRebase(webhookPayload: RebaseAwarePushWebhookPayload): TamperReport | null {
+  const commits = webhookPayload.commits ?? []
+  if (commits.length === 0) return null
+
+  const before = webhookPayload.before
+  const beforeCommit = before ? commits.find(commit => commit.id === before) : undefined
+  const beforeCommitTs = parseCommitTime(beforeCommit?.timestamp ?? beforeCommit?.ts)
+  const hasOlderThanBefore = beforeCommitTs !== null && commits.some((commit) => {
+    const commitTs = parseCommitTime(commit.timestamp ?? commit.ts)
+    return commitTs !== null && commitTs < beforeCommitTs
+  })
+
+  const hasNonFastForwardWithoutForced =
+    webhookPayload.forced !== true &&
+    typeof before === 'string' &&
+    before.length > 0 &&
+    !beforeIsAncestorInPush(before, commits)
+
+  const hasRebaseMarker = commitMentionsRebaseMarkers(commits)
+
+  if (!hasOlderThanBefore && !hasNonFastForwardWithoutForced && !hasRebaseMarker) {
+    return null
+  }
+
+  return {
+    reason: 'suspected_rebase',
+    forced: webhookPayload.forced === true,
+    missing_commits: [],
+    before: webhookPayload.before,
+    after: webhookPayload.after,
+    repository: webhookPayload.repository?.full_name,
+    customer_id: webhookPayload.customer_id,
+  }
+}

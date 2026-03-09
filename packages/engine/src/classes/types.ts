@@ -167,6 +167,7 @@ export type InvariantClass =
     | 'http_smuggle_chunk_ext'
     | 'http_smuggle_zero_cl'
     | 'http_smuggle_expect'
+    | 'request_smuggling_desync'
 
     // JSON-SQL WAF Bypass (Claroty Team82)
     | 'json_sql_bypass'
@@ -178,6 +179,8 @@ export type InvariantClass =
     | 'dependency_confusion'
     | 'postinstall_injection'
     | 'env_exfiltration'
+    | 'npm_dependency_confusion'
+    | 'typosquat_package'
     | 'github_actions_injection'
     | 'kubernetes_rbac_abuse'
     | 'terraform_injection'
@@ -207,6 +210,9 @@ export type InvariantClass =
     // API logic abuse
     | 'bola_idor'
     | 'api_mass_enum'
+    | 'api_mass_assignment'
+    | 'api_bfla'
+    | 'api_version_downgrade'
     // Nation-state / advanced threats
     | 'xml_bomb_dos'
     | 'http_verb_tampering'

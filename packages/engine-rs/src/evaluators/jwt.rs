@@ -5,6 +5,7 @@ use crate::types::InvariantClass;
 use regex::Regex;
 
 pub struct JwtEvaluator;
+type RustDetection = L2Detection;
 
 impl L2Evaluator for JwtEvaluator {
     fn id(&self) -> &'static str {
@@ -645,6 +646,16 @@ impl L2Evaluator for JwtEvaluator {
             }
         }
 
+        if let Some(det) = detect_jwt_claim_confusion(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_jwt_expiry_bypass(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_jwt_jwks_injection(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -659,12 +670,15 @@ impl L2Evaluator for JwtEvaluator {
             | "jwt_rs256_to_hs256_confusion"
             | "jwt_nested_bypass"
             | "jwt_claim_manipulation"
+            | "jwt_claim_confusion"
             | "jwt_expired_or_null_exp"
+            | "jwt_expiry_bypass"
             | "jwt_jti_absent_or_duplicated" => Some(InvariantClass::JwtConfusion),
             "jwt_key_injection" | "jwt_jku_injection" | "jwt_jwk_embedding"
             | "jwt_jwk_symmetric"
             | "jwt_jku_ssrf"
             | "jwt_jku_header_injection"
+            | "jwt_jwks_injection"
             | "jwt_x5c_injection"
             | "jwt_embedded_jwk_attacker_key" => Some(InvariantClass::JwtJwkEmbedding),
             "jwt_kid_injection"
@@ -674,6 +688,184 @@ impl L2Evaluator for JwtEvaluator {
             _ => None,
         }
     }
+}
+
+fn extract_json_string_claim(payload_json: &str, claim: &str) -> Option<String> {
+    let pattern = format!(r#"(?i)"{}"\s*:\s*"([^"]+)""#, regex::escape(claim));
+    let re = Regex::new(&pattern).ok()?;
+    let cap = re.captures(payload_json)?;
+    Some(cap.get(1)?.as_str().to_string())
+}
+
+fn detect_jwt_claim_confusion(input: &str) -> Option<RustDetection> {
+    static JWT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(eyJ[A-Za-z0-9_-]+)\.(eyJ[A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]*))?").unwrap()
+    });
+    static ADMIN_TRUE_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"admin"\s*:\s*true"#).unwrap());
+    static ADMIN_STR_TRUE_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"admin"\s*:\s*"true""#).unwrap());
+    static ROLE_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"role"\s*:\s*"([^"]+)""#).unwrap());
+    static LOW_ROLE_LIST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?i)"roles"\s*:\s*\[[^\]]*"(user|guest|viewer|readonly|basic|member)""#)
+            .unwrap()
+    });
+
+    for caps in JWT_RE.captures_iter(input) {
+        let token_match = caps.get(0)?;
+        let payload_b64 = caps.get(2)?.as_str();
+        let payload_json = try_base64_decode_json(payload_b64)?;
+
+        let sub = extract_json_string_claim(&payload_json, "sub");
+        let email = extract_json_string_claim(&payload_json, "email");
+        if let (Some(sub_val), Some(email_val)) = (sub, email) {
+            let sub_l = sub_val.to_ascii_lowercase();
+            let email_l = email_val.to_ascii_lowercase();
+            let local_part = email_l.split('@').next().unwrap_or_default();
+            let subject_matches_email = sub_l == email_l || sub_l == local_part;
+            if !subject_matches_email {
+                return Some(RustDetection {
+                    detection_type: "jwt_claim_confusion".into(),
+                    confidence: 0.89,
+                    detail: "JWT has conflicting subject and email identity claims".into(),
+                    position: token_match.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::SemanticEval,
+                        matched_input: format!("sub={sub_val}, email={email_val}"),
+                        interpretation: "Divergent sub/email identity claims can confuse downstream authorization and identity binding".into(),
+                        offset: token_match.start(),
+                        property: "JWT subject identity claims must be canonicalized and consistent across authN/authZ checks".into(),
+                    }],
+                });
+            }
+        }
+
+        let has_admin_true = ADMIN_TRUE_RE.is_match(&payload_json) || ADMIN_STR_TRUE_RE.is_match(&payload_json);
+        let low_role = ROLE_RE
+            .captures(&payload_json)
+            .and_then(|cap| cap.get(1).map(|m| m.as_str().to_ascii_lowercase()))
+            .map(|role| {
+                matches!(
+                    role.as_str(),
+                    "user" | "guest" | "viewer" | "readonly" | "basic" | "member"
+                )
+            })
+            .unwrap_or(false)
+            || LOW_ROLE_LIST_RE.is_match(&payload_json);
+
+        if has_admin_true && low_role {
+            return Some(RustDetection {
+                detection_type: "jwt_claim_confusion".into(),
+                confidence: 0.89,
+                detail: "JWT contains contradictory privilege claims (admin with low-privilege role)"
+                    .into(),
+                position: token_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: payload_json[..payload_json.len().min(180)].to_string(),
+                    interpretation: "Conflicting privilege claims can lead to claim precedence bugs and privilege confusion".into(),
+                    offset: token_match.start(),
+                    property: "Privilege claims in JWT must be normalized and validated under a single authoritative schema".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
+
+fn detect_jwt_expiry_bypass(input: &str) -> Option<RustDetection> {
+    static JWT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(eyJ[A-Za-z0-9_-]+)\.(eyJ[A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]*))?").unwrap()
+    });
+    static EXP_PRESENT_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"exp"\s*:"#).unwrap());
+    static EXP_ZERO_OR_ONE_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"(?i)"exp"\s*:\s*(0|1)\b"#).unwrap());
+
+    for caps in JWT_RE.captures_iter(input) {
+        let token_match = caps.get(0)?;
+        let payload_b64 = caps.get(2)?.as_str();
+        let payload_json = try_base64_decode_json(payload_b64)?;
+
+        if let Some(cap) = EXP_ZERO_OR_ONE_RE.captures(&payload_json) {
+            return Some(RustDetection {
+                detection_type: "jwt_expiry_bypass".into(),
+                confidence: 0.88,
+                detail: "JWT expiry claim uses bypass-prone tiny epoch value".into(),
+                position: token_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: cap
+                        .get(0)
+                        .map(|m| m.as_str().to_string())
+                        .unwrap_or_default(),
+                    interpretation: "exp=0/1 is commonly used in replay and expiry-check bypass probing against permissive validators".into(),
+                    offset: token_match.start(),
+                    property: "JWT exp must be present and validated as a sane future UNIX timestamp".into(),
+                }],
+            });
+        }
+
+        if !EXP_PRESENT_RE.is_match(&payload_json) {
+            return Some(RustDetection {
+                detection_type: "jwt_expiry_bypass".into(),
+                confidence: 0.88,
+                detail: "JWT payload omits exp claim".into(),
+                position: token_match.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: payload_json[..payload_json.len().min(140)].to_string(),
+                    interpretation: "Tokens without exp can become replayable indefinitely when middleware does not enforce absolute lifetimes".into(),
+                    offset: token_match.start(),
+                    property: "JWTs must include exp and servers must reject tokens missing expiry".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
+
+fn detect_jwt_jwks_injection(input: &str) -> Option<RustDetection> {
+    static JWT_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(eyJ[A-Za-z0-9_-]+)\.(eyJ[A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]*))?").unwrap()
+    });
+    static JWKS_URL_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?i)"(?:jku|x5u)"\s*:\s*"(https?://[^"]+)""#).unwrap()
+    });
+
+    for caps in JWT_RE.captures_iter(input) {
+        let token_match = caps.get(0)?;
+        let header_b64 = caps.get(1)?.as_str();
+        let header_json = try_base64_decode_json(header_b64)?;
+
+        for url_cap in JWKS_URL_RE.captures_iter(&header_json) {
+            let url = url_cap.get(1).map(|m| m.as_str()).unwrap_or_default();
+            if !is_allowlisted_api_host(url) {
+                let host = extract_url_host(url).unwrap_or_else(|| "unknown-host".to_string());
+                return Some(RustDetection {
+                    detection_type: "jwt_jwks_injection".into(),
+                    confidence: 0.93,
+                    detail: "JWT header points jku/x5u to non-allowlisted external JWKS endpoint"
+                        .into(),
+                    position: token_match.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::PayloadInject,
+                        matched_input: url.to_string(),
+                        interpretation: format!(
+                            "External JWKS host ({host}) can be attacker-controlled and supply malicious verification keys"
+                        ),
+                        offset: token_match.start(),
+                        property: "JWKS endpoints (jku/x5u) must be restricted to expected trusted domains".into(),
+                    }],
+                });
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -936,6 +1128,65 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "jwt_jti_absent_or_duplicated")
         );
+    }
+
+    #[test]
+    fn detects_jwt_claim_confusion_sub_email_mismatch() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload = "eyJzdWIiOiJ1c2VyMTIzIiwiZW1haWwiOiJhZG1pbkBjb21wYW55LmNvbSJ9";
+        let token = format!("{}.{}.c2ln", header, payload);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_claim_confusion"));
+    }
+
+    #[test]
+    fn detects_jwt_claim_confusion_admin_low_role() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload = "eyJhZG1pbiI6dHJ1ZSwicm9sZSI6InVzZXIifQ";
+        let token = format!("{}.{}.c2ln", header, payload);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_claim_confusion"));
+    }
+
+    #[test]
+    fn detects_jwt_expiry_bypass_for_exp_zero() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload = "eyJleHAiOjAsInN1YiI6InVzZXIifQ";
+        let token = format!("{}.{}.c2ln", header, payload);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_expiry_bypass"));
+    }
+
+    #[test]
+    fn detects_jwt_expiry_bypass_for_missing_exp() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiJ9";
+        let payload = "eyJzdWIiOiJ1c2VyIn0";
+        let token = format!("{}.{}.c2ln", header, payload);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_expiry_bypass"));
+    }
+
+    #[test]
+    fn detects_jwt_jwks_injection_for_external_x5u() {
+        let eval = JwtEvaluator;
+        let header =
+            "eyJhbGciOiJIUzI1NiIsIng1dSI6Imh0dHBzOi8vYXR0YWNrZXIuZXZpbC9qd2tzLmpzb24ifQ";
+        let token = format!("{}.{}.c2ln", header, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        assert!(dets.iter().any(|d| d.detection_type == "jwt_jwks_injection"));
+    }
+
+    #[test]
+    fn no_jwt_jwks_injection_for_allowlisted_jku_domain() {
+        let eval = JwtEvaluator;
+        let header = "eyJhbGciOiJIUzI1NiIsImprdSI6Imh0dHBzOi8vYXBpLmZvby5iYXIvLndlbGwta25vd24vandrcy5qc29uIn0";
+        let token = format!("{}.{}.c2ln", header, JWT_PAYLOAD);
+        let dets = eval.detect(&token);
+        assert!(!dets.iter().any(|d| d.detection_type == "jwt_jwks_injection"));
     }
 }
 

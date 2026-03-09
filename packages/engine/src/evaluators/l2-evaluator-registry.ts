@@ -507,6 +507,8 @@ function buildSupplyChainEvidence(detections: SupplyChainDetection[]): ProofEvid
         dependency_confusion: 'Dependency resolution must not allow private package shadowing by untrusted sources',
         postinstall_injection: 'Lifecycle scripts must not execute untrusted code during package installation',
         env_exfiltration: 'Build/runtime environment secrets must not flow to outbound network sinks',
+        npm_dependency_confusion: 'Private package names must not resolve from public registry with higher version',
+        typosquat_package: 'Package names must not be typosquats of popular packages',
     }
 
     return detections.map(detection => ({
@@ -584,6 +586,9 @@ function buildApiAbuseEvidence(detections: APIAbuseDetection[]): ProofEvidence[]
     const propertyByType: Record<APIAbuseDetection['type'], string> = {
         bola_idor: 'Object access authorization must be enforced per resource identifier',
         api_mass_enum: 'API enumeration controls must bound object discovery and extraction rates',
+        api_mass_assignment: 'Request bodies must not accept privilege escalation fields in PATCH/PUT',
+        api_bfla: 'Admin/internal API endpoints must not be accessible from normal user context',
+        api_version_downgrade: 'API version must not be downgraded to bypass security controls',
     }
 
     return detections.map(detection => ({
@@ -663,6 +668,9 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     cache_poisoning: 'injection', cache_deception: 'injection',
     // API abuse
     bola_idor: 'injection', api_mass_enum: 'injection',
+    api_mass_assignment: 'injection', api_bfla: 'injection', api_version_downgrade: 'injection',
+    // Supply chain (new)
+    npm_dependency_confusion: 'injection', typosquat_package: 'injection',
 }
 
 /**
@@ -702,6 +710,8 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     dependency_confusion: 'high', env_exfiltration: 'high',
     llm_prompt_injection: 'high', llm_token_smuggling: 'high', ws_injection: 'high', ws_hijack: 'high',
     cache_poisoning: 'high', cache_deception: 'high', bola_idor: 'high',
+    api_mass_assignment: 'high', api_bfla: 'high', api_version_downgrade: 'medium',
+    npm_dependency_confusion: 'high', typosquat_package: 'high',
     json_sql_bypass: 'high', proto_pollution_gadget: 'high',
     // Medium
     cors_origin_abuse: 'medium', crlf_log_injection: 'medium',
@@ -978,6 +988,8 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
             dependency_confusion: 'dependency_confusion' as InvariantClass,
             postinstall_injection: 'postinstall_injection' as InvariantClass,
             env_exfiltration: 'env_exfiltration' as InvariantClass,
+            npm_dependency_confusion: 'npm_dependency_confusion' as InvariantClass,
+            typosquat_package: 'typosquat_package' as InvariantClass,
         },
         prefix: 'L2 SupplyChain',
     },
@@ -1035,6 +1047,9 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
         typeToClass: {
             bola_idor: 'bola_idor' as InvariantClass,
             api_mass_enum: 'api_mass_enum' as InvariantClass,
+            api_mass_assignment: 'api_mass_assignment' as InvariantClass,
+            api_bfla: 'api_bfla' as InvariantClass,
+            api_version_downgrade: 'api_version_downgrade' as InvariantClass,
         },
         prefix: 'L2 API',
     },

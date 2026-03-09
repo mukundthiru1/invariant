@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { detectNoSQLInjection } from './nosql-evaluator.js'
+import {
+    detectNoSQLInjection,
+    detectNoSqlAggregationAbuse,
+    detectNoSqlGraphTraversal,
+    detectNoSqlMapReduceInjection,
+} from './nosql-evaluator.js'
 
 describe('nosql-evaluator bypass regressions', () => {
     it('detects Function constructor JS injection in $where', () => {
@@ -90,5 +95,50 @@ describe('nosql-evaluator bypass regressions', () => {
     it('does not flag benign Elasticsearch term query', () => {
         const input = '{"query":{"term":{"status":"active"}}}'
         expect(detectNoSQLInjection(input)).toEqual([])
+    })
+
+    it('detects Cypher graph traversal injection in MATCH/WHERE context', () => {
+        const input = 'MATCH (n:User) WHERE n.password = "x" RETURN n'
+        const detection = detectNoSqlGraphTraversal(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.operator).toContain('MATCH')
+        expect(detection?.confidence).toBe(0.9)
+    })
+
+    it('detects Gremlin g.V().hasLabel traversal injection', () => {
+        const input = 'g.V().hasLabel("User").out("hasSession")'
+        const detection = detectNoSqlGraphTraversal(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.operator).toBe('g.V().hasLabel')
+    })
+
+    it('detects sensitive collection cross-query using $lookup in aggregate pipelines', () => {
+        const input = '{"aggregate":[{"$lookup":{"from":"users","as":"u","localField":"id","foreignField":"userId"}}]}'
+        const detection = detectNoSqlAggregationAbuse(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.operator).toContain('$lookup')
+        expect(detection?.confidence).toBe(0.88)
+    })
+
+    it('detects graphLookup abuse against sessions in aggregation pipeline', () => {
+        const input = '{"pipeline":[{"$graphLookup":{"from":"sessions","startWith":"$account","connectFromField":"account","connectToField":"account"}}]}'
+        const detection = detectNoSqlAggregationAbuse(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.detail).toContain('sessions')
+    })
+
+    it('detects mapReduce payload with eval inside JavaScript function', () => {
+        const input = '{"mapReduce":"function() { eval(\"db.users.remove({isAdmin:true})\") ; emit(\"admin\",1);}"}'
+        const detection = detectNoSqlMapReduceInjection(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('js_injection')
+        expect(detection?.confidence).toBe(0.91)
+    })
+
+    it('detects mapReduce payload that emits sensitive keys', () => {
+        const input = '{"mapReduce":{"map":"function(){ emit(\"password\",1) }","reduce":"function(){ return values.length }"}}'
+        const detection = detectNoSqlMapReduceInjection(input)
+        expect(detection).not.toBeNull()
+        expect(detection?.operator).toBe('mapReduce')
     })
 })

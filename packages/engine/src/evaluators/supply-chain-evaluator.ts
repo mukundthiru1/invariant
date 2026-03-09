@@ -17,7 +17,7 @@
 // ── Result Type ──────────────────────────────────────────────────
 
 export interface SupplyChainDetection {
-    type: 'dependency_confusion' | 'postinstall_injection' | 'env_exfiltration'
+    type: 'dependency_confusion' | 'postinstall_injection' | 'env_exfiltration' | 'npm_dependency_confusion' | 'typosquat_package'
     detail: string
     confidence: number
     indicators: string[]
@@ -304,6 +304,128 @@ function analyzeEnvExfiltration(input: string): SupplyChainDetection[] {
 }
 
 
+// ── NPM Dependency Confusion ─────────────────────────────────────
+//
+// Private package name published publicly with higher version.
+// Pattern: package.json referencing internal names (corp-internal, @company/)
+// with suspicious registry override.
+
+const INTERNAL_PACKAGE_PATTERNS = [
+    /(?:corp-internal|company-internal|internal-pkg|@company\/|@corp\/|@internal\/)/i,
+    /@[a-z0-9-]+\/(?:internal|private|proprietary)-/i,
+]
+
+export function detectNpmDependencyConfusion(input: string): SupplyChainDetection | null {
+    let parsed: Record<string, unknown> | null = null
+    try {
+        parsed = JSON.parse(input)
+    } catch { /* not JSON */ }
+
+    if (!parsed) {
+        const looksLikePackageJson = /"dependencies"\s*:\s*\{/i.test(input) && /"name"\s*:\s*"/i.test(input)
+        if (!looksLikePackageJson) return null
+        const hasInternalRef = INTERNAL_PACKAGE_PATTERNS.some(rx => rx.test(input))
+        const hasRegistryOverride = /(?:registry|npmrc|\.npmrc|registry\.npmjs)/i.test(input)
+        if (hasInternalRef && hasRegistryOverride) {
+            return {
+                type: 'npm_dependency_confusion',
+                detail: 'npm dependency confusion: internal package name with registry override in package manifest',
+                confidence: 0.90,
+                indicators: ['internal package name with registry override'],
+            }
+        }
+        return null
+    }
+
+    const indicators: string[] = []
+    const depKeys = ['dependencies', 'devDependencies', 'optionalDependencies', 'overrides']
+    for (const key of depKeys) {
+        const deps = parsed[key]
+        if (!deps || typeof deps !== 'object') continue
+        for (const name of Object.keys(deps as Record<string, unknown>)) {
+            if (INTERNAL_PACKAGE_PATTERNS.some(rx => rx.test(name))) {
+                indicators.push(`internal package "${name}" in ${key}`)
+            }
+        }
+    }
+    const name = parsed['name']
+    if (typeof name === 'string' && INTERNAL_PACKAGE_PATTERNS.some(rx => rx.test(name))) {
+        indicators.push(`package name "${name}" looks internal`)
+    }
+    const hasRegistryInPublishConfig = (() => {
+        const pc = parsed['publishConfig']
+        if (pc && typeof pc === 'object' && typeof (pc as Record<string, unknown>)['registry'] === 'string') return true
+        return false
+    })()
+    if (hasRegistryInPublishConfig) indicators.push('publishConfig.registry override')
+    if (indicators.length === 0) return null
+    return {
+        type: 'npm_dependency_confusion',
+        detail: `npm dependency confusion: ${indicators.join('; ')}`,
+        confidence: 0.90,
+        indicators,
+    }
+}
+
+// ── Typosquat Package ───────────────────────────────────────────
+//
+// Package names 1–2 chars different from popular packages (char swap/repeat/insert).
+
+const TYPOSQUAT_TARGETS = [
+    'lodash', 'express', 'react', 'angular', 'vue', 'axios', 'moment', 'request', 'chalk', 'debug',
+    'commander', 'vuejs',
+]
+
+function typosquatDistance(a: string, b: string): number {
+    if (a.length === 0) return b.length
+    if (b.length === 0) return a.length
+    if (Math.abs(a.length - b.length) > 2) return 3
+    const matrix: number[][] = []
+    for (let i = 0; i <= a.length; i++) {
+        matrix[i] = [i]
+        for (let j = 1; j <= b.length; j++) {
+            if (i === 0) matrix[i][j] = j
+            else {
+                const cost = a[i - 1] === b[j - 1] ? 0 : 1
+                matrix[i][j] = Math.min(
+                    matrix[i - 1][j] + 1,
+                    matrix[i][j - 1] + 1,
+                    matrix[i - 1][j - 1] + cost,
+                )
+            }
+        }
+    }
+    return matrix[a.length][b.length]
+}
+
+export function detectTyposquatPackage(input: string): SupplyChainDetection | null {
+    const indicators: string[] = []
+    const pkgRefPattern = /(?:from\s+['"]|require\s*\(\s*['"]|["'])([a-z][a-z0-9._-]{2,})["']/gi
+    const inPackageJson = /"dependencies"|"devDependencies"/i.test(input)
+    let match: RegExpExecArray | null
+    const seen = new Set<string>()
+    while ((match = pkgRefPattern.exec(input)) !== null) {
+        const pkg = match[1]
+        if (seen.has(pkg)) continue
+        seen.add(pkg)
+        for (const target of TYPOSQUAT_TARGETS) {
+            if (pkg === target) continue
+            if (pkg.length < 3) continue
+            const dist = typosquatDistance(pkg, target)
+            if (dist >= 1 && dist <= 2) {
+                indicators.push(`"${pkg}" is ${dist} edit(s) from "${target}"`)
+            }
+        }
+    }
+    if (indicators.length === 0) return null
+    return {
+        type: 'typosquat_package',
+        detail: `Typosquat: ${indicators.join('; ')}`,
+        confidence: 0.87,
+        indicators,
+    }
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 export function detectSupplyChain(input: string): SupplyChainDetection[] {
@@ -314,6 +436,14 @@ export function detectSupplyChain(input: string): SupplyChainDetection[] {
     try { detections.push(...analyzeDepConfusion(input)) } catch { /* safe */ }
     try { detections.push(...analyzePostinstallInjection(input)) } catch { /* safe */ }
     try { detections.push(...analyzeEnvExfiltration(input)) } catch { /* safe */ }
+    try {
+        const npmConf = detectNpmDependencyConfusion(input)
+        if (npmConf) detections.push(npmConf)
+    } catch { /* safe */ }
+    try {
+        const typosquat = detectTyposquatPackage(input)
+        if (typosquat) detections.push(typosquat)
+    } catch { /* safe */ }
 
     return detections
 }

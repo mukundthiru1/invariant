@@ -227,6 +227,57 @@ function detectEntityExpansionFromRaw(input: string): XXEDetection[] {
     return detections
 }
 
+export function detectXxeParameterEntity(input: string): XXEDetection | null {
+    const lower = input.toLowerCase()
+    const hasDoctype = lower.includes('<!doctype')
+    const hasParameterEntityDecl = /<!entity\s+%\s+\w+\s+(system|public)\s+["'][^"']+["']/i.test(input)
+    const hasParameterEntityRef = /%\w+;/.test(input)
+
+    if (hasDoctype && hasParameterEntityDecl && hasParameterEntityRef) {
+        return {
+            type: 'parameter_entity',
+            detail: 'XXE parameter entity injection in DOCTYPE with external SYSTEM/PUBLIC source and %name; reference',
+            entityName: 'parameter',
+            confidence: 0.94,
+        }
+    }
+
+    return null
+}
+
+export function detectXxeSchemaBasedInjection(input: string): XXEDetection | null {
+    const hasXsiNamespace = /xmlns:xsi\s*=\s*["']http:\/\/www\.w3\.org\/2001\/xmlschema-instance["']/i.test(input)
+    const hasExternalSchemaLocation = /\bxsi:schemaLocation\s*=\s*["'][^"']*https?:\/\/[^"']+["']/i.test(input)
+    const hasExternalImportOrInclude = /<xs:(import|include)\b[^>]*\b(schemaLocation|namespace)\s*=\s*["']https?:\/\/[^"']+["']/i.test(input)
+
+    if ((hasXsiNamespace && hasExternalSchemaLocation) || hasExternalImportOrInclude) {
+        return {
+            type: 'external_entity',
+            detail: 'Schema-based XXE via external xsi:schemaLocation or xs:import/xs:include',
+            entityName: 'schema',
+            confidence: 0.90,
+        }
+    }
+
+    return null
+}
+
+export function detectXxeXinclude(input: string): XXEDetection | null {
+    const hasXincludeNamespace = /xmlns:xi\s*=\s*["']http:\/\/www\.w3\.org\/2001\/xinclude["']/i.test(input)
+    const hasXiInclude = /<xi:include\b[^>]*\bhref\s*=\s*["'](?:file:\/\/\/|https?:\/\/)[^"']+["'][^>]*\/?>/i.test(input)
+
+    if (hasXincludeNamespace && hasXiInclude) {
+        return {
+            type: 'external_entity',
+            detail: 'XInclude XXE via xi:include href to local file or external URL',
+            entityName: 'xinclude',
+            confidence: 0.93,
+        }
+    }
+
+    return null
+}
+
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -236,7 +287,9 @@ export function detectXXE(input: string): XXEDetection[] {
     // Quick bail
     if (input.length < 10) return detections
     const lower = input.toLowerCase()
-    if (!lower.includes('<!') && !lower.includes('&') && !lower.includes('entity')) {
+    if (!lower.includes('<!') && !lower.includes('&') && !lower.includes('entity') &&
+        !lower.includes('xi:include') && !lower.includes('xsi:schemalocation') &&
+        !lower.includes('xs:import') && !lower.includes('xs:include')) {
         return detections
     }
 
@@ -258,6 +311,15 @@ export function detectXXE(input: string): XXEDetection[] {
         detections.push(...detectParameterEntity(declarations))
         detections.push(...detectBillionLaughs(declarations))
 
+        const parameterEntityAdvanced = detectXxeParameterEntity(decoded)
+        if (parameterEntityAdvanced) detections.push(parameterEntityAdvanced)
+
+        const schemaBased = detectXxeSchemaBasedInjection(decoded)
+        if (schemaBased) detections.push(schemaBased)
+
+        const xinclude = detectXxeXinclude(decoded)
+        if (xinclude) detections.push(xinclude)
+
         // Fallback: raw pattern detection if parsing found nothing
         if (detections.length === 0) {
             detections.push(...detectEntityExpansionFromRaw(decoded))
@@ -266,3 +328,4 @@ export function detectXXE(input: string): XXEDetection[] {
 
     return detections
 }
+

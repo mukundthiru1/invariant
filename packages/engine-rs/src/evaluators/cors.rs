@@ -11,6 +11,7 @@ static ACAO_WILDCARD_CREDS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(
 
 
 pub type L2EvalResult = L2Detection;
+type RustDetection = L2Detection;
 
 #[derive(Debug, Clone)]
 struct CorsPatternHit {
@@ -68,6 +69,108 @@ fn request_method(input: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+fn detect_cors_subdomain_takeover_origin(input: &str) -> Option<RustDetection> {
+    static TAKEOVER_SUBDOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(
+            r"(?i)(?:^|[-.])(github|github-pages|gh-pages|pages|heroku|herokuapp|herokudns)(?:[-.]|$)",
+        )
+        .unwrap()
+    });
+
+    let origin = first_header(input, "Origin")?;
+    let acao = first_header(input, "Access-Control-Allow-Origin")?;
+    if !origin.eq_ignore_ascii_case(&acao) {
+        return None;
+    }
+
+    let host = origin_host(&origin)?;
+    if !host.ends_with(".company.com") {
+        return None;
+    }
+    if !TAKEOVER_SUBDOMAIN_RE.is_match(&host) {
+        return None;
+    }
+
+    let pos = input.find(&origin).unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "cors_subdomain_takeover_origin".into(),
+        confidence: 0.88,
+        detail: "CORS reflects a company subdomain matching common takeover-prone service naming".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: origin,
+            interpretation: "Reflecting takeover-prone service-style subdomains (GitHub Pages/Heroku naming) can let attackers abuse dangling subdomain trust in CORS allowlists".into(),
+            offset: pos,
+            property: "CORS origin checks must use exact, maintained allowlists and reject takeover-prone/dangling subdomains".into(),
+        }],
+    })
+}
+
+fn detect_cors_null_origin_bypass(input: &str) -> Option<RustDetection> {
+    static ACAO_NULL_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?im)^Access-Control-Allow-Origin\s*:\s*null\s*$").unwrap());
+    static ACAC_TRUE_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)^Access-Control-Allow-Credentials\s*:\s*true\s*$").unwrap()
+    });
+
+    let has_acao_null = ACAO_NULL_RE.is_match(input);
+    let has_acac_true = ACAC_TRUE_RE.is_match(input);
+    if !(has_acao_null && has_acac_true) {
+        return None;
+    }
+
+    let matched = "Access-Control-Allow-Origin: null + Access-Control-Allow-Credentials: true";
+    let pos = input
+        .find("Access-Control-Allow-Origin")
+        .or_else(|| input.find("access-control-allow-origin"))
+        .unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "cors_null_origin_bypass".into(),
+        confidence: 0.92,
+        detail: "CORS allows null origin with credentials".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: matched.into(),
+            interpretation: "Allowing ACAO: null with credentials can enable sandboxed/null-origin contexts to bypass CORS trust boundaries".into(),
+            offset: pos,
+            property: "Do not allow Origin null with credentials; require explicit trusted web origins".into(),
+        }],
+    })
+}
+
+fn detect_cors_pre_domain_bypass(input: &str) -> Option<RustDetection> {
+    static PRE_DOMAIN_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)^[a-z0-9-]+-company\.com$").unwrap());
+
+    let origin = first_header(input, "Origin")?;
+    let acao = first_header(input, "Access-Control-Allow-Origin")?;
+    if !origin.eq_ignore_ascii_case(&acao) {
+        return None;
+    }
+
+    let host = origin_host(&origin)?;
+    if !PRE_DOMAIN_RE.is_match(&host) {
+        return None;
+    }
+
+    let pos = input.find(&origin).unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "cors_pre_domain_bypass".into(),
+        confidence: 0.87,
+        detail: "CORS reflected origin matches pre-domain suffix bypass pattern".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: origin,
+            interpretation: "Domains like evil-company.com can bypass naive suffix checks intended for .company.com allowlists".into(),
+            offset: pos,
+            property: "Validate origin host boundaries strictly (dot-delimited suffix or exact host), not substring/suffix tricks".into(),
+        }],
+    })
 }
 
 fn detect_cors_patterns(input: &str) -> Vec<CorsPatternHit> {
@@ -316,12 +419,22 @@ impl L2Evaluator for CorsEvaluator {
             });
         }
 
+        if let Some(det) = detect_cors_subdomain_takeover_origin(input) {
+            results.push(det);
+        }
+        if let Some(det) = detect_cors_null_origin_bypass(input) {
+            results.push(det);
+        }
+        if let Some(det) = detect_cors_pre_domain_bypass(input) {
+            results.push(det);
+        }
+
         results
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "cors_misconfiguration" | "cors_dns_rebinding_origin" | "cors_multiple_origin_headers" | "cors_acao_wildcard_credentials" => Some(InvariantClass::CorsOriginAbuse),
+            "cors_misconfiguration" | "cors_dns_rebinding_origin" | "cors_multiple_origin_headers" | "cors_acao_wildcard_credentials" | "cors_subdomain_takeover_origin" | "cors_null_origin_bypass" | "cors_pre_domain_bypass" => Some(InvariantClass::CorsOriginAbuse),
             _ => None,
         }
     }
@@ -502,5 +615,76 @@ mod tests {
         let eval = CorsEvaluator;
         let dets = eval.detect("Access-Control-Allow-Credentials: true\nAccess-Control-Allow-Origin: *");
         assert!(dets.iter().any(|d| d.detection_type == "cors_acao_wildcard_credentials"));
+    }
+
+    #[test]
+    fn detects_subdomain_takeover_origin_pattern() {
+        let eval = CorsEvaluator;
+        let input = "Origin: https://github-pages.company.com\nAccess-Control-Allow-Origin: https://github-pages.company.com";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cors_subdomain_takeover_origin")
+        );
+    }
+
+    #[test]
+    fn no_subdomain_takeover_detection_for_regular_company_subdomain() {
+        let eval = CorsEvaluator;
+        let input = "Origin: https://app.company.com\nAccess-Control-Allow-Origin: https://app.company.com";
+        let dets = eval.detect(input);
+        assert!(
+            !dets
+                .iter()
+                .any(|d| d.detection_type == "cors_subdomain_takeover_origin")
+        );
+    }
+
+    #[test]
+    fn detects_null_origin_bypass_with_credentials() {
+        let eval = CorsEvaluator;
+        let input = "Access-Control-Allow-Origin: null\nAccess-Control-Allow-Credentials: true";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cors_null_origin_bypass")
+        );
+    }
+
+    #[test]
+    fn no_null_origin_bypass_when_credentials_false() {
+        let eval = CorsEvaluator;
+        let input = "Access-Control-Allow-Origin: null\nAccess-Control-Allow-Credentials: false";
+        let dets = eval.detect(input);
+        assert!(
+            !dets
+                .iter()
+                .any(|d| d.detection_type == "cors_null_origin_bypass")
+        );
+    }
+
+    #[test]
+    fn detects_pre_domain_bypass() {
+        let eval = CorsEvaluator;
+        let input =
+            "Origin: https://evil-company.com\nAccess-Control-Allow-Origin: https://evil-company.com";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cors_pre_domain_bypass")
+        );
+    }
+
+    #[test]
+    fn no_pre_domain_bypass_for_dot_delimited_company_subdomain() {
+        let eval = CorsEvaluator;
+        let input =
+            "Origin: https://api.company.com\nAccess-Control-Allow-Origin: https://api.company.com";
+        let dets = eval.detect(input);
+        assert!(
+            !dets
+                .iter()
+                .any(|d| d.detection_type == "cors_pre_domain_bypass")
+        );
     }
 }

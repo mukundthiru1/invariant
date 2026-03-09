@@ -163,6 +163,27 @@ const YAML_PATTERNS: RegExp[] = [
     /!!ruby\/object\s*:/i,
 ]
 
+const JAVA_CC_SPRING_GADGET_PATTERNS: RegExp[] = [
+    /org\.apache\.commons\.collections(?:4)?/i,
+    /org\.springframework/i,
+    /ChainedTransformer/i,
+    /InvokerTransformer/i,
+    /ConstantTransformer/i,
+    /org\.apache\.commons\.collections\.functors/i,
+    /TemplatesImpl/i,
+]
+
+const YAML_DANGEROUS_CONSTRUCTOR_PATTERNS: RegExp[] = [
+    /!!python\/object(?:\/\w+)?(?::| )/i,
+    /!!java\.lang\.Runtime/i,
+]
+
+const DOTNET_BINARY_FORMATTER_PATTERNS: RegExp[] = [
+    /TypeConfuseDelegate/i,
+    /System\.Windows\.Data\.ObjectDataProvider/i,
+    /\bObjectDataProvider\b/i,
+]
+
 const JSON_GADGET_PATTERNS: RegExp[] = [
     /"(?:@class|@type|_class|className)"\s*:\s*"[^"]+"/i,
     /"(?:@class|@type|_class|className)"\s*:\s*"(?:java\.|com\.|org\.|javax\.|sun\.)/i,
@@ -218,6 +239,89 @@ function collectGadgets(texts: string[], tokens: string[]): GadgetHit[] {
     add('messagepack', 'MessagePack typed extension gadget', MESSAGEPACK_PATTERNS)
 
     return hits
+}
+
+export function detectDeserJavaGadgetChain(input: string): DeserDetection | null {
+    const normalized = deepDecode(input)
+
+    const hasJavaHeader = normalized.toLowerCase().startsWith('ro0') ||
+        /rO0/i.test(normalized) ||
+        /\baced0005\b/i.test(normalized) ||
+        /\\x?ac\\x?ed\\x?00\\x?05/i.test(normalized) ||
+        /\\xAC\\xED\\x00\\x05/.test(normalized) ||
+        /(?:rO0[A-Za-z0-9+/=]{4,}|aced0005|YWNlZDAwMDU=)/i.test(normalized)
+
+    if (!hasJavaHeader) return null
+
+    const match = findFirstPattern(JAVA_CC_SPRING_GADGET_PATTERNS, [normalized])
+    if (!match) return null
+
+    return {
+        type: 'java_gadget',
+        detail: `Java serialized data with Commons/Spring gadget chain indicator: ${match}`,
+        format: 'Java serialization stream',
+        gadgetChain: match,
+        confidence: 0.95,
+        proofEvidence: [
+            mkEvidence(
+                normalized,
+                match,
+                'Detected Java serialization payload with known gadget-chain family names',
+                'Serialized Java object graphs must not deserialize untrusted object data',
+            ),
+        ],
+    }
+}
+
+export function detectDeserYamlConstructor(input: string): DeserDetection | null {
+    const normalized = deepDecode(input)
+
+    const match = findFirstPattern(YAML_DANGEROUS_CONSTRUCTOR_PATTERNS, [normalized])
+    if (!match) return null
+
+    const isPythonPayload = /!!python\/object/i.test(match)
+
+    return {
+        type: isPythonPayload ? 'python_pickle' : 'java_gadget',
+        detail: `YAML unsafe constructor detected: ${match}`,
+        format: isPythonPayload ? 'YAML python constructor' : 'YAML java constructor',
+        gadgetChain: match,
+        confidence: 0.94,
+        proofEvidence: [
+            mkEvidence(
+                normalized,
+                match,
+                `Detected unsafe YAML constructor (${match})`,
+                isPythonPayload
+                    ? 'Python YAML constructors should not deserialize attacker-controlled object graphs'
+                    : 'Java YAML constructors should not expose reflective class loading',
+            ),
+        ],
+    }
+}
+
+export function detectDeserDotNetFormatter(input: string): DeserDetection | null {
+    const normalized = deepDecode(input)
+    const match = findFirstPattern(DOTNET_BINARY_FORMATTER_PATTERNS, [normalized])
+
+    if (!match) return null
+    if (!/AAEAAAD|BinaryFormatter|TypeConfuseDelegate|ObjectDataProvider/i.test(normalized)) return null
+
+    return {
+        type: 'java_gadget',
+        detail: `.NET BinaryFormatter gadget chain indicator: ${match}`,
+        format: '.NET BinaryFormatter',
+        gadgetChain: match,
+        confidence: 0.92,
+        proofEvidence: [
+            mkEvidence(
+                normalized,
+                match,
+                'Detected BinaryFormatter gadget chain indicators in serialized payload',
+                '.NET BinaryFormatter should not deserialize untrusted content',
+            ),
+        ],
+    }
 }
 
 function detectPickleRce(input: string): PickleRceHit | null {
@@ -341,6 +445,9 @@ export function detectDeserialization(input: string): DeserDetection[] {
     const gadgetHits = collectGadgets(texts, tokens)
     const pickleRceHit = detectPickleRce(normalized)
     const phpPopHit = detectPhpPop(normalized)
+    const javaGadgetChainHit = detectDeserJavaGadgetChain(normalized)
+    const yamlConstructorHit = detectDeserYamlConstructor(normalized)
+    const dotNetFormatterHit = detectDeserDotNetFormatter(normalized)
 
     const hasJavaMagic = artifacts.some(a => hasBytesSequence(a.bytes, JAVA_MAGIC)) ||
         /rO0AB(?:Q|X|[A-Za-z0-9+/=])|aced\s*0005|\\x?ac\\x?ed\\x?00\\x?05/i.test(normalized)
@@ -390,6 +497,21 @@ export function detectDeserialization(input: string): DeserDetection[] {
                 ),
             ],
         })
+    }
+
+    if (javaGadgetChainHit) {
+        const already = detections.some(d => d.type === 'java_gadget' && d.gadgetChain === javaGadgetChainHit.gadgetChain)
+        if (!already) detections.push(javaGadgetChainHit)
+    }
+
+    if (yamlConstructorHit) {
+        const already = detections.some(d => d.type === 'python_pickle' && d.gadgetChain === yamlConstructorHit.gadgetChain)
+        if (!already) detections.push(yamlConstructorHit)
+    }
+
+    if (dotNetFormatterHit) {
+        const already = detections.some(d => d.type === 'java_gadget' && d.gadgetChain === dotNetFormatterHit.gadgetChain)
+        if (!already) detections.push(dotNetFormatterHit)
     }
 
     const pickleHit = gadgetHits.find(h => h.family === 'python' || h.family === 'yaml')

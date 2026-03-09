@@ -15,7 +15,7 @@
 // ── Result Type ──────────────────────────────────────────────────
 
 export interface APIAbuseDetection {
-    type: 'bola_idor' | 'api_mass_enum'
+    type: 'bola_idor' | 'api_mass_enum' | 'api_mass_assignment' | 'api_bfla' | 'api_version_downgrade'
     detail: string
     confidence: number
 }
@@ -137,6 +137,79 @@ function analyzeMassEnum(input: string): APIAbuseDetection | null {
 }
 
 
+// ── Mass Assignment Bypass ───────────────────────────────────────
+
+const PRIVILEGE_ESCALATION_FIELDS = [
+    /["']?role["']?\s*[:=]\s*["']?(?:admin|root|superuser)["']?/i,
+    /["']?isAdmin["']?\s*[:=]\s*true/i,
+    /["']?privilege_level["']?\s*[:=]\s*\d+/i,
+    /["']?admin["']?\s*[:=]\s*true/i,
+    /["']?(?:is_superuser|is_staff|elevated)["']?\s*[:=]\s*true/i,
+]
+
+export function detectApiMassAssignmentBypass(input: string): APIAbuseDetection | null {
+    const hasPatchOrPut = /\b(PATCH|PUT)\s+\S+/i.test(input)
+    if (!hasPatchOrPut) return null
+
+    const bodyLike = input.replace(/^(?:GET|POST|PUT|PATCH|DELETE)\s+\S+\s*[\r\n]*/i, '')
+    const privilegeCount = PRIVILEGE_ESCALATION_FIELDS.filter(rx => rx.test(bodyLike)).length
+    if (privilegeCount === 0) return null
+
+    return {
+        type: 'api_mass_assignment',
+        detail: `Mass assignment: privilege escalation fields in PATCH/PUT body (${privilegeCount} signals)`,
+        confidence: 0.88,
+    }
+}
+
+// ── Broken Function Level Authorization (BFLA) ───────────────────
+
+const ADMIN_API_PATH_PATTERNS = [
+    /\/api\/admin\//i,
+    /\/api\/internal\//i,
+    /\/api\/management\//i,
+    /\/api\/system\//i,
+]
+
+export function detectApiBrokenFunctionLevelAuth(input: string): APIAbuseDetection | null {
+    const hasAdminPath = ADMIN_API_PATH_PATTERNS.some(rx => rx.test(input))
+    if (!hasAdminPath) return null
+
+    const untrustedContext = /(?:user\s+input|untrusted|from\s+request|req\.body|query\s*[=:])/i.test(input) ||
+        /(?:GET|POST|PUT|PATCH|DELETE)\s+https?:\/\//i.test(input)
+    if (!untrustedContext) return null
+
+    return {
+        type: 'api_bfla',
+        detail: 'BFLA: admin/internal/management API path accessed from untrusted or user context',
+        confidence: 0.87,
+    }
+}
+
+// ── API Version Downgrade ───────────────────────────────────────
+
+export function detectApiVersionDowngrade(input: string): APIAbuseDetection | null {
+    const hasLegacyOrV1 = /\/v1\//i.test(input) || /\/legacy\//i.test(input)
+    const hasNewerVersion = /\/v[2-9]\//i.test(input) || /\bversion\s*[=:]\s*[2-9]/i.test(input)
+    const downgradeHeader = /Accept\s*:\s*[^\r\n]*(?:version\s*=\s*1|vnd\.api\+json\s*;\s*version\s*=\s*1)/i.test(input)
+
+    if (hasLegacyOrV1 && hasNewerVersion) {
+        return {
+            type: 'api_version_downgrade',
+            detail: 'API version downgrade: v1/legacy endpoint used where newer version exists',
+            confidence: 0.85,
+        }
+    }
+    if (downgradeHeader) {
+        return {
+            type: 'api_version_downgrade',
+            detail: 'API version downgrade: Accept header requests version=1 to bypass newer security controls',
+            confidence: 0.85,
+        }
+    }
+    return null
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 export function detectAPIAbuse(input: string): APIAbuseDetection[] {
@@ -152,6 +225,21 @@ export function detectAPIAbuse(input: string): APIAbuseDetection[] {
     try {
         const massEnum = analyzeMassEnum(input)
         if (massEnum) detections.push(massEnum)
+    } catch { /* safe */ }
+
+    try {
+        const massAssign = detectApiMassAssignmentBypass(input)
+        if (massAssign) detections.push(massAssign)
+    } catch { /* safe */ }
+
+    try {
+        const bfla = detectApiBrokenFunctionLevelAuth(input)
+        if (bfla) detections.push(bfla)
+    } catch { /* safe */ }
+
+    try {
+        const versionDowngrade = detectApiVersionDowngrade(input)
+        if (versionDowngrade) detections.push(versionDowngrade)
     } catch { /* safe */ }
 
     return detections

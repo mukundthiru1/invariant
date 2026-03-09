@@ -16,7 +16,12 @@
 import { describe, it, expect } from 'vitest'
 import { detectJWTAbuse } from './jwt-evaluator.js'
 import { detectCacheAttack } from './cache-evaluator.js'
-import { detectAPIAbuse } from './api-abuse-evaluator.js'
+import {
+    detectAPIAbuse,
+    detectApiMassAssignmentBypass,
+    detectApiBrokenFunctionLevelAuth,
+    detectApiVersionDowngrade,
+} from './api-abuse-evaluator.js'
 
 describe('JWT Abuse Evaluator', () => {
     it('detects path traversal in kid field', () => {
@@ -195,5 +200,50 @@ describe('API Abuse Evaluator', () => {
 
     it('returns empty for short input', () => {
         expect(detectAPIAbuse('short')).toEqual([])
+    })
+
+    it('detects mass assignment bypass via privilege fields in PATCH body', () => {
+        const input = 'PATCH /api/users/1 {"name":"x","role":"admin","email":"x@y.com"}'
+        const result = detectApiMassAssignmentBypass(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_mass_assignment')
+        expect(result!.confidence).toBe(0.88)
+    })
+
+    it('detects mass assignment via isAdmin and privilege_level in PUT body', () => {
+        const input = 'PUT /api/profile {"bio":"hi","isAdmin":true,"privilege_level":999}'
+        const result = detectApiMassAssignmentBypass(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_mass_assignment')
+    })
+
+    it('detects BFLA when admin API path in request from user input context', () => {
+        const input = 'GET https://api.example.com/api/admin/users from user input'
+        const result = detectApiBrokenFunctionLevelAuth(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_bfla')
+        expect(result!.confidence).toBe(0.87)
+    })
+
+    it('detects BFLA for /api/internal/ in request URL', () => {
+        const input = 'POST /api/internal/health req.body'
+        const result = detectApiBrokenFunctionLevelAuth(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_bfla')
+    })
+
+    it('detects API version downgrade when v1 and v2 both present', () => {
+        const input = 'GET /api/v1/users and GET /api/v2/users'
+        const result = detectApiVersionDowngrade(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_version_downgrade')
+        expect(result!.confidence).toBe(0.85)
+    })
+
+    it('detects API version downgrade via Accept header version=1', () => {
+        const input = 'Accept: application/vnd.api+json;version=1'
+        const result = detectApiVersionDowngrade(input)
+        expect(result).not.toBeNull()
+        expect(result!.type).toBe('api_version_downgrade')
     })
 })

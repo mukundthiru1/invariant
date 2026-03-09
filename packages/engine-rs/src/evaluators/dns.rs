@@ -12,6 +12,7 @@ use crate::evaluators::{EvidenceOperation, L2Detection, L2Evaluator, ProofEviden
 use crate::types::InvariantClass;
 use regex::Regex;
 use std::sync::LazyLock;
+type RustDetection = L2Detection;
 
 /// Known DNS rebinding services.
 const REBINDING_DOMAINS: &[&str] = &[
@@ -74,6 +75,198 @@ static HEX_IP_REBINDING_RE: LazyLock<Regex> = LazyLock::new(|| {
 static ZONE_TRANSFER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:type\s*=\s*(?:axfr|ixfr|aXfR|iXfR)|qtype\s*=\s*252|qtype\s*=\s*251)").unwrap()
 });
+
+fn has_high_entropy_label(label: &str) -> bool {
+    if label.len() < 12 {
+        return false;
+    }
+    let valid = label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-');
+    if !valid {
+        return false;
+    }
+    let unique = label
+        .chars()
+        .collect::<std::collections::HashSet<_>>()
+        .len();
+    let ratio = unique as f64 / label.len() as f64;
+    let has_alpha = label.chars().any(|c| c.is_ascii_alphabetic());
+    let has_digit = label.chars().any(|c| c.is_ascii_digit());
+    if label.len() > 30 && label.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    ratio >= 0.55 && has_alpha && has_digit
+}
+
+fn detect_dns_cache_poisoning(input: &str) -> Option<RustDetection> {
+    static QNAME_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)(?:qname|query|name)\s*[:=]\s*([a-z0-9.-]+\.[a-z]{2,})").unwrap()
+    });
+    static TTL_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?im)\bttl\s*[:=]\s*(\d{1,7})").unwrap());
+    static RDATA_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)(?:rdata|answer|address|a-record)\s*[:=]\s*([a-z0-9.:_-]{3,128})")
+            .unwrap()
+    });
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_ascii_lowercase();
+
+    let mut qnames = Vec::new();
+    for cap in QNAME_RE.captures_iter(&lower) {
+        if let Some(m) = cap.get(1) {
+            qnames.push(m.as_str().to_string());
+        }
+    }
+    if qnames.len() < 2 {
+        return None;
+    }
+    qnames.sort();
+    let mut repeated_qname = None;
+    for i in 0..(qnames.len() - 1) {
+        if qnames[i] == qnames[i + 1] {
+            repeated_qname = Some(qnames[i].clone());
+            break;
+        }
+    }
+    let Some(qname) = repeated_qname else {
+        return None;
+    };
+
+    let mut ttls = Vec::new();
+    for cap in TTL_RE.captures_iter(&lower) {
+        if let Some(m) = cap.get(1) {
+            ttls.push(m.as_str().to_string());
+        }
+    }
+    ttls.sort();
+    ttls.dedup();
+
+    let mut rdata = Vec::new();
+    for cap in RDATA_RE.captures_iter(&lower) {
+        if let Some(m) = cap.get(1) {
+            rdata.push(m.as_str().to_string());
+        }
+    }
+    rdata.sort();
+    rdata.dedup();
+
+    let has_conflict = ttls.len() >= 2 || rdata.len() >= 2;
+    if !has_conflict {
+        return None;
+    }
+
+    let has_forged_authority = lower.contains("forged authority")
+        || lower.contains("spoofed authority")
+        || lower.contains("authority section");
+    let has_txid_pattern = lower.contains("txid")
+        && (lower.contains("predict")
+            || lower.contains("sequential")
+            || lower.contains("guessable"));
+    if !has_forged_authority && !has_txid_pattern {
+        return None;
+    }
+
+    let pos = lower.find(&qname).unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "dns_cache_poisoning".into(),
+        confidence: 0.90,
+        detail: "Conflicting DNS response data for same QNAME with forged-authority/TXID cues indicates cache poisoning".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: decoded[..decoded.len().min(180)].to_string(),
+            interpretation: "The same DNS name appears across multiple responses with conflicting TTL/RDATA and poisoning indicators, matching DNS cache poisoning behavior.".into(),
+            offset: pos,
+            property: "Resolvers should enforce source-port and TXID randomization, DNSSEC validation, and reject conflicting unsolicited authority data".into(),
+        }],
+    })
+}
+
+fn detect_dns_amplification_abuse(input: &str) -> Option<RustDetection> {
+    static AMPLIFICATION_QUERY_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)\b(?:type|qtype)\s*[:=]\s*(?:any|dnskey|255|48)\b|\b(?:any|dnskey)\s+query\b")
+            .unwrap()
+    });
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_ascii_lowercase();
+
+    let query_match = AMPLIFICATION_QUERY_RE.find(&lower)?;
+    let targets_open_resolver = lower.contains("8.8.8.8") || lower.contains("1.1.1.1");
+    if !targets_open_resolver {
+        return None;
+    }
+
+    let untrusted_context = lower.contains("spoof")
+        || lower.contains("forged source")
+        || lower.contains("source ip")
+        || lower.contains("x-forwarded-for")
+        || lower.contains("reflection")
+        || lower.contains("amplification")
+        || lower.contains("untrusted");
+    if !untrusted_context {
+        return None;
+    }
+
+    Some(RustDetection {
+        detection_type: "dns_amplification_abuse".into(),
+        confidence: 0.88,
+        detail: "ANY/DNSKEY queries to open resolvers from spoofable context indicate DNS amplification abuse".into(),
+        position: query_match.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: decoded[query_match.start()..decoded.len().min(query_match.end() + 120)]
+                .to_string(),
+            interpretation: "Large-response DNS query types (ANY/DNSKEY) sent toward open resolvers in spoofable context are characteristic of reflection/amplification DDoS traffic.".into(),
+            offset: query_match.start(),
+            property: "Reject spoofable DNS relay behavior, block amplification-prone query types, and restrict resolver usage to trusted sources".into(),
+        }],
+    })
+}
+
+fn detect_dns_tunnel_exfil(input: &str) -> Option<RustDetection> {
+    static DOMAIN_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)\b[a-z0-9][a-z0-9-]{0,62}(?:\.[a-z0-9][a-z0-9-]{0,62}){2,}\b").unwrap()
+    });
+    let known_good_tlds = [
+        "com", "net", "org", "io", "co", "app", "dev", "cloud", "edu", "gov",
+    ];
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_ascii_lowercase();
+
+    for m in DOMAIN_RE.find_iter(&lower) {
+        let domain = m.as_str();
+        let labels: Vec<&str> = domain.split('.').collect();
+        if labels.len() < 3 {
+            continue;
+        }
+        let tld = labels[labels.len() - 1];
+        if !known_good_tlds.contains(&tld) {
+            continue;
+        }
+        let suspicious = labels[..labels.len() - 2]
+            .iter()
+            .any(|label| label.len() > 30 && has_high_entropy_label(label));
+        if suspicious {
+            return Some(RustDetection {
+                detection_type: "dns_tunnel_exfil".into(),
+                confidence: 0.91,
+                detail: "Very long high-entropy subdomain label before common TLD indicates DNS tunnel exfiltration".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: decoded[m.start()..decoded.len().min(m.end() + 80)].to_string(),
+                    interpretation: "Subdomain labels contain long high-entropy encoded-like data, consistent with DNS tunneling used for covert exfiltration.".into(),
+                    offset: m.start(),
+                    property: "Outbound DNS should enforce label-length/entropy anomaly detection and block encoded payload transfer via subdomains".into(),
+                }],
+            });
+        }
+    }
+
+    None
+}
 
 pub struct DnsEvaluator;
 
@@ -300,6 +493,16 @@ impl L2Evaluator for DnsEvaluator {
             });
         }
 
+        if let Some(det) = detect_dns_cache_poisoning(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_dns_amplification_abuse(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_dns_tunnel_exfil(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -311,7 +514,10 @@ impl L2Evaluator for DnsEvaluator {
             | "dns_dash_ip"
             | "dns_axfr_injection"
             | "dns_hex_ip_rebinding"
-            | "dns_zone_transfer_attempt" => Some(InvariantClass::DnsRebinding),
+            | "dns_zone_transfer_attempt"
+            | "dns_cache_poisoning"
+            | "dns_amplification_abuse"
+            | "dns_tunnel_exfil" => Some(InvariantClass::DnsRebinding),
             "dns_subdomain_takeover" => Some(InvariantClass::SubdomainTakeover),
             _ => None,
         }
@@ -406,5 +612,49 @@ mod tests {
         let eval = DnsEvaluator;
         let dets = eval.detect("qtype=252");
         assert!(dets.iter().any(|d| d.detection_type == "dns_zone_transfer_attempt"));
+    }
+
+    #[test]
+    fn detects_dns_cache_poisoning_conflicting_responses() {
+        let input = "dns response qname=api.example.com ttl=60 rdata=1.1.1.1\n\
+dns response qname=api.example.com ttl=300 rdata=8.8.8.8 forged authority section txid predictable";
+        let det = detect_dns_cache_poisoning(input).expect("expected cache poisoning detection");
+        assert_eq!(det.detection_type, "dns_cache_poisoning");
+        assert_eq!(det.confidence, 0.90);
+    }
+
+    #[test]
+    fn no_dns_cache_poisoning_without_conflict() {
+        let input = "dns response qname=api.example.com ttl=60 rdata=1.1.1.1 txid predictable";
+        assert!(detect_dns_cache_poisoning(input).is_none());
+    }
+
+    #[test]
+    fn detects_dns_amplification_abuse_any_query() {
+        let input = "qtype=ANY resolver=8.8.8.8 source ip spoofed reflection attack";
+        let det =
+            detect_dns_amplification_abuse(input).expect("expected dns amplification abuse detection");
+        assert_eq!(det.detection_type, "dns_amplification_abuse");
+        assert_eq!(det.confidence, 0.88);
+    }
+
+    #[test]
+    fn no_dns_amplification_abuse_for_trusted_context() {
+        let input = "qtype=DNSKEY resolver=8.8.8.8 normal maintenance lookup";
+        assert!(detect_dns_amplification_abuse(input).is_none());
+    }
+
+    #[test]
+    fn detects_dns_tunnel_exfil_long_entropy_label() {
+        let input = "lookup a9f0b7d4c1e2f3a4b5c6d7e8f9a0b1c2.data.example.com";
+        let det = detect_dns_tunnel_exfil(input).expect("expected dns tunnel exfil detection");
+        assert_eq!(det.detection_type, "dns_tunnel_exfil");
+        assert_eq!(det.confidence, 0.91);
+    }
+
+    #[test]
+    fn no_dns_tunnel_exfil_for_short_labels() {
+        let input = "lookup api.dev.example.com";
+        assert!(detect_dns_tunnel_exfil(input).is_none());
     }
 }

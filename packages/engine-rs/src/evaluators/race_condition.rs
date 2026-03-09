@@ -6,6 +6,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 pub type L2EvalResult = L2Detection;
+type RustDetection = L2Detection;
 
 const EVIDENCE_PREVIEW_LIMIT: usize = 180;
 
@@ -116,6 +117,214 @@ fn has_upload_access_before_validation(decoded: &str) -> Option<(usize, &'static
     }
 
     Some((upload_pos, "file upload accessed before validation"))
+}
+
+fn detect_race_condition_price_manipulation(input: &str) -> Option<RustDetection> {
+    static CHECKOUT_POST_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?im)\bpost\s+/(?:checkout|purchase|order)\b[^\r\n]{0,240}").unwrap()
+    });
+    static SESSION_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?im)(?:session(?:-id)?|sid)\s*[:=]\s*["']?([a-z0-9_-]{3,128})"#).unwrap()
+    });
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_lowercase();
+    let rapid = ["parallel", "concurrent", "simultaneous", "burst", "rapid", "async"];
+    let has_rapid = rapid.iter().any(|m| lower.contains(m));
+
+    let mut requests: Vec<String> = Vec::new();
+    for m in CHECKOUT_POST_RE.find_iter(&lower) {
+        let normalized = m
+            .as_str()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        requests.push(normalized);
+    }
+    if requests.len() < 2 {
+        return None;
+    }
+
+    let mut duplicate_request = None;
+    for i in 0..requests.len() {
+        for j in (i + 1)..requests.len() {
+            if requests[i] == requests[j] {
+                duplicate_request = Some(requests[i].clone());
+                break;
+            }
+        }
+        if duplicate_request.is_some() {
+            break;
+        }
+    }
+    let Some(dup_req) = duplicate_request else {
+        return None;
+    };
+
+    let mut sessions = Vec::new();
+    for cap in SESSION_RE.captures_iter(&lower) {
+        if let Some(m) = cap.get(1) {
+            sessions.push(m.as_str().to_string());
+        }
+    }
+    let has_reused_session = if sessions.len() >= 2 {
+        sessions.windows(2).any(|w| w[0] == w[1])
+    } else {
+        lower.contains("session")
+    };
+    if !has_reused_session || !has_rapid {
+        return None;
+    }
+
+    let pos = lower.find(&dup_req).unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "race_price_manipulation".into(),
+        confidence: 0.87,
+        detail: "Rapid duplicate checkout/purchase/order requests with reused session suggest price/inventory TOCTOU manipulation".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: preview(&decoded),
+            interpretation: "Identical purchase flow requests were issued in rapid/concurrent context while reusing a session identifier, indicating a check-then-use race for inventory/price validation.".into(),
+            offset: pos,
+            property: "Checkout and inventory/price validation must be atomic and idempotent per session and request key to prevent duplicate settlement races".into(),
+        }],
+    })
+}
+
+fn detect_race_condition_account_enumeration(input: &str) -> Option<RustDetection> {
+    static AUTH_FLOW_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?i)\b(?:register|registration|signup|sign-up|login|signin|sign-in)\b").unwrap());
+    static USER_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r#"(?im)(?:username|user|login)\s*[:=]\s*["']?([a-z0-9_.@-]{3,64})"#).unwrap()
+    });
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_lowercase();
+    let rapid = ["parallel", "concurrent", "simultaneous", "burst", "rapid", "async"];
+    let timing = [
+        "timing",
+        "latency",
+        "response time",
+        "milliseconds",
+        "faster",
+        "slower",
+    ];
+    if !AUTH_FLOW_RE.is_match(&lower) {
+        return None;
+    }
+
+    let has_burst = rapid.iter().any(|m| lower.contains(m));
+    let has_timing = timing.iter().any(|m| lower.contains(m));
+    if !has_burst && !has_timing {
+        return None;
+    }
+
+    let mut usernames = Vec::new();
+    for cap in USER_RE.captures_iter(&lower) {
+        if let Some(m) = cap.get(1) {
+            usernames.push(m.as_str().to_string());
+        }
+    }
+    if usernames.len() < 3 {
+        return None;
+    }
+    usernames.sort();
+    usernames.dedup();
+    if usernames.len() < 2 {
+        return None;
+    }
+
+    let pos = lower.find("username").unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "race_account_enumeration".into(),
+        confidence: 0.84,
+        detail: "Burst registration/login attempts varying username with timing cues indicate race-assisted account enumeration".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: preview(&decoded),
+            interpretation: "Parallel auth attempts that primarily vary only username while measuring timing behavior can expose valid-account side channels.".into(),
+            offset: pos,
+            property: "Authentication and registration responses should be constant-time and indistinguishable across valid and invalid usernames, with strong rate limiting".into(),
+        }],
+    })
+}
+
+fn detect_race_condition_file_overwrite(input: &str) -> Option<RustDetection> {
+    static FILENAME_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r#"(?i)filename\s*=\s*["']?([^"';\r\n]+)"#).unwrap());
+    static PRIV_PATH_RE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(?:/etc/|/root/|/proc/|/sys/|/var/www/|/var/lib/|\.\./|\.\.\\|c:\\windows\\|/windows/)").unwrap()
+    });
+
+    let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
+    let lower = decoded.to_lowercase();
+
+    if !(lower.contains("multipart/form-data") || lower.contains("multipart")) {
+        return None;
+    }
+    if !(lower.contains("upload") || lower.contains("post /upload")) {
+        return None;
+    }
+
+    let rapid = ["parallel", "concurrent", "simultaneous", "burst", "rapid", "async"];
+    if !rapid.iter().any(|m| lower.contains(m)) {
+        return None;
+    }
+    if !PRIV_PATH_RE.is_match(&lower) {
+        return None;
+    }
+
+    let mut names = Vec::new();
+    for cap in FILENAME_RE.captures_iter(&lower) {
+        if let Some(name) = cap.get(1) {
+            names.push(name.as_str().to_string());
+        }
+    }
+    if names.len() < 2 {
+        for token in lower.split_whitespace() {
+            if let Some(rest) = token.strip_prefix("filename=") {
+                let cleaned = rest.trim_matches(|c| c == '"' || c == '\'' || c == ';');
+                if !cleaned.is_empty() {
+                    names.push(cleaned.to_string());
+                }
+            }
+        }
+    }
+    if names.len() < 2 {
+        return None;
+    }
+    let mut has_duplicate_name = false;
+    for i in 0..names.len() {
+        for j in (i + 1)..names.len() {
+            if names[i] == names[j] {
+                has_duplicate_name = true;
+                break;
+            }
+        }
+        if has_duplicate_name {
+            break;
+        }
+    }
+    if !has_duplicate_name {
+        return None;
+    }
+
+    let pos = lower.find("filename=").unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "race_file_overwrite".into(),
+        confidence: 0.86,
+        detail: "Simultaneous multipart uploads with reused filename toward privileged path suggest file overwrite TOCTOU race".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: preview(&decoded),
+            interpretation: "Concurrent upload requests reuse the same filename while targeting sensitive paths, a classic TOCTOU overwrite pattern in file handlers.".into(),
+            offset: pos,
+            property: "Upload handlers must enforce atomic file creation, canonicalize paths, and isolate untrusted files from privileged locations".into(),
+        }],
+    })
 }
 
 pub fn evaluate_race_condition(input: &str) -> Option<L2EvalResult> {
@@ -422,6 +631,16 @@ impl L2Evaluator for RaceConditionEvaluator {
             }
         }
 
+        if let Some(det) = detect_race_condition_price_manipulation(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_race_condition_account_enumeration(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_race_condition_file_overwrite(&decoded) {
+            dets.push(det);
+        }
+
         dets
     }
 
@@ -430,7 +649,10 @@ impl L2Evaluator for RaceConditionEvaluator {
             "race_condition"
             | "race_condition_toctou"
             | "race_toctou_session"
-            | "race_limit_bypass_parallel" => Some(InvariantClass::ApiMassEnum),
+            | "race_limit_bypass_parallel"
+            | "race_price_manipulation"
+            | "race_account_enumeration"
+            | "race_file_overwrite" => Some(InvariantClass::ApiMassEnum),
             "race_token_reuse" | "race_inventory_toctou" | "race_gift_card_balance" => {
                 Some(InvariantClass::ApiMassEnum)
             }
@@ -628,5 +850,50 @@ mod tests {
         assert!(dets
             .iter()
             .any(|d| d.detection_type == "race_gift_card_balance"));
+    }
+
+    #[test]
+    fn detects_price_manipulation_duplicate_checkout() {
+        let input = "parallel=true session=abc123\nPOST /checkout item=42 qty=1 price=10 session=abc123\nPOST /checkout item=42 qty=1 price=10 session=abc123";
+        let det = detect_race_condition_price_manipulation(input)
+            .expect("expected price manipulation race detection");
+        assert_eq!(det.detection_type, "race_price_manipulation");
+        assert_eq!(det.confidence, 0.87);
+    }
+
+    #[test]
+    fn no_price_manipulation_when_not_duplicate_or_not_rapid() {
+        let input = "session=abc123\nPOST /checkout item=42 qty=1 price=10 session=abc123";
+        assert!(detect_race_condition_price_manipulation(input).is_none());
+    }
+
+    #[test]
+    fn detects_account_enumeration_burst_usernames() {
+        let input = "concurrent login timing=true username=alice username=bob username=charlie";
+        let det = detect_race_condition_account_enumeration(input)
+            .expect("expected account enumeration race detection");
+        assert_eq!(det.detection_type, "race_account_enumeration");
+        assert_eq!(det.confidence, 0.84);
+    }
+
+    #[test]
+    fn no_account_enumeration_without_burst_or_timing() {
+        let input = "login username=alice username=bob username=charlie";
+        assert!(detect_race_condition_account_enumeration(input).is_none());
+    }
+
+    #[test]
+    fn detects_file_overwrite_multipart_duplicate_filename() {
+        let input = "multipart/form-data concurrent upload path=/etc/passwd filename=shadow.txt filename=shadow.txt";
+        let det = detect_race_condition_file_overwrite(input)
+            .expect("expected file overwrite race detection");
+        assert_eq!(det.detection_type, "race_file_overwrite");
+        assert_eq!(det.confidence, 0.86);
+    }
+
+    #[test]
+    fn no_file_overwrite_without_privileged_target() {
+        let input = "multipart/form-data concurrent upload path=/tmp/uploads filename=a.txt filename=a.txt";
+        assert!(detect_race_condition_file_overwrite(input).is_none());
     }
 }

@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { detectTimeBasedBlindSqli } from './sql-structural-evaluator.js'
+import {
+    detectSqlStrikeZone,
+    detectTimeBasedBlindSqli,
+} from './sql-structural-evaluator.js'
 
 describe('sql-structural-evaluator time-based blind SQLi detection', () => {
     it('detects SLEEP(5)', () => {
@@ -32,5 +35,32 @@ describe('sql-structural-evaluator time-based blind SQLi detection', () => {
 
     it('does not detect sleep tight', () => {
         expect(detectTimeBasedBlindSqli('sleep tight')).toBe(false)
+    })
+})
+
+describe('sql-structural-evaluator strike-zone detection', () => {
+    it('detects stacked query with IF EXISTS pattern', () => {
+        const detection = detectSqlStrikeZone('; IF EXISTS(SELECT * FROM users) WAITFOR DELAY \'0:0:5\'--')
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('stacked_execution')
+        expect(detection?.confidence).toBe(0.92)
+        expect(detection?.detail).toContain('IF EXISTS')
+    })
+
+    it('detects stacked query with CASE WHEN pattern', () => {
+        const detection = detectSqlStrikeZone('; CASE WHEN 1=1 THEN SLEEP(1) ELSE WAITFOR DELAY \'0:0:1\' END--')
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('stacked_execution')
+    })
+
+    it('detects stacked query with WAITFOR conditional pattern', () => {
+        const detection = detectSqlStrikeZone('; EXECUTE IMMEDIATE \'clean\'; WAITFOR DELAY \'0:0:5\'')
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('stacked_execution')
+    })
+
+    it('does not detect stacked query without conditional blind marker', () => {
+        const detection = detectSqlStrikeZone('; UPDATE accounts SET active=0 WHERE id=1--')
+        expect(detection).toBeNull()
     })
 })

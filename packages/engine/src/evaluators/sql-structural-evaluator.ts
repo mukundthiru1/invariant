@@ -209,6 +209,7 @@ const STATEMENT_STARTERS = new Set([
     'SELECT', 'INSERT', 'UPDATE', 'DELETE', 'DROP', 'CREATE',
     'ALTER', 'EXEC', 'EXECUTE', 'GRANT', 'REVOKE', 'TRUNCATE',
 ])
+const SQL_STRIKE_ZONE_RE = /;\s*(?:(?:IF|CASE)\s+WHEN\b|IF\b(?:\s+EXISTS\b|\s*\()|WAITFOR\b)/i
 
 function detectStackedExecution(tokens: SqlToken[]): SqlStructuralDetection[] {
     const detections: SqlStructuralDetection[] = []
@@ -453,6 +454,19 @@ function detectSqlBypassObfuscation(input: string): SqlStructuralDetection[] {
     return detections
 }
 
+export function detectSqlStrikeZone(input: string): SqlStructuralDetection | null {
+    const strikeMatch = input.match(SQL_STRIKE_ZONE_RE)
+    if (!strikeMatch) return null
+
+    const matched = strikeMatch[0]
+    return {
+        type: 'stacked_execution',
+        detail: `Stacked SQL followed by conditional blind pattern: ${matched.trim()}`,
+        position: strikeMatch.index ?? 0,
+        confidence: 0.92,
+    }
+}
+
 export function detectTimeBasedBlind(decoded: string): { type: 'time_based_blind'; confidence: number; evidence: string } | null {
     const match = findTimeBasedBlindMatch(decoded)
     if (!match) return null
@@ -487,6 +501,15 @@ export function detectSqlStructural(input: string): SqlStructuralDetection[] {
     const allDetections: SqlStructuralDetection[] = []
     const seen = new Set<string>()
     const hasTimeBasedBlindSqli = detectTimeBasedBlindSqli(input)
+
+    const strikeZoneDetection = detectSqlStrikeZone(input)
+    if (strikeZoneDetection) {
+        const strikeKey = `${strikeZoneDetection.type}:${strikeZoneDetection.detail}`
+        if (!seen.has(strikeKey)) {
+            seen.add(strikeKey)
+            allDetections.push(strikeZoneDetection)
+        }
+    }
 
     const bypassDetections = detectSqlBypassObfuscation(input)
     for (const detection of bypassDetections) {

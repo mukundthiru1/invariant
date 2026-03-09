@@ -219,6 +219,82 @@ function detectOperatorInjection(tokens: LDAPToken[]): LDAPDetection[] {
     return detections
 }
 
+export function detectLdapBlindInjection(input: string): LDAPDetection | null {
+    const lower = input.toLowerCase()
+    const attrProbePattern = /\(([a-zA-Z][a-zA-Z0-9_-]{0,31})=([a-z0-9])\*\)/gi
+    const repeatedWildcardPattern = /\([a-zA-Z][a-zA-Z0-9_-]{0,31}=[^)]*\*[^)]*\*\)/i
+    const attrToChars = new Map<string, string[]>()
+    let match: RegExpExecArray | null
+
+    while ((match = attrProbePattern.exec(lower)) !== null) {
+        const attr = match[1]
+        const probeChar = match[2]
+        const chars = attrToChars.get(attr) || []
+        chars.push(probeChar)
+        attrToChars.set(attr, chars)
+    }
+
+    let hasSequentialProbes = false
+    for (const chars of attrToChars.values()) {
+        if (chars.length < 2) continue
+        for (let i = 0; i < chars.length - 1; i++) {
+            const current = chars[i].charCodeAt(0)
+            const next = chars[i + 1].charCodeAt(0)
+            if (next === current + 1) {
+                hasSequentialProbes = true
+                break
+            }
+        }
+        if (hasSequentialProbes) break
+    }
+
+    const hasRepeatedWildcard = repeatedWildcardPattern.test(lower)
+    const hasPasswordProbe = /\((userpassword|unicodepwd)=\*\)/i.test(lower)
+
+    if ((hasSequentialProbes && hasPasswordProbe) || hasRepeatedWildcard) {
+        return {
+            type: 'wildcard_enum',
+            detail: 'Blind LDAP injection via attribute enumeration probes and wildcard abuse',
+            attribute: null,
+            confidence: 0.91,
+        }
+    }
+
+    return null
+}
+
+export function detectLdapSpecialCharBypass(input: string): LDAPDetection | null {
+    const hasEncodedSpecialChar = /\\(?:00|28|29|2a|5c|u[0-9a-f]{4})/i.test(input)
+    const hasFilterContext = input.includes('(') || input.includes(')') || input.includes('=')
+
+    if (hasEncodedSpecialChar && hasFilterContext) {
+        return {
+            type: 'operator_injection',
+            detail: 'LDAP special-character bypass using encoded metacharacters (null/paren/unicode escapes)',
+            attribute: null,
+            confidence: 0.90,
+        }
+    }
+
+    return null
+}
+
+export function detectLdapDnInjection(input: string): LDAPDetection | null {
+    const dnInjectionPattern = /=[^,\\)]*,\s*(cn|dc|ou)\s*=/i
+    const hasDnChain = /(cn|dc|ou)\s*=[^,)]/i.test(input)
+
+    if (dnInjectionPattern.test(input) && hasDnChain) {
+        return {
+            type: 'filter_break',
+            detail: 'LDAP DN injection with unescaped comma before DN component (cn/dc/ou)',
+            attribute: 'dn',
+            confidence: 0.89,
+        }
+    }
+
+    return null
+}
+
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -250,6 +326,15 @@ export function detectLDAPInjection(input: string): LDAPDetection[] {
         detections.push(...detectWildcardEnum(tokens))
         detections.push(...detectAuthBypass(tokens))
         detections.push(...detectOperatorInjection(tokens))
+
+        const blind = detectLdapBlindInjection(decoded)
+        if (blind) detections.push(blind)
+
+        const specialCharBypass = detectLdapSpecialCharBypass(decoded)
+        if (specialCharBypass) detections.push(specialCharBypass)
+
+        const dnInjection = detectLdapDnInjection(decoded)
+        if (dnInjection) detections.push(dnInjection)
     } catch { /* never crash */ }
 
     // Dedup by type
@@ -261,3 +346,4 @@ export function detectLDAPInjection(input: string): LDAPDetection[] {
         return true
     })
 }
+

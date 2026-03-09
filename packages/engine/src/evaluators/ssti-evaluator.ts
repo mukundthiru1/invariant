@@ -271,6 +271,105 @@ function isDangerousExpression(content: string): { dangerous: boolean; reason: s
 }
 
 
+// ── SSTI Coverage Expansions ─────────────────────────────────
+
+function detectSstiPolyglot(input: string): SstiDetection | null {
+    const patterns = [
+        /\{\{\s*[^{}]{0,220}?\d+\s*\*\s*['"][^'"]+['"][^{}]{0,220}?\}\}/i,
+        /\#\{\s*[^{}]{0,220}?\d+\s*\*\s*['"][^'"]+['"][^{}]{0,220}?\}/i,
+        /\{\{\s*[^{}]{0,220}?(?:config|settings|request\.environ|self\.__init__\.__globals__)[^{}]{0,220}?\}\}/i,
+        /\#\{\s*[^{}]{0,220}?(?:config|settings|request\.environ|self\.__init__\.__globals__)[^{}]{0,220}?\}/i,
+    ]
+
+    for (const pattern of patterns) {
+        const match = input.match(pattern)
+        if (!match) continue
+
+        return {
+            type: 'jinja_twig',
+            detail: 'Polyglot SSTI markers across multiple template engines',
+            expression: match[0].slice(0, 100),
+            engine: 'Polyglot SSTI/Jinja2-Twig-Slim',
+            confidence: 0.92,
+        }
+    }
+
+    return null
+}
+
+function detectSstiContextEscape(input: string): SstiDetection | null {
+    const patterns = [
+        /\}\}\s*\{\{\s*\d+\s*[+\-*/]\s*\d+\s*\}\}/,
+        /\|\s*attr\(\s*['\"]__class__['\"]\s*\)/i,
+        /\[\]\.__class__\.__mro__/i,
+        /_self\.env\.registerUndefinedFilterCallback\(\s*['\"]exec['\"]\s*\)/i,
+        /(?:__class__\.|__mro__\.|__subclasses__\.|__builtins__\.){2,}/i,
+    ]
+
+    for (const pattern of patterns) {
+        const match = input.match(pattern)
+        if (!match) continue
+
+        return {
+            type: 'jinja_twig',
+            detail: 'Template context-escape chain or delimiter breakout detected',
+            expression: match[0].slice(0, 100),
+            engine: 'Jinja2/Twig context-escape',
+            confidence: 0.91,
+        }
+    }
+
+    return null
+}
+
+function detectSstiBlindProbe(input: string): SstiDetection | null {
+    const patterns = [
+        /__class__\.__mro__\[[^\]]+\]\.__subclasses__\(\)\[[^\]]+\]\([^)]*['"]\/etc\/passwd['"][^)]*\)\.read\(\)/i,
+        /freemarker\.template\.utility\.Execute[\s\S]{0,220}\$\{[^}]*\([^)]*\)/i,
+    ]
+
+    for (const pattern of patterns) {
+        const match = input.match(pattern)
+        if (!match) continue
+
+        return {
+            type: input.includes('${') ? 'el_expression' : 'jinja_twig',
+            detail: 'Blind SSTI probe using object traversal or template utility execution',
+            expression: match[0].slice(0, 100),
+            engine: 'Python/Jinja2 or Freemarker blind probe',
+            confidence: 0.90,
+        }
+    }
+
+    return null
+}
+
+function detectSstiJinja2Specific(input: string): SstiDetection | null {
+    const patterns = [
+        /\{\{\s*config\.items\(\)\s*\}\}/i,
+        /lipsum\.__globals__\.__builtins__\.__import__\(\s*['"]os['"]\)/i,
+        /\{\{\s*lipsum\.__globals__\.__builtins__\.__import__\(\s*['"]os['"]\s*\)\s*\}\}/i,
+        /\{\{\s*(?:getattr|setattr)\([^)]*['"]__\w+['"][^)]*\)\s*\}\}/i,
+        /\{\{\s*cycler\.__init__\.__globals__\s*\}\}/i,
+    ]
+
+    for (const pattern of patterns) {
+        const match = input.match(pattern)
+        if (!match) continue
+
+        return {
+            type: 'jinja_twig',
+            detail: 'Jinja2-specific dangerous object chain',
+            expression: match[0].slice(0, 100),
+            engine: 'Jinja2',
+            confidence: 0.93,
+        }
+    }
+
+    return null
+}
+
+
 // ── Public API ───────────────────────────────────────────────────
 
 /**
@@ -279,6 +378,26 @@ function isDangerousExpression(content: string): { dangerous: boolean; reason: s
  */
 export function detectSSTI(input: string): SSTIDetection[] {
     const detections: SSTIDetection[] = []
+
+    const polyglot = detectSstiPolyglot(input)
+    if (polyglot) {
+        detections.push(polyglot)
+    }
+
+    const contextEscape = detectSstiContextEscape(input)
+    if (contextEscape) {
+        detections.push(contextEscape)
+    }
+
+    const blindProbe = detectSstiBlindProbe(input)
+    if (blindProbe) {
+        detections.push(blindProbe)
+    }
+
+    const jinjaSpecific = detectSstiJinja2Specific(input)
+    if (jinjaSpecific) {
+        detections.push(jinjaSpecific)
+    }
 
     // Quick bail: must contain template-like delimiters
     if (!input.includes('{') && !input.includes('<%') && !input.includes('T(')) {

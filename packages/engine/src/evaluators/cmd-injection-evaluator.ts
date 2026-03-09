@@ -204,6 +204,22 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     // Strategy 16: PowerShell obfuscation bypass
     detectPowerShellObfuscation(decoded, detections)
 
+    // Strategy 16b: PowerShell class method injection (type accelerator)
+    const psClass = detectPowerShellClassMethodInjection(decoded)
+    if (psClass) detections.push(psClass)
+
+    // Strategy 16c: Shell here-doc/here-string bypass
+    const hereBypass = detectShellScriptHereDocBypass(decoded)
+    if (hereBypass) detections.push(hereBypass)
+
+    // Strategy 16d: Environment variable injection (LD_PRELOAD, BASH_FUNC_, etc.)
+    const envInj = detectEnvVarInjection(decoded)
+    if (envInj) detections.push(envInj)
+
+    // Strategy 16e: Reverse shell one-liner patterns
+    const revShell = detectReverseShellPattern(decoded)
+    if (revShell) detections.push(revShell)
+
     // Strategy 17: Arithmetic expansion with nested command substitution
     // $((echo $(id))) — not caught by CMD_SUBST_OPEN because tokenizer sees $( then (
     detectArithmeticExpansion(decoded, detections)
@@ -1006,6 +1022,90 @@ function isPowerShellObfuscationWord(word: string): boolean {
     )
 }
 
+
+// ── PowerShell class method injection (type accelerator abuse) ─────
+//
+// [System.Diagnostics.Process]::Start('cmd.exe'), [Runtime.InteropServices.Marshal]::GetDelegateForFunctionPointer
+const PS_TYPE_ACCELERATOR_RE = /\[(?:System\.|Runtime\.)[^\]]{1,120}\]::(?:Start|GetDelegateForFunctionPointer)\s*\(/i
+
+/**
+ * Detect PowerShell type accelerator abuse for class method injection.
+ * Returns a single detection or null.
+ */
+export function detectPowerShellClassMethodInjection(input: string): CmdInjectionDetection | null {
+    const match = input.match(PS_TYPE_ACCELERATOR_RE)
+    if (!match) return null
+    return {
+        type: 'structural',
+        separator: 'powershell_type_accelerator',
+        command: match[0].slice(0, 80),
+        detail: `PowerShell type accelerator class method injection: ${match[0].slice(0, 60)}`,
+        position: match.index ?? 0,
+        confidence: 0.92,
+    }
+}
+
+// ── Shell here-doc / here-string bypass ───────────────────────────
+//
+// <<< (here-string), cmd <<'delimiter' multiline, echo string | bash
+const HERE_DOC_BYPASS_RE = /(?:<<<\s*[^\r\n]{1,200}|(?:bash|sh|cmd)\s+<<\s*['"]?[A-Za-z_][A-Za-z0-9_]*|echo\s+[^\r\n]{1,200}\s*\|\s*(?:bash|sh)\b)/
+
+/**
+ * Detect here-doc/here-string and echo|shell bypass patterns.
+ * Returns a single detection or null.
+ */
+export function detectShellScriptHereDocBypass(input: string): CmdInjectionDetection | null {
+    const match = input.match(HERE_DOC_BYPASS_RE)
+    if (!match) return null
+    return {
+        type: 'heredoc',
+        separator: 'herestring_bypass',
+        command: match[0].slice(0, 80),
+        detail: `Shell here-doc/here-string or echo|shell bypass: ${match[0].slice(0, 60)}`,
+        position: match.index ?? 0,
+        confidence: 0.90,
+    }
+}
+
+// ── Environment variable injection (LD_PRELOAD, BASH_FUNC_, etc.) ─
+const ENV_VAR_INJECTION_RE = /(?:LD_PRELOAD|LD_LIBRARY_PATH|GLIBC_TUNABLES)\s*=\s*[^\s;|&]{1,300}|BASH_FUNC_[A-Za-z0-9_.]+%%=/i
+
+/**
+ * Detect environment variable injection used to execute code.
+ * Returns a single detection or null.
+ */
+export function detectEnvVarInjection(input: string): CmdInjectionDetection | null {
+    const match = input.match(ENV_VAR_INJECTION_RE)
+    if (!match) return null
+    return {
+        type: 'structural',
+        separator: 'env_injection',
+        command: match[0].slice(0, 80),
+        detail: `Environment variable injection: ${match[0].slice(0, 60)}`,
+        position: match.index ?? 0,
+        confidence: 0.93,
+    }
+}
+
+// ── Reverse shell one-liner patterns ──────────────────────────────
+const REVERSE_SHELL_RE = /(?:\/dev\/tcp\/[^\s'"<>|;&]{1,200}\/[0-9]{1,5}|nc\s+-e\s+\/bin\/(?:bash|sh)\s+[^\s;|&]{1,100}|python\s*(?:2|3)?\s+-c\s+[^\r\n]{0,80}(?:socket\.connect|subprocess\.(?:call|Popen)))/
+
+/**
+ * Detect reverse shell one-liner patterns.
+ * Returns a single detection or null.
+ */
+export function detectReverseShellPattern(input: string): CmdInjectionDetection | null {
+    const match = input.match(REVERSE_SHELL_RE)
+    if (!match) return null
+    return {
+        type: 'structural',
+        separator: 'reverse_shell',
+        command: match[0].slice(0, 80),
+        detail: `Reverse shell pattern: ${match[0].slice(0, 60)}`,
+        position: match.index ?? 0,
+        confidence: 0.94,
+    }
+}
 
 // ── Strategy 13: Arithmetic Expansion ────────────────────────────
 //

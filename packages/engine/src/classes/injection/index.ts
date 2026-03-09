@@ -42,6 +42,7 @@ import {
     httpSmuggleExpect,
     http_request_smuggling,
 } from './http-smuggling.js'
+import { requestSmuggling } from './request-smuggling.js'
 import { corsOriginAbuse } from './cors.js'
 import { dependencyConfusion, postinstallInjection, envExfiltration } from './supply-chain.js'
 import { ws_injection, ws_hijack } from './websocket.js'
@@ -230,6 +231,7 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     httpSmuggleZeroCl,      // 0.CL desync (2025)
     httpSmuggleExpect,      // Expect-based desync (2025)
     http_request_smuggling, // CL.TE/TE.CL/general request smuggling detection
+    requestSmuggling,
     // CORS
     corsOriginAbuse,
     // Supply-chain and dependency threats

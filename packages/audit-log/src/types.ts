@@ -24,7 +24,7 @@ export type AuditEvent = {
 export type EventForSignature = Omit<AuditEvent, 'id' | 'hmac'>
 
 export type TamperReport = {
-  reason: 'forced_push' | 'missing_commits'
+  reason: 'forced_push' | 'missing_commits' | 'suspected_rebase'
   forced: boolean
   missing_commits: string[]
   before?: string

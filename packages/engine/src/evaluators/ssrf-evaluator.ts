@@ -617,6 +617,98 @@ function detectProtocolSmuggle(parsed: ParsedURL): SSRFDetection | null {
     return null
 }
 
+// ── Scheme-specific SSRF detectors (cloud / protocol abuse) ───────
+
+const FILE_SCHEME_SENSITIVE_PATHS = [
+    '/etc/passwd', '/etc/shadow', '/etc/hosts',
+    '/proc/self/environ', '/proc/self/cmdline', '/proc/version',
+    '/windows/win.ini', '/windows/system32/drivers/etc/hosts',
+]
+const FILE_SCHEME_RE = /file:\/\/\/[^\s'"<>]*/gi
+
+export function detectSsrfViaFileScheme(input: string): SSRFDetection | null {
+    const decoded = decodeInput(input)
+    const match = decoded.match(FILE_SCHEME_RE)
+    if (!match) return null
+    const raw = match[0]
+    const pathPart = raw.replace(/^file:\/\/\/?/i, '/').split(/[?#]/)[0]
+    const pathLower = pathPart.toLowerCase()
+    for (const sensitive of FILE_SCHEME_SENSITIVE_PATHS) {
+        if (pathLower === sensitive || pathLower.startsWith(sensitive + '/')) {
+            return {
+                type: 'protocol_smuggle',
+                detail: `file:// scheme SSRF: reading local file via URL (${pathPart})`,
+                resolvedHost: '',
+                resolvedIP: null,
+                confidence: 0.96,
+            }
+        }
+    }
+    if (/^file:\/\/\/./i.test(decoded)) {
+        return {
+            type: 'protocol_smuggle',
+            detail: `file:// scheme SSRF: local file access via URL`,
+            resolvedHost: '',
+            resolvedIP: null,
+            confidence: 0.96,
+        }
+    }
+    return null
+}
+
+const GOPHER_RE = /gopher:\/\/[^\s'"<>]+/gi
+
+export function detectSsrfViaGopher(input: string): SSRFDetection | null {
+    const decoded = decodeInput(input)
+    const match = decoded.match(GOPHER_RE)
+    if (!match) return null
+    const raw = match[0]
+    const parsed = parseURL(raw)
+    if (!parsed) return null
+    return {
+        type: 'protocol_smuggle',
+        detail: `Gopher protocol SSRF: internal Redis/Memcached/SMTP probe (${parsed.hostname}:${parsed.port ?? 'default'})`,
+        resolvedHost: parsed.hostname,
+        resolvedIP: null,
+        confidence: 0.95,
+    }
+}
+
+const DICT_RE = /dict:\/\/[^\s'"<>]+/gi
+
+export function detectSsrfViaDict(input: string): SSRFDetection | null {
+    const decoded = decodeInput(input)
+    const match = decoded.match(DICT_RE)
+    if (!match) return null
+    const raw = match[0]
+    const parsed = parseURL(raw)
+    if (!parsed) return null
+    return {
+        type: 'protocol_smuggle',
+        detail: `dict:// protocol SSRF: Redis/config probe (${parsed.hostname})`,
+        resolvedHost: parsed.hostname,
+        resolvedIP: null,
+        confidence: 0.93,
+    }
+}
+
+const LDAP_SCHEME_RE = /(ldap|ldaps):\/\/[^\s'"<>]+/gi
+
+export function detectSsrfViaLdapScheme(input: string): SSRFDetection | null {
+    const decoded = decodeInput(input)
+    const match = decoded.match(LDAP_SCHEME_RE)
+    if (!match) return null
+    const raw = match[0]
+    const parsed = parseURL(raw)
+    if (!parsed) return null
+    return {
+        type: 'protocol_smuggle',
+        detail: `LDAP/LDAPS SSRF: credential or data exfil vector (${parsed.hostname})`,
+        resolvedHost: parsed.hostname,
+        resolvedIP: null,
+        confidence: 0.91,
+    }
+}
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -642,6 +734,10 @@ export function detectSSRF(input: string): SSRFDetection[] {
         detectCloudMetadata,
         detectDnsRebinding,
         detectSsrfRedirectChain,
+        detectSsrfViaFileScheme,
+        detectSsrfViaGopher,
+        detectSsrfViaDict,
+        detectSsrfViaLdapScheme,
     ]
 
     for (const detector of parsedDetectors) {

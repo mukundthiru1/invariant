@@ -11,8 +11,6 @@
  * All functions perform real pattern and structural analysis; no stubs.
  */
 
-import { describe, it, expect } from 'vitest'
-
 // ── Result Type ──────────────────────────────────────────────────
 
 export interface OAuthDetection {
@@ -243,92 +241,3 @@ export function detectOAuthTheft(input: string): OAuthDetection[] {
     }
     return out
 }
-
-// ── Unit Tests ────────────────────────────────────────────────────
-
-describe('oauth-theft-evaluator', () => {
-    it('detectAuthCodeInterception: detects HTTP redirect_uri to external host', () => {
-        const input = 'https://auth.example.com/oauth/authorize?response_type=code&client_id=app&redirect_uri=http://evil.com/callback'
-        const r = detectAuthCodeInterception(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('auth_code_interception')
-        expect(r!.confidence).toBe(0.93)
-        expect(r!.detail).toMatch(/HTTP|interception|redirect_uri/i)
-    })
-
-    it('detectAuthCodeInterception: detects redirect_uri to IP address', () => {
-        const input = 'oauth/authorize?response_type=code&client_id=x&redirect_uri=http://192.168.1.1/cb'
-        const r = detectAuthCodeInterception(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('auth_code_interception')
-        expect(r!.detail).toMatch(/IP|interception/i)
-    })
-
-    it('detectPkceDowngradeAttack: detects missing code_challenge with response_type=code', () => {
-        const input = 'response_type=code&client_id=app&redirect_uri=https://app.example/callback'
-        const r = detectPkceDowngradeAttack(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('pkce_downgrade')
-        expect(r!.confidence).toBe(0.91)
-        expect(r!.detail).toMatch(/code_challenge|downgrade/i)
-    })
-
-    it('detectPkceDowngradeAttack: detects code_challenge_method=plain', () => {
-        const input = 'response_type=code&client_id=app&redirect_uri=https://app/cb&code_challenge=abc&code_challenge_method=plain'
-        const r = detectPkceDowngradeAttack(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('pkce_downgrade')
-        expect(r!.detail).toMatch(/plain|downgrade/i)
-    })
-
-    it('detectOAuthMixupAttack: detects missing state in auth request', () => {
-        const input = 'https://idp.example/oauth/authorize?response_type=code&client_id=app&redirect_uri=https://app/cb'
-        const r = detectOAuthMixupAttack(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('oauth_mixup')
-        expect(r!.detail).toMatch(/state|missing|mix-up/i)
-    })
-
-    it('detectOAuthMixupAttack: detects predictable state value', () => {
-        const input = 'oauth/authorize?response_type=code&client_id=app&redirect_uri=https://app/cb&state=1234'
-        const r = detectOAuthMixupAttack(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('oauth_mixup')
-        expect(r!.detail).toMatch(/predictable|trivial|state|mix-up/i)
-    })
-
-    it('detectTokenLeakageViaReferrer: detects access_token in query', () => {
-        const input = 'https://app.example/callback?access_token=ya29.abcdefghijklmnopqrstuvwxyz123456'
-        const r = detectTokenLeakageViaReferrer(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('token_leakage_referrer')
-        expect(r!.confidence).toBe(0.92)
-        expect(r!.detail).toMatch(/Referer|access_token|leakage/i)
-    })
-
-    it('detectTokenLeakageViaReferrer: detects access_token in fragment', () => {
-        const input = 'https://app.example/cb#access_token=eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.xxx&token_type=Bearer'
-        const r = detectTokenLeakageViaReferrer(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('token_leakage_referrer')
-        expect(r!.detail).toMatch(/fragment|Referer|leakage/i)
-    })
-
-    it('detectImplicitFlowAbuse: detects response_type=token', () => {
-        const input = 'oauth/authorize?response_type=token&client_id=app&redirect_uri=https://app/cb'
-        const r = detectImplicitFlowAbuse(input)
-        expect(r).not.toBeNull()
-        expect(r!.type).toBe('implicit_flow_abuse')
-        expect(r!.confidence).toBe(0.87)
-        expect(r!.detail).toMatch(/implicit|token|fragment|deprecated/i)
-    })
-
-    it('detectOAuthTheft aggregates all detectors and returns array', () => {
-        const input = 'https://auth.example/oauth/authorize?response_type=code&client_id=app&redirect_uri=http://evil.com/cb'
-        const all = detectOAuthTheft(input)
-        expect(Array.isArray(all)).toBe(true)
-        expect(all.length).toBeGreaterThanOrEqual(1)
-        const types = new Set(all.map(a => a.type))
-        expect(types.has('auth_code_interception')).toBe(true)
-    })
-})

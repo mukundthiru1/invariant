@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { detectDeserialization } from './deser-evaluator.js'
+import {
+    detectDeserialization,
+    detectDeserDotNetFormatter,
+    detectDeserJavaGadgetChain,
+    detectDeserYamlConstructor,
+} from './deser-evaluator.js'
 
 describe('deser-evaluator', () => {
     const cases: Array<{ label: string, payload: string, type: 'java_gadget' | 'php_object' | 'python_pickle' }> = [
@@ -77,5 +82,53 @@ describe('deser-evaluator', () => {
 
     it('avoids flagging short benign text', () => {
         expect(detectDeserialization('hello world')).toHaveLength(0)
+    })
+
+    it('detects Java gadget chains in Commons Collections serialization payloads', () => {
+        const payload = 'rO0ABXNyABdqYXZhLnV0aWwuUHJpb3JpdHlRdWV1ZQABChAIdGVzdA==org.apache.commons.collections.functors.ChainedTransformer'
+        const detection = detectDeserJavaGadgetChain(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('java_gadget')
+        expect(detection?.confidence).toBe(0.95)
+    })
+
+    it('detects Java serialization payloads with aced0005 and Spring class markers', () => {
+        const payload = 'aced0005org.springframework.context.support.ClassPathXmlApplicationContext'
+        const detection = detectDeserJavaGadgetChain(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('java_gadget')
+        expect(detection?.detail).toContain('Spring')
+    })
+
+    it('detects unsafe YAML python object constructors', () => {
+        const payload = '!!python/object/apply:os.system ["id"]'
+        const detection = detectDeserYamlConstructor(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('python_pickle')
+        expect(detection?.detail).toContain('YAML unsafe constructor')
+    })
+
+    it('detects unsafe YAML java runtime constructors', () => {
+        const payload = 'payload: !!java.lang.Runtime ["/bin/sh","-c","id"]'
+        const detection = detectDeserYamlConstructor(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('java_gadget')
+        expect(detection?.detail).toContain('!!java.lang.Runtime')
+    })
+
+    it('detects .NET BinaryFormatter TypeConfuseDelegate patterns', () => {
+        const payload = 'AAEAAAD/////BinaryFormatter.TypeConfuseDelegate.SerializedData'
+        const detection = detectDeserDotNetFormatter(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('java_gadget')
+        expect(detection?.confidence).toBe(0.92)
+    })
+
+    it('detects .NET ObjectDataProvider gadget chains', () => {
+        const payload = 'AAEAAAD/wEAAAAAAAAA:System.Windows.Data.ObjectDataProvider'
+        const detection = detectDeserDotNetFormatter(payload)
+        expect(detection).not.toBeNull()
+        expect(detection?.type).toBe('java_gadget')
+        expect(detection?.gadgetChain).toContain('ObjectDataProvider')
     })
 })
