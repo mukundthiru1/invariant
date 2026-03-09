@@ -556,30 +556,37 @@ export class InvariantEngine {
             let novelByL3 = 0
             let convergent = 0
 
-        for (const module of this.registry.all()) {
-            let l1Detected = false
-            let l2Detected = false
-            let l1Confidence = 0
-            let l2Result: DetectionLevelResult | null = null
+            for (const module of this.registry.all()) {
+                let l1Detected = false
+                let l2Detected = false
+                let l1Confidence = 0
+                let l2Result: DetectionLevelResult | null = null
+                let l1Errored = false
 
             // ── Level 1: Regex fast-path ──
-            try {
-                l1Detected = module.detect(safeInput)
-                if (l1Detected) {
-                    l1Confidence = sanitizeConf(this.registry.computeConfidence(
-                        module.id,
-                        safeInput,
-                        safeEnvironment,
-                        safeStaticRuleIds.length > 0,
-                        scope,
-                    ))
+                try {
+                    l1Detected = module.detect(safeInput)
+                    if (l1Detected) {
+                        l1Confidence = sanitizeConf(this.registry.computeConfidence(
+                            module.id,
+                            safeInput,
+                            safeEnvironment,
+                            safeStaticRuleIds.length > 0,
+                            scope,
+                        ))
+                    }
+                } catch (error) {
+                    l1Errored = true
+                    this.recordError(`detectDeep.l1:${module.id}`, error)
                 }
-            } catch (error) {
-                this.recordError(`detectDeep.l1:${module.id}`, error)
-            }
 
-            // ── Level 2: Structural evaluator ──
-            if (module.detectL2) {
+                // ── Level 2: Structural evaluator ──
+                //
+            // L2 is intentionally run when L1 is a signal, when L1 fails with an
+            // exception (for parity/observability), or when static rules force
+            // deeper analysis.
+            if (module.detectL2
+                && (l1Detected || l1Errored || safeStaticRuleIds.length > 0)) {
                 try {
                     l2Result = module.detectL2(safeInput)
                     if (l2Result?.detected) {

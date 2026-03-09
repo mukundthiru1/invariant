@@ -40,6 +40,8 @@ export interface SSRFDetection {
     confidence: number
 }
 
+export type DetectionResult = SSRFDetection
+
 
 // ── Cloud Metadata Endpoints ─────────────────────────────────────
 const CLOUD_METADATA_IPS = [
@@ -47,14 +49,45 @@ const CLOUD_METADATA_IPS = [
     '100.100.100.200',   // Alibaba Cloud
     '169.254.170.2',     // AWS ECS task metadata
     '168.63.129.16',     // Azure Wire Server / IMDS
+    '192.0.0.192',       // Oracle Cloud
+    '10.96.0.1',         // Kubernetes default cluster IP
 ]
 
 const CLOUD_METADATA_HOSTNAMES = new Set([
     'metadata.google.internal',
     'metadata.goog',
+    'metadata.google',
     'metadata',
     'instance-data',
+    'metadata.internal',
+    'imds.internal',
+    'azure.instance',
+    'azure',
+    'kubernetes.default.svc',
+    'kubernetes.default',
+    'api.internal',
+    'metadata.azure.com',
+    'metadata.digitalocean.com',
 ])
+
+const CLOUD_METADATA_IP_PATH_HINTS = [
+    '/computeMetadata/v1',
+    '/metadata/v1',
+    '/metadata/instance',
+    '/metadata/attested',
+    '/identity/document',
+    '/metadata/identity',
+    '/opc/v2',
+]
+
+const DNS_REBIND_HOSTS = new Set(['localtest.me', 'vcap.me', 'nip.io', 'xip.io'])
+const DNS_REBIND_SUFFIXES = ['.nip.io', '.xip.io', '.sslip.io', '.localtest.me', '.vcap.me']
+const CNAME_REBIND_MARKER_RE = /(?:^|[.-])(cname|rebind|rebinding)(?:$|[.-])/i
+
+const REDIRECT_CHAIN_USERINFO_RE = /^[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+@[^/\s:]+/i
+const REDIRECT_CHAIN_SCHEME_CONFUSION_RE = /^(?:[a-z][a-z0-9+.-]*\+[^:\/]+:\/\/|[a-z][a-z0-9+.-]*[\r\n]+[a-z0-9+.-]+:\/\/)/i
+const BACKSLASH_URL_RE = /^[a-z][a-z0-9+.-]*:\\[^/\s]/i
+const PATH_HINT_PREFIXES = ['/metadata/', '/computeMetadata/']
 
 
 // ── Dangerous Protocols ──────────────────────────────────────────
@@ -224,6 +257,37 @@ function ipNumToString(num: number): string {
     return `${(num >>> 24) & 0xFF}.${(num >>> 16) & 0xFF}.${(num >>> 8) & 0xFF}.${num & 0xFF}`
 }
 
+function decodeInput(input: string): string {
+    let decoded = input
+    try {
+        let prev = ''
+        for (let i = 0; i < 3 && decoded !== prev; i++) {
+            prev = decoded
+            try {
+                decoded = decodeURIComponent(decoded)
+            } catch {
+                break
+            }
+        }
+    } catch {
+        return input
+    }
+    return decoded
+}
+
+function hasMetadataPath(path: string): boolean {
+    const normalized = path.toLowerCase()
+    for (const hint of CLOUD_METADATA_IP_PATH_HINTS) {
+        if (normalized === hint || normalized.startsWith(`${hint}/`) || normalized.startsWith(`${hint}?`) || normalized.startsWith(`${hint}#`)) {
+            return true
+        }
+    }
+    if (PATH_HINT_PREFIXES.some(prefix => normalized.startsWith(prefix))) {
+        return true
+    }
+    return false
+}
+
 
 // ── URL Parser ───────────────────────────────────────────────────
 
@@ -357,7 +421,7 @@ function detectInternalReach(parsed: ParsedURL): SSRFDetection | null {
     return null
 }
 
-function detectCloudMetadata(parsed: ParsedURL): SSRFDetection | null {
+function detectCloudMetadataParsed(parsed: ParsedURL): SSRFDetection | null {
     const ipNum = parseIPRepresentation(parsed.hostname)
 
     if (ipNum !== null) {
@@ -380,6 +444,160 @@ function detectCloudMetadata(parsed: ParsedURL): SSRFDetection | null {
             resolvedHost: parsed.hostname,
             resolvedIP: null,
             confidence: 0.92,
+        }
+    }
+
+    return null
+}
+
+export function detectCloudMetadata(input: string): DetectionResult | null {
+    const decoded = decodeInput(input)
+    const parsed = parseURL(decoded)
+    if (!parsed) return null
+
+    const existing = detectCloudMetadataParsed(parsed)
+    if (existing) {
+        return {
+            ...existing,
+            confidence: 0.93,
+        }
+    }
+
+    const host = parsed.hostname.toLowerCase()
+    const path = parsed.path
+    const ipNum = parseIPRepresentation(host)
+    const resolvedIP = ipNum !== null ? ipNumToString(ipNum) : null
+
+    if (host === 'fd00:ec2::254') {
+        return {
+            type: 'cloud_metadata',
+            detail: `Cloud metadata endpoint: ${parsed.hostname}${path}`,
+            resolvedHost: parsed.hostname,
+            resolvedIP: null,
+            confidence: 0.93,
+        }
+    }
+
+    const hasRelevantMetadataPath = hasMetadataPath(path) && (CLOUD_METADATA_HOSTNAMES.has(host) || resolvedIP === '169.254.169.254' || host === 'metadata.google')
+    const hasMetadataHost = CLOUD_METADATA_HOSTNAMES.has(host) || host === 'metadata.google' || host === 'api.internal' || host === 'kubernetes.default' || host === 'imds.internal'
+
+    if (hasMetadataHost || hasRelevantMetadataPath) {
+        return {
+            type: 'cloud_metadata',
+            detail: `Cloud metadata endpoint: ${parsed.hostname}${path}`,
+            resolvedHost: parsed.hostname,
+            resolvedIP,
+            confidence: 0.93,
+        }
+    }
+
+    return null
+}
+
+export function detectDnsRebinding(input: string): DetectionResult | null {
+    const decoded = decodeInput(input)
+    const parsed = parseURL(decoded)
+    if (!parsed) return null
+
+    const h = parsed.hostname
+    const ipNum = parseIPRepresentation(h)
+
+    if (ipNum !== null) {
+        const resolvedIP = ipNumToString(ipNum)
+        if (resolvedIP === '0.0.0.0' || resolvedIP.startsWith('127.')) {
+            return {
+                type: 'internal_reach',
+                detail: `DNS rebinding target: ${h}`,
+                resolvedHost: h,
+                resolvedIP,
+                confidence: 0.88,
+            }
+        }
+    }
+
+    if (DNS_REBIND_HOSTS.has(h) || h === '0.0.0.0') {
+        return {
+            type: 'internal_reach',
+            detail: `DNS rebinding hostname: ${h}`,
+            resolvedHost: h,
+            resolvedIP: '127.0.0.1',
+            confidence: 0.88,
+        }
+    }
+
+    for (const suffix of DNS_REBIND_SUFFIXES) {
+        if (h.endsWith(suffix)) {
+            const ipPart = h.slice(0, -suffix.length).replace(/-/g, '.')
+            const rebindingIP = parseIPRepresentation(ipPart)
+            if (rebindingIP !== null) {
+                const resolvedIP = ipNumToString(rebindingIP)
+                if (resolvedIP.startsWith('127.') || resolvedIP === '0.0.0.0' || resolvedIP.startsWith('10.') || resolvedIP.startsWith('192.168.') || resolvedIP.startsWith('172.')) {
+                    return {
+                        type: 'internal_reach',
+                        detail: `DNS rebinding via ${suffix}: ${h} → ${resolvedIP}`,
+                        resolvedHost: h,
+                        resolvedIP,
+                        confidence: 0.88,
+                    }
+                }
+            }
+        }
+    }
+
+    if (CNAME_REBIND_MARKER_RE.test(h)) {
+        return {
+            type: 'internal_reach',
+            detail: `CNAME-style rebinding marker: ${h}`,
+            resolvedHost: h,
+            resolvedIP: null,
+            confidence: 0.88,
+        }
+    }
+
+    return null
+}
+
+export function detectSsrfRedirectChain(input: string): DetectionResult | null {
+    const decoded = decodeInput(input)
+    const parsed = parseURL(decoded)
+
+    if (BACKSLASH_URL_RE.test(decoded)) {
+        return {
+            type: 'protocol_smuggle',
+            detail: `Backslash URL normalization: ${decoded.slice(0, 64)}`,
+            resolvedHost: parsed ? parsed.hostname : '',
+            resolvedIP: null,
+            confidence: 0.85,
+        }
+    }
+
+    if (REDIRECT_CHAIN_USERINFO_RE.test(decoded)) {
+        return {
+            type: 'protocol_smuggle',
+            detail: `Userinfo host confusion: ${decoded.slice(0, 128)}`,
+            resolvedHost: parsed ? parsed.hostname : '',
+            resolvedIP: null,
+            confidence: 0.85,
+        }
+    }
+
+    if (parsed && parsed.path.startsWith('//')) {
+        return {
+            type: 'protocol_smuggle',
+            detail: `Protocol chain ambiguity: ${parsed.hostname}`,
+            resolvedHost: parsed.hostname,
+            resolvedIP: null,
+            confidence: 0.85,
+        }
+    }
+
+    if (REDIRECT_CHAIN_SCHEME_CONFUSION_RE.test(decoded)) {
+        return {
+            type: 'protocol_smuggle',
+            detail: `Scheme confusion: ${decoded.slice(0, 64)}`,
+            resolvedHost: parsed ? parsed.hostname : '',
+            resolvedIP: null,
+            confidence: 0.85,
         }
     }
 
@@ -412,28 +630,31 @@ export function detectSSRF(input: string): SSRFDetection[] {
     // Don't waste time on very short inputs
     if (input.length < 4) return detections
 
-    // Multi-layer decode to handle encoding bypass
-    let decoded = input
-    try {
-        let prev = ''
-        for (let i = 0; i < 3 && decoded !== prev; i++) {
-            prev = decoded
-            try { decoded = decodeURIComponent(decoded) } catch { break }
-        }
-    } catch { /* use original */ }
+    const decoded = decodeInput(input)
 
     const parsed = parseURL(decoded)
-    if (!parsed) return detections
-
-    const detectorFns: Array<(parsed: ParsedURL) => SSRFDetection | null> = [
-        detectCloudMetadata,   // Check metadata first (highest severity)
+    const parsedDetectors = parsed ? [
         detectInternalReach,
         detectProtocolSmuggle,
+    ] : []
+
+    const rawDetectors: Array<(value: string) => SSRFDetection | null> = [
+        detectCloudMetadata,
+        detectDnsRebinding,
+        detectSsrfRedirectChain,
     ]
 
-    for (const detector of detectorFns) {
+    for (const detector of parsedDetectors) {
+        if (!parsed) break
         try {
             const result = detector(parsed)
+            if (result) detections.push(result)
+        } catch { /* never crash the pipeline */ }
+    }
+
+    for (const detector of rawDetectors) {
+        try {
+            const result = detector(decoded)
             if (result) detections.push(result)
         } catch { /* never crash the pipeline */ }
     }

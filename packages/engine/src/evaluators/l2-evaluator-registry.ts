@@ -217,6 +217,10 @@ function buildXssEvidence(detection: XssDetection, input: string) {
         protocol_handler: 'Attribute value introduces executable URI scheme into document sink',
         template_expression: 'Template-like attribute or node can be resolved as executable HTML context',
         attribute_escape: 'Attribute context has escaped into executable behavior',
+        dom_clobbering: 'Named element shadows browser global object reference',
+        mutation_xss: 'HTML parser namespace confusion mutates benign markup into executable form',
+        dangling_markup: 'Unclosed attribute leaks subsequent page content to attacker-controlled endpoint',
+        css_expression: 'CSS expression or binding executes attacker-controlled JavaScript',
     }
 
     const propertyByType: Record<XssDetection['type'], string> = {
@@ -225,6 +229,10 @@ function buildXssEvidence(detection: XssDetection, input: string) {
         protocol_handler: 'URI-bearing attributes must not evaluate attacker-controlled schemes',
         template_expression: 'Template contexts must not evaluate attacker-controlled expressions',
         attribute_escape: 'Attribute escaping must prevent interpreter transitions',
+        dom_clobbering: 'Named DOM elements must not shadow browser globals',
+        mutation_xss: 'HTML serialization round-trips must not introduce executable markup',
+        dangling_markup: 'Unclosed attribute values must not steal subsequent document content',
+        css_expression: 'CSS property values must not evaluate attacker-controlled expressions',
     }
 
     return [{

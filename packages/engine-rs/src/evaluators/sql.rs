@@ -2998,6 +2998,78 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            if let Some((conf, dtype)) = detect_sql_lateral_movement(variant) {
+                let key = format!("{}:lateral_movement", dtype);
+                if seen.insert(key) {
+                    all_detections.push(L2Detection {
+                        detection_type: dtype.into(),
+                        confidence: conf as f64,
+                        detail: "SQL lateral movement (EXEC AT, OPENROWSET, OPENDATASOURCE, sp_addlinkedserver)".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: variant.to_owned(),
+                            interpretation: "Linked server or remote execution pattern".into(),
+                            offset: 0,
+                            property: "User input must not trigger execution on linked or external servers".into(),
+                        }],
+                    });
+                }
+            }
+            if let Some((conf, dtype)) = detect_sql_oob_exfil(variant) {
+                let key = format!("{}:oob_exfil", dtype);
+                if seen.insert(key) {
+                    all_detections.push(L2Detection {
+                        detection_type: dtype.into(),
+                        confidence: conf as f64,
+                        detail: "Out-of-band exfiltration (LOAD_FILE/UNC, xp_dirtree, UTL_HTTP, xp_fileexist)".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: variant.to_owned(),
+                            interpretation: "OOB channel for data exfiltration".into(),
+                            offset: 0,
+                            property: "User input must not trigger out-of-band data exfiltration".into(),
+                        }],
+                    });
+                }
+            }
+            if let Some((conf, dtype)) = detect_sql_ddl_injection(variant) {
+                let key = format!("{}:ddl_injection", dtype);
+                if seen.insert(key) {
+                    all_detections.push(L2Detection {
+                        detection_type: dtype.into(),
+                        confidence: conf as f64,
+                        detail: "DDL injection (DROP, TRUNCATE, ALTER TABLE ADD COLUMN, CREATE USER, GRANT)".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: variant.to_owned(),
+                            interpretation: "Schema or privilege modification via injection".into(),
+                            offset: 0,
+                            property: "User input must not inject DDL or privilege escalation".into(),
+                        }],
+                    });
+                }
+            }
+            if let Some((conf, dtype)) = detect_sql_timing_blind(variant) {
+                let key = format!("{}:timing_blind", dtype);
+                if seen.insert(key) {
+                    all_detections.push(L2Detection {
+                        detection_type: dtype.into(),
+                        confidence: conf as f64,
+                        detail: "Timing-based blind SQLi (SLEEP, WAITFOR DELAY, pg_sleep, BENCHMARK)".into(),
+                        position: 0,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::PayloadInject,
+                            matched_input: variant.to_owned(),
+                            interpretation: "Time-delay side channel for blind extraction".into(),
+                            offset: 0,
+                            property: "User input must not introduce timing side channels".into(),
+                        }],
+                    });
+                }
+            }
         }
 
         let err_score = detect_error_based_sqli(input);
@@ -3099,6 +3171,10 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "sql_bitwise_tautology" => Some(InvariantClass::SqlTautology),
             "sql_hex_x_literal" => Some(InvariantClass::SqlUnionExtraction),
             "sql_sqlite_pragma" => Some(InvariantClass::SqlStackedExecution),
+            "sql_lateral_movement" => Some(InvariantClass::SqlStackedExecution),
+            "sql_oob_exfiltration" => Some(InvariantClass::SqlUnionExtraction),
+            "sql_ddl_injection" => Some(InvariantClass::SqlStackedExecution),
+            "sql_timing_blind" => Some(InvariantClass::SqlTimeOracle),
             _ => None,
         }
     }
@@ -3182,6 +3258,111 @@ pub fn detect_second_order_sqli(input: &str) -> f64 {
     }
 
     max_score
+}
+
+/// Detects SQL lateral movement: EXEC AT, OPENROWSET, OPENDATASOURCE, sp_addlinkedserver.
+pub fn detect_sql_lateral_movement(input: &str) -> Option<(f32, &'static str)> {
+    static RE_EXEC_AT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bEXEC(UTE)?\s*\([^)]+\)\s+AT\s+\w+").unwrap()
+    });
+    static RE_OPENROWSET: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bOPENROWSET\s*\(").unwrap());
+    static RE_OPENDATASOURCE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bOPENDATASOURCE\s*\(").unwrap());
+    static RE_SP_ADDLinked: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bsp_addlinkedserver\b").unwrap());
+
+    if RE_EXEC_AT.is_match(input)
+        || RE_OPENROWSET.is_match(input)
+        || RE_OPENDATASOURCE.is_match(input)
+        || RE_SP_ADDLinked.is_match(input)
+    {
+        Some((0.91, "sql_lateral_movement"))
+    } else {
+        None
+    }
+}
+
+/// Detects out-of-band exfiltration: LOAD_FILE+UNC, xp_dirtree UNC, UTL_HTTP.REQUEST, UTL_FILE UNC, xp_fileexist UNC.
+pub fn detect_sql_oob_exfil(input: &str) -> Option<(f32, &'static str)> {
+    static RE_LOAD_FILE_UNC: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bLOAD_FILE\s*\([^)]*\\\\").unwrap()
+    });
+    static RE_XP_DIRTREE_UNC: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?is)\bxp_dirtree\s*\(\s*['"]?\\\\"#).unwrap()
+    });
+    static RE_UTL_HTTP: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bUTL_HTTP\.REQUEST\s*\(").unwrap());
+    static RE_UTL_FILE_UNC: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bUTL_FILE\b[^;]*\\\\").unwrap()
+    });
+    static RE_XP_FILEEXIST_UNC: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r#"(?is)\bxp_fileexist\s*\(\s*['"]?\\\\"#).unwrap()
+    });
+
+    if RE_LOAD_FILE_UNC.is_match(input)
+        || RE_XP_DIRTREE_UNC.is_match(input)
+        || RE_UTL_HTTP.is_match(input)
+        || RE_UTL_FILE_UNC.is_match(input)
+        || RE_XP_FILEEXIST_UNC.is_match(input)
+    {
+        Some((0.93, "sql_oob_exfiltration"))
+    } else {
+        None
+    }
+}
+
+/// Detects DDL injection: DROP TABLE/DATABASE, TRUNCATE, ALTER TABLE ADD COLUMN, CREATE USER, GRANT ALL.
+pub fn detect_sql_ddl_injection(input: &str) -> Option<(f32, &'static str)> {
+    static RE_DROP: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bDROP\s+(TABLE|DATABASE)\b").unwrap()
+    });
+    static RE_TRUNCATE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bTRUNCATE\s+TABLE\b").unwrap());
+    static RE_ALTER_ADD: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bALTER\s+TABLE\b[^;]*\bADD\s+COLUMN\b").unwrap()
+    });
+    static RE_CREATE_USER: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bCREATE\s+USER\b").unwrap());
+    static RE_GRANT_ALL: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bGRANT\s+ALL\b").unwrap());
+
+    if RE_DROP.is_match(input)
+        || RE_TRUNCATE.is_match(input)
+        || RE_ALTER_ADD.is_match(input)
+        || RE_CREATE_USER.is_match(input)
+        || RE_GRANT_ALL.is_match(input)
+    {
+        Some((0.89, "sql_ddl_injection"))
+    } else {
+        None
+    }
+}
+
+/// Detects timing-based blind SQLi: SLEEP, WAITFOR DELAY, pg_sleep, BENCHMARK, IF(...,SLEEP(...),0).
+pub fn detect_sql_timing_blind(input: &str) -> Option<(f32, &'static str)> {
+    static RE_SLEEP: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bSLEEP\s*\(").unwrap());
+    static RE_WAITFOR: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bWAITFOR\s+DELAY\b").unwrap());
+    static RE_PG_SLEEP: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bpg_sleep\s*\(").unwrap());
+    static RE_BENCHMARK: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?is)\bBENCHMARK\s*\(").unwrap());
+    static RE_IF_SLEEP: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?is)\bIF\s*\([^)]+,\s*SLEEP\s*\(").unwrap()
+    });
+
+    if RE_SLEEP.is_match(input)
+        || RE_WAITFOR.is_match(input)
+        || RE_PG_SLEEP.is_match(input)
+        || RE_BENCHMARK.is_match(input)
+        || RE_IF_SLEEP.is_match(input)
+    {
+        Some((0.87, "sql_timing_blind"))
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

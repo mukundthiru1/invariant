@@ -33,6 +33,196 @@ const META_GCP_RE = /metadata\.google\.internal\/computeMetadata\/v1\/instance\/
 const META_AZURE_RE = /169\.254\.169\.254\/metadata\/instance(?:\?|\/|\b)/i
 const META_IMDSV2_PUT_RE = /\bPUT\b[\s\S]{0,180}169\.254\.169\.254[\s\S]{0,220}x-aws-ec2-metadata-token-ttl-seconds\s*:/i
 
+const TRANSFER_ENCODING_RE = /^transfer-encoding:\s*(.+)$/gim
+const CONTENT_DISPOSITION_RE = /^content-disposition:\s*([^\r\n]+)$/gim
+const CONTENT_TYPE_MULTIPART_RE = /^content-type:\s*multipart\/form-data\b/i
+const FILE_SIZE_PARAM_RE = /\bsize\s*=\s*(\d{7,})\b/i
+const MULTIPART_SIZE_RE = /content-disposition:[^\r\n]*;[^\r\n]*\bname\s*=\s*["']?[^"'\r\n]+["']?[\s;]*\bfilename\s*=\s*["'][^"']+\b["']/i
+
+const HEADER_LINE_RE = /^([!$%&'*+.^_`|~A-Za-z0-9:-]+):\s*(.+)\s*$/i
+
+const GRAPHQL_FRAGMENT_DEF_RE = /\bfragment\s+([A-Za-z_][A-Za-z0-9_]*)\s+on\s+[A-Za-z_][A-Za-z0-9_]*\s*\{([\s\S]*?)\}/g
+const GRAPHQL_SPREAD_RE = /\.\.\.\s*([A-Za-z_][A-Za-z0-9_]*)/g
+function getHeaderLines(input: string, header: string): string[] {
+    const re = new RegExp(`^${header}\\s*:\\s*(.+)$`, 'gim')
+    return Array.from(input.matchAll(re)).map((m) => m[1].trim())
+}
+
+function parseIntHeader(input: string, header: string): number[] {
+    const re = new RegExp(`^${header}\\s*:\\s*(\\d+)\\s*$`, 'gim')
+    return Array.from(input.matchAll(re)).map((m) => parseInt(m[1], 10)).filter((n) => Number.isFinite(n))
+}
+
+function getHeaderValues(input: string): { [name: string]: string[] } {
+    const lines = input.split(/\r?\n/)
+    const out: { [name: string]: string[] } = {}
+    for (const line of lines) {
+        const m = line.match(HEADER_LINE_RE)
+        if (!m) continue
+        const name = m[1].toLowerCase()
+        const value = m[2].trim()
+        if (!out[name]) out[name] = []
+        out[name].push(value)
+    }
+    return out
+}
+
+function getIntBase64HeaderValues(input: string): string[] {
+    const values = getHeaderLines(input, 'content-encoding').flatMap((v) => v.split(',').map((h) => h.trim()))
+    return values
+}
+
+function looksLikeZipMagicBase64(raw: string): boolean {
+    try {
+        const cleaned = raw.replace(/\s/g, '')
+        if (cleaned.length < 12) return false
+        const bytes = Buffer.from(cleaned, 'base64')
+        return bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b && bytes[2] === 0x03 && bytes[3] === 0x04
+    } catch {
+        return false
+    }
+}
+
+function isMultipartZipOversized(input: string): boolean {
+    const lines = input.split(/\r?\n/)
+    const hasMultipart = lines.some((line) => CONTENT_TYPE_MULTIPART_RE.test(line))
+    if (!hasMultipart) return false
+    const contentLengths = parseIntHeader(input, 'content-length')
+    const hasHugeContentLength = contentLengths.some((n) => n > 10 * 1024 * 1024)
+    const hasDispositionHeader = lines.some((line) => CONTENT_DISPOSITION_RE.test(line))
+    if (!hasDispositionHeader) return false
+
+    const hasLargeDispositionSize = lines.some((line) => MULTIPART_SIZE_RE.test(line) && FILE_SIZE_PARAM_RE.test(line))
+    const hugeByDisposition = lines.some((line) => {
+        if (!FILE_SIZE_PARAM_RE.test(line)) return false
+        const m = line.match(FILE_SIZE_PARAM_RE)
+        return m ? parseInt(m[1], 10) > 10 * 1024 * 1024 : false
+    })
+
+    return hasHugeContentLength || hasLargeDispositionSize || hugeByDisposition
+}
+
+function maxGraphQLDepth(input: string): number {
+    let depth = 0
+    let maxDepth = 0
+    for (const ch of input) {
+        if (ch === '{') {
+            depth++
+            if (depth > maxDepth) maxDepth = depth
+        } else if (ch === '}') {
+            depth = Math.max(0, depth - 1)
+        }
+    }
+    return maxDepth
+}
+
+function hasCircularFragments(input: string): boolean {
+    const defs = Array.from(input.matchAll(GRAPHQL_FRAGMENT_DEF_RE))
+    if (defs.length < 2) return false
+    const refs = new Map<string, Set<string>>()
+    for (const def of defs) {
+        const name = def[1]
+        const body = def[2]
+        const spreadRefs = new Set<string>()
+        for (const spread of body.matchAll(GRAPHQL_SPREAD_RE)) {
+            spreadRefs.add(spread[1])
+        }
+        refs.set(name, spreadRefs)
+    }
+
+    const visiting = new Set<string>()
+    const visited = new Set<string>()
+    const dfs = (node: string): boolean => {
+        if (visiting.has(node)) return true
+        if (visited.has(node)) return false
+        visiting.add(node)
+        for (const next of refs.get(node) ?? []) {
+            if (dfs(next)) return true
+        }
+        visiting.delete(node)
+        visited.add(node)
+        return false
+    }
+
+    for (const name of refs.keys()) {
+        if (dfs(name)) return true
+    }
+    return false
+}
+
+function hasFieldMultiplication(input: string, minRepeats = 50): boolean {
+    const countsByDepth = new Map<number, Map<string, number>>()
+    const keywordBlacklist = new Set([
+        'query',
+        'mutation',
+        'subscription',
+        'fragment',
+        'on',
+        'schema',
+        'type',
+        'queryType',
+        'mutationType',
+        'subscriptionType',
+    ])
+
+    const getCountMap = (depth: number): Map<string, number> => {
+        let map = countsByDepth.get(depth)
+        if (!map) {
+            map = new Map<string, number>()
+            countsByDepth.set(depth, map)
+        }
+        return map
+    }
+
+    let depth = 0
+    let i = 0
+    while (i < input.length) {
+        const ch = input[i]
+        if (ch === '#') {
+            while (i < input.length && input[i] !== '\n') i++
+            continue
+        }
+        if (ch === '{' || ch === '}') {
+            depth = ch === '{' ? depth + 1 : Math.max(0, depth - 1)
+            i++
+            continue
+        }
+        if (ch === '"') {
+            i++
+            while (i < input.length) {
+                if (input[i] === '\\') {
+                    i += 2
+                    continue
+                }
+                if (input[i] === '"') {
+                    i++
+                    break
+                }
+                i++
+            }
+            continue
+        }
+        if (/[A-Za-z_]/.test(ch) && depth > 0) {
+            let j = i + 1
+            while (j < input.length && /[A-Za-z0-9_]/.test(input[j])) j++
+            const token = input.slice(i, j)
+            if (!keywordBlacklist.has(token)) {
+                const prev = input.slice(Math.max(0, i - 3), i)
+                if (!prev.endsWith('...')) {
+                    const map = getCountMap(depth)
+                    const next = (map.get(token) ?? 0) + 1
+                    map.set(token, next)
+                    if (next >= minRepeats) return true
+                }
+            }
+            i = j
+            continue
+        }
+        i++
+    }
+    return false
+}
+
 export const githubActionsInjection: InvariantClassModule = {
     id: 'github_actions_injection',
     description: 'GitHub Actions workflow command injection via user-controlled expressions, command directives, and environment file writes',
@@ -278,6 +468,182 @@ export const helmChartInjection: InvariantClassModule = {
     },
 }
 
+export const compressionBomb: InvariantClassModule = {
+    id: 'compression_bomb',
+    description: 'Potential compression bomb payloads using nested compression, oversize zip indicators, and multipart oversized declarations',
+    category: 'injection',
+    severity: 'high',
+    calibration: { baseConfidence: 0.88 },
+    cwe: 'CWE-400',
+    mitre: ['T1499.002'],
+    knownPayloads: [
+        'Content-Encoding: gzip, gzip, gzip\r\nContent-Length: 20971520\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream',
+        'Content-Encoding: br\r\nTransfer-Encoding: chunked\r\nContent-Length: 41943040\r\nContent-Type: application/zip',
+        'data:application/zip;base64,UEsDBAoAAAAAAIAAAAAAAAAAAAAAAAAAAAAA', // PK\x03\x04 header in base64
+        'POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=----bomb\r\nContent-Length: 50331648\r\nContent-Disposition: form-data; name="file"; filename="42.zip"; size=50331648; key="upload"\r\nContent-Type: application/zip',
+        'Content-Disposition: form-data; name="archive"; filename="bomb.zip"; size=20485760; type=application/x-zip-compressed\r\nContent-Type: multipart/form-data',
+    ],
+    knownBenign: [
+        'Content-Encoding: gzip\r\nContent-Length: 2048\r\nContent-Type: application/json',
+        'Content-Encoding: br\r\nContent-Length: 512\r\nContent-Type: text/html',
+        'data:application/json;base64,eyJmb28iOiAiYmFyIn0=',
+        'Content-Disposition: form-data; name="avatar"; filename="avatar.png"; size=20480\r\nContent-Type: image/png',
+    ],
+    detect: (input: string): boolean => {
+        const lower = input.toLowerCase()
+        if (
+            !lower.includes('content-encoding:')
+            && !lower.includes('content-length:')
+            && !lower.includes('content-disposition:')
+            && !lower.includes('multipart/form-data')
+            && !lower.includes('application/zip')
+            && !lower.includes('data:application/zip')
+            && !lower.includes('pk\x03\x04')
+            && input.indexOf('PK\x03\x04') < 0
+        ) {
+            return false
+        }
+
+        const d = deepDecode(input)
+
+        const contentLengths = parseIntHeader(d, 'content-length')
+        const hasLargeLength = contentLengths.some((n) => n > 10 * 1024 * 1024)
+        const hasChunked = Array.from(d.matchAll(TRANSFER_ENCODING_RE)).some((m) => /\bchunked\b/i.test(m[1] ?? ''))
+        const hasCompressionHeader = getIntBase64HeaderValues(d).some((v) => /(gzip|deflate|br)/i.test(v))
+        const nestedCompression = getIntBase64HeaderValues(d).some((v) => (v.toLowerCase().split(',').filter((x) => x.trim() === 'gzip').length >= 3))
+        const fileNameHint = /\b(?:42\.zip|10gb\.zip|bomb\.zip|zbsm\.zip)\b/i.test(d)
+        const zipRatioHint = Array.from(d.matchAll(/data:application\/(?:zip|x-zip-compressed)[^,\r\n]*,([A-Za-z0-9+/=]+)/gi)).some((m) => looksLikeZipMagicBase64(m[1]))
+        const zipMagicLiteralHint = /PK\x03\x04/.test(d)
+        const oversizedMultipart = isMultipartZipOversized(d)
+
+        return (hasLargeLength && hasChunked && hasCompressionHeader)
+            || nestedCompression
+            || fileNameHint
+            || zipRatioHint
+            || zipMagicLiteralHint
+            || oversizedMultipart
+    },
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            'Content-Encoding: gzip, gzip, gzip\r\nContent-Length: 20971520\r\nTransfer-Encoding: chunked\r\nContent-Type: application/octet-stream',
+            'data:application/zip;base64,UEsDBAoAAAAAAIAAAAAAAAAAAAAAAAAAAAAA',
+            'POST /upload HTTP/1.1\r\nContent-Type: multipart/form-data; boundary=----bomb\r\nContent-Length: 50331648\r\nContent-Disposition: form-data; name=\"file\"; filename=\"42.zip\"; size=50331648\r\nContent-Type: application/zip',
+            'Content-Encoding: br\r\nTransfer-Encoding: chunked\r\nContent-Length: 41943040\r\nContent-Type: application/gzip',
+            'Content-Disposition: form-data; name=\"a\"; filename=\"bomb.zip\"; size=20485760\r\nContent-Type: multipart/form-data',
+        ].slice(0, count)
+        return variants
+    },
+}
+
+export const http2PseudoHeaderInjection: InvariantClassModule = {
+    id: 'http2_pseudo_header_injection',
+    description: 'HTTP/2 pseudo-header desync and malformed request pathing attacks',
+    category: 'injection',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.91 },
+    mitre: ['T1190'],
+    cwe: 'CWE-444',
+    knownPayloads: [
+        ':method: CONNECT\r\n:scheme: https\r\n:authority: api.internal\r\n:path: /',
+        ':method: GET\r\n:scheme: https\r\n:authority: example.com\r\n:path: https://evil.example/\r\nhost: example.com',
+        ':method: OPTIONS\r\n:scheme: https\r\n:authority: api.internal\r\n:path: *',
+        ':method: GET\r\n:method: POST\r\n:path: /v1\r\n:path: /v2\r\n:authority: bad.example\r\nhost: good.example',
+        ':method: GET\r\n:scheme: javascript:alert(1)\r\n:authority: api.example\r\n:path: /api%0d%0aX-Injected:true',
+    ],
+    knownBenign: [
+        ':method: GET\r\n:scheme: https\r\n:authority: api.example\r\n:path: /v1/status\r\nhost: api.example',
+        ':method: POST\r\n:scheme: https\r\n:authority: example.com\r\n:path: /users/42\r\nhost: example.com',
+        ':method: GET\r\n:scheme: https\r\n:authority: example.com\r\n:path: /users\r\naccept: application/json',
+        ':method: OPTIONS\r\n:scheme: https\r\n:authority: example.com\r\n:path: /',
+    ],
+    detect: (input: string): boolean => {
+        const lower = input.toLowerCase()
+        if (
+            !lower.includes(':method:')
+            && !lower.includes(':path:')
+            && !lower.includes(':authority:')
+            && !lower.includes(':scheme:')
+        ) {
+            return false
+        }
+
+        const d = deepDecode(input)
+
+        const headers = getHeaderValues(d)
+        const methods = headers[':method'] ?? []
+        const paths = headers[':path'] ?? []
+        const authorities = headers[':authority'] ?? []
+        const scheme = headers[':scheme'] ?? []
+        const hostHeaders = headers['host'] ?? []
+        const hasPseudoHeaderContext = methods.length + paths.length + authorities.length + scheme.length > 0
+
+        if (!hasPseudoHeaderContext) return false
+        if (methods.length !== 1 || methods.some((v) => v.trim() === '*')) return true
+        if (methods.some((m) => /^(connect|trace|track)$/i.test(m.trim()))) return true
+        if (methods.some((m) => /^options$/i.test(m.trim())) && paths.some((p) => p.trim() === '*')) return true
+
+        if (paths.length !== 1) return true
+        const path = paths[0]
+        if (/%0d%0a|%0a%0d|%00/i.test(path) || /[\r\n\0]/.test(path)) return true
+        if (/https?:\/\//i.test(path) || path.startsWith('javascript:') || path.startsWith('data:')) return true
+
+        const badScheme = scheme.some((s) => /^javascript:|^data:/i.test(s.trim()))
+        if (badScheme) return true
+
+        if (authorities.length && hostHeaders.length && authorities[0].toLowerCase() !== hostHeaders[0].toLowerCase()) return true
+        return false
+    },
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            ':method: CONNECT\r\n:scheme: https\r\n:authority: api.internal\r\n:path: /',
+            ':method: GET\r\n:scheme: https\r\n:authority: example.com\r\n:path: https://evil.example/\r\nhost: example.com',
+            ':method: OPTIONS\r\n:scheme: https\r\n:authority: api.internal\r\n:path: *',
+            ':method: GET\r\n:method: POST\r\n:path: /v1\r\n:path: /v2\r\n:authority: bad.example\r\nhost: good.example',
+            ':method: GET\r\n:scheme: javascript:alert(1)\r\n:authority: api.example\r\n:path: /api%0d%0aX-Injected:true',
+        ]
+        return variants.slice(0, count)
+    },
+}
+
+export const graphqlDepthAttack: InvariantClassModule = {
+    id: 'graphql_depth_attack',
+    description: 'GraphQL deep-nesting, circular fragment, and field-multiplication attacks designed for server-side exhaustion',
+    category: 'injection',
+    severity: 'high',
+    calibration: { baseConfidence: 0.85, minInputLength: 50 },
+    cwe: 'CWE-400',
+    mitre: ['T1499'],
+    knownPayloads: [
+        '{ a { b { c { d { e { f { g { h { i { j { k { l { m { n { o { p { q { r } } } } } } } } } } } } } } } } }',
+        'query { x { y { z { a { b { c { d { e { f { g { h { i { j { k { l { m { __schema { queryType { fields { name } } } } } } } } } } } } } } } } } } }',
+        'query { user { id ...FragA ...FragB } fragment FragA on User { ...FragB avatar { id name } } fragment FragB on User { ...FragA } query { __schema { types { name fields { name type { name ofType { name } } } } } __type(name: "User") { name fields { name type { name ofType { name fields { name } } } } } } }',
+    ],
+    knownBenign: [
+        '{ user { id name profile { city } } }',
+        'query { viewer { id name friends { name } } }',
+        '{ post { id title author { name } comments { text } } }',
+        'mutation { updateUser(input:{id:1}) { id name } }',
+    ],
+    detect: (input: string): boolean => {
+        if (!input.includes('{') || input.length < 50) return false
+        const d = deepDecode(input)
+        const depth = maxGraphQLDepth(d)
+        const repeat = hasFieldMultiplication(d, 50)
+        const circular = hasCircularFragments(d)
+        const hasIntrospectionAbuse = /__schema/i.test(d) && /__type/i.test(d) && depth >= 10
+
+        return depth >= 10 || circular || repeat || hasIntrospectionAbuse
+    },
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            '{ a { b { c { d { e { f { g { h { i { j { k { l { m { n { o { p { q } } } } } } } } } } } } } } } }',
+            'query { x { y { z { a { b { c { d { e { f { g { h { i { j { k { l { m { n { __schema { queryType { name } } } } } } } } } } } } } } } } } } }',
+            '{ root { a { b { c { d { e { f { g { h { i { j { k { l { m { n { o { __schema { types { name } } __type(name: "User") { name fields { name type { name } } } } } } } } } } } } } } } } } } }',
+        ]
+        return variants.slice(0, count)
+    },
+}
+
 export const INFRA_ATTACK_CLASSES: InvariantClassModule[] = [
     githubActionsInjection,
     kubernetesRbacAbuse,
@@ -286,4 +652,7 @@ export const INFRA_ATTACK_CLASSES: InvariantClassModule[] = [
     cloudMetadataAdvanced,
     k8sAdmissionWebhookBypass,
     helmChartInjection,
+    compressionBomb,
+    http2PseudoHeaderInjection,
+    graphqlDepthAttack,
 ]

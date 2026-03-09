@@ -407,3 +407,124 @@ export const jwtWeakSecret: InvariantClassModule = {
         return Array.from({ length: count }, (_, i) => variants[i % variants.length])
     },
 }
+
+// ── JWT claim confusion (sub/iss manipulation, nested JWT, audience bypass) ──
+
+const SUB_EMAIL_PATTERN = /^[^@]+@[^@]+\.[^@]+$/
+const ISS_SSRF_PATTERN = /localhost|127\.|file:\/\/|metadata\.google|169\.254\.|::1|0\.0\.0\.0/i
+const EXP_FAR_FUTURE_THRESHOLD = 4102444800 // Unix timestamp for year 2100+
+const SENSITIVE_PAYLOAD_KEYS = ['admin', 'role', 'privilege', 'roles', 'is_admin', 'isAdmin']
+
+function isSubClaimEmail(sub: unknown): boolean {
+    if (typeof sub !== 'string') return false
+    return SUB_EMAIL_PATTERN.test(sub.trim())
+}
+
+function isIssSuspicious(iss: unknown): boolean {
+    if (typeof iss !== 'string') return false
+    return ISS_SSRF_PATTERN.test(iss.trim())
+}
+
+function hasSensitiveFieldsWithoutAud(payload: Record<string, unknown>): boolean {
+    const hasSensitive = SENSITIVE_PAYLOAD_KEYS.some(k => k in payload)
+    const hasAud = 'aud' in payload
+    return hasSensitive && !hasAud
+}
+
+function isExpFarFuture(exp: unknown): boolean {
+    if (typeof exp === 'number') return exp > EXP_FAR_FUTURE_THRESHOLD
+    if (typeof exp === 'string') {
+        const n = parseInt(exp, 10)
+        if (!Number.isNaN(n)) return n > EXP_FAR_FUTURE_THRESHOLD
+    }
+    return false
+}
+
+function hasUrlKeyConfusionHeader(header: Record<string, unknown>): boolean {
+    return (typeof header.jku === 'string' && header.jku.length > 0) ||
+        (typeof header.x5u === 'string' && header.x5u.length > 0)
+}
+
+function hasJwkEmbeddedHeader(header: Record<string, unknown>): boolean {
+    return header.jwk != null && typeof header.jwk === 'object'
+}
+
+function hasNestedJwtCty(header: Record<string, unknown>): boolean {
+    const cty = header.cty
+    return typeof cty === 'string' && /^JWT$/i.test(cty.trim())
+}
+
+function detectJwtClaimConfusionOnToken(token: ParsedJwtToken): boolean {
+    const headerStr = decodeBase64Url(token.headerB64)
+    const payloadStr = decodeBase64Url(token.payloadB64)
+    if (!headerStr || !payloadStr) return false
+
+    let header: Record<string, unknown>
+    let payload: Record<string, unknown>
+    try {
+        header = JSON.parse(headerStr) as Record<string, unknown>
+        payload = JSON.parse(payloadStr) as Record<string, unknown>
+    } catch {
+        return false
+    }
+    if (typeof header !== 'object' || header === null || typeof payload !== 'object' || payload === null) return false
+
+    if (isSubClaimEmail(payload.sub)) return true
+    if (isIssSuspicious(payload.iss)) return true
+    if (hasSensitiveFieldsWithoutAud(payload)) return true
+    if (hasUrlKeyConfusionHeader(header)) return true
+    if (hasJwkEmbeddedHeader(header)) return true
+    if (hasNestedJwtCty(header)) return true
+    if (isExpFarFuture(payload.exp)) return true
+
+    return false
+}
+
+function buildJwtB64(header: Record<string, unknown>, payload: Record<string, unknown>, sig = 'signed'): string {
+    const h = Buffer.from(JSON.stringify(header)).toString('base64url')
+    const p = Buffer.from(JSON.stringify(payload)).toString('base64url')
+    return `${h}.${p}.${sig}`
+}
+
+export const jwtClaimConfusion: InvariantClassModule = {
+    id: 'jwt_claim_confusion',
+    description: 'JWT claim confusion: sub/iss manipulation, nested JWT (matryoshka), audience bypass, jku/jwk key confusion',
+    category: 'auth',
+    severity: 'high',
+    calibration: { baseConfidence: 0.87 },
+    mitre: ['T1550.001'],
+    cwe: 'CWE-287',
+
+    knownPayloads: [
+        buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { sub: 'admin@evil.com', iat: 1700000000 }),
+        buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { iss: 'http://127.0.0.1/metadata', sub: 'u1', iat: 1700000000 }),
+        buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { sub: 'u1', role: 'admin', privilege: 'all' }),
+        buildJwtB64({ alg: 'RS256', typ: 'JWT', jku: 'https://evil.com/keys' }, { sub: 'u1', iat: 1700000000 }),
+        buildJwtB64({ alg: 'RS256', typ: 'JWT', jwk: { kty: 'RSA', n: 'attacker', e: 'AQAB' } }, { sub: 'u1', iat: 1700000000 }),
+        buildJwtB64({ alg: 'RS256', typ: 'JWT', cty: 'JWT' }, { sub: 'u1', iat: 1700000000, exp: 4102444801 }),
+    ],
+
+    knownBenign: [
+        buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { sub: 'usr_abc123', iss: 'https://auth.example.com', aud: 'api', iat: 1700000000, exp: 1731536000 }),
+        'Authorization: Bearer ' + buildJwtB64({ alg: 'RS256', typ: 'JWT', kid: 'prod-01' }, { sub: 'usr_xyz', aud: 'api', exp: 1731536000 }),
+        buildJwtB64({ alg: 'ES256', typ: 'JWT' }, { sub: 'opaque-id-42', iss: 'https://idp.example.com', aud: 'client-id', iat: 1700000000, exp: 1700003600 }),
+    ],
+
+    detect: (input: string): boolean => {
+        const decoded = deepDecode(input)
+        for (const token of extractJwtTokens(decoded)) {
+            if (detectJwtClaimConfusionOnToken(token)) return true
+        }
+        return false
+    },
+
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { sub: 'attacker@evil.com', iat: 1700000000 }),
+            buildJwtB64({ alg: 'RS256', typ: 'JWT', jku: 'https://attacker.com/jwks.json' }, { sub: 'u1', iat: 1700000000 }),
+            buildJwtB64({ alg: 'RS256', typ: 'JWT' }, { sub: 'u1', role: 'admin' }),
+            buildJwtB64({ alg: 'RS256', typ: 'JWT', cty: 'JWT' }, { sub: 'u1', iat: 1700000000, exp: 4102444801 }),
+        ]
+        return Array.from({ length: count }, (_, i) => variants[i % variants.length])
+    },
+}

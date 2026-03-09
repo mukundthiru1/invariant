@@ -55,7 +55,7 @@ export const cmdSeparator: InvariantClassModule = {
         // Common prose/logic expression, not shell chaining.
         if (/^\s*true\s*\|\|\s*false(?:\s+\w+){0,3}\s*$/i.test(d)) return false
 
-        const hasSeparatorCommand = /(?:;|\|\|?|&&|`|\n|\r)\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic|[A-Za-z_][\w-]{0,32})\b/i.test(d)
+        const hasSeparatorCommand = /(?:;|\|\|?|&&|&|`|\n|\r)\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic)\b/i.test(d)
         const hasNullBypass = /(?:;|\|\|?|&&|\n|\r)[^\n\r]{0,40}(?:\\x00|%00|\x00)/i.test(d)
         const hasQuoteFragmentBypass = /(?:[a-z0-9]['"]){2,}[a-z0-9]/i.test(normalizedForFragments)
         const hasPowerShellExecPrimitive = /(?:-[Ee]ncodedCommand|-[Ee]xec(?:utionPolicy)?\s+[Bb]ypass|IEX\s*\(|Invoke-Expression|Invoke-WebRequest|Start-Process\s+(?:-WindowStyle\s+)?[Hh]idden|\[Ref\]\.Assembly\.GetType)/.test(d)
@@ -112,11 +112,13 @@ export const cmdSubstitution: InvariantClassModule = {
         const d = deepDecode(input)
         const hasDollarSub = /\$\([^)]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh|python|perl|ruby|php|nc|ncat)[^)]*\)/i.test(d)
         const hasBacktickSub = /`[^`]*(?:cat|ls|id|whoami|uname|curl|wget|bash|sh)[^`]*`/i.test(d)
+        const hasEmptySubstitution = /\$\(\)[a-zA-Z0-9_]{2,}/.test(d)
         const hasEnvAssignment = /(?:^|[;|&\n\r]\s*|(?:^|\s)export\s+)(?:PATH|IFS|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|NODE_OPTIONS|BASH_ENV)\s*=\s*[^\s;|&]+/i.test(d)
         const hasArrayLiteralExec = /\$\(\s*[a-z_][\w]*\s*=\s*\(\s*\[\s*\$@\s*]\s*\)\s*;\s*\$\{\s*[a-z_][\w]*\s*\[\s*0\s*]\s*}\s*\)/i.test(d)
         const hasArrayExpansion = /\$\{\s*[a-z_][\w]*\s*\[@]\s*}/i.test(d)
+        const hasCurlyVarPathInjection = /[\w.-]+\$\{\s*[A-Za-z_][\w]*\s*}[\\/]/.test(d)
         const hasArithmeticTernarySub = /\$\(\(\s*[\s\S]{0,120}\?\s*\$\([^)]*\)\s*:\s*[\s\S]{0,120}\)\)/.test(d)
-        if (!hasDollarSub && !hasBacktickSub && !hasEnvAssignment && !hasArrayLiteralExec && !hasArrayExpansion && !hasArithmeticTernarySub) return false
+        if (!hasDollarSub && !hasBacktickSub && !hasEmptySubstitution && !hasEnvAssignment && !hasArrayLiteralExec && !hasArrayExpansion && !hasCurlyVarPathInjection && !hasArithmeticTernarySub) return false
         // Backtick-quoted commands within English prose are documentation, not injection
         if (hasBacktickSub && !hasDollarSub && /\w{2,}\s+`[^`]+`\s+\w{2,}/.test(d)) return false
         return true

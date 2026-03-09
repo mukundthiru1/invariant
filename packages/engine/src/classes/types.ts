@@ -137,6 +137,7 @@ export type InvariantClass =
     | 'graphql_batch_abuse'
     | 'graphql_injection'
     | 'graphql_dos'
+    | 'graphql_depth_attack'
 
     // Open redirect
     | 'open_redirect_bypass'
@@ -146,6 +147,7 @@ export type InvariantClass =
     | 'price_manipulation'
     | 'idor_parameter_probe'
     | 'http2_header_injection'
+    | 'http2_pseudo_header_injection'
     | 'websocket_protocol_confusion'
     | 'websocket_origin_bypass'
     | 'websocket_message_injection'
@@ -196,6 +198,7 @@ export type InvariantClass =
     | 'jwt_kid_injection'
     | 'jwt_jwk_embedding'
     | 'jwt_confusion'
+    | 'jwt_claim_confusion'
 
     // Cache attacks
     | 'cache_poisoning'
@@ -225,6 +228,7 @@ export type InvariantClass =
     | 'memory_disclosure_endpoint'
     | 'kubernetes_secret_exposure'
     | 'aws_metadata_ssrf_advanced'
+    | 'compression_bomb'
     | 'graphql_depth_bomb'
     | 'file_inclusion_rfi'
 
@@ -283,6 +287,7 @@ export type InvariantClass =
     | 'integer_overflow_param'
     | 'jsonp_hijacking'
     | 'response_header_injection'
+    | 'csv_injection'
 
 
 // ── Attack Category ───────────────────────────────────────────────

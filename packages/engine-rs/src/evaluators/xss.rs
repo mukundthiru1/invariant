@@ -727,6 +727,66 @@ impl XssEvaluator {
         }
         chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
     }
+
+    fn detect_dom_xss_sinks(input: &str) -> Option<(f32, &'static str)> {
+        static DOM_XSS_SINK_RE: OnceLock<Regex> = OnceLock::new();
+        let re = DOM_XSS_SINK_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?is)(?:\b(?:innerhtml|outerhtml)\s*=|\bdocument\.(?:write|writeln)\s*\(|\b(?:eval|settimeout|setinterval)\s*\(\s*['"][^'"]+['"]\s*(?:,|\))|\blocation\.(?:href|hash|search)\s*=|\bwindow\.name\s*=|\bdocument\.domain\s*=)"#,
+            )
+            .unwrap()
+        });
+        if re.is_match(&input.to_ascii_lowercase()) {
+            Some((0.90, "dom_xss_sink"))
+        } else {
+            None
+        }
+    }
+
+    fn detect_svg_namespace_xss(input: &str) -> Option<(f32, &'static str)> {
+        static SVG_NAMESPACE_XSS_RE: OnceLock<Regex> = OnceLock::new();
+        let re = SVG_NAMESPACE_XSS_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?is)(?:<svg\b[^>]*\bonload\s*=|<svg/\s*onload\s*=|<svg\b[^>]*>\s*<script\b|<svg\b[^>]*\bxmlns\s*=|<math\b[^>]*>\s*<mtext\b[^>]*>\s*</form>\s*<form\b[^>]*>\s*<mglyph\b[^>]*>\s*<svg\b|<svg\b[^>]*>\s*<use\b[^>]*\bhref\s*=\s*['"]\s*data:image/svg\+xml)"#,
+            )
+            .unwrap()
+        });
+        if re.is_match(input) {
+            Some((0.88, "svg_namespace_xss"))
+        } else {
+            None
+        }
+    }
+
+    fn detect_polyglot_xss(input: &str) -> Option<(f32, &'static str)> {
+        static POLYGLOT_XSS_RE: OnceLock<Regex> = OnceLock::new();
+        let re = POLYGLOT_XSS_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?is)(?:javascript://[^\s]*%0a[^\s]*alert\s*\(|</title>\s*<script\b|["']\s*onmouseover\s*=|\\u003cscript\\u003e|\\x3cscript\\x3e|\[\]\[\(!\[\]\+\[\]\)\[\+\[\]\])"#,
+            )
+            .unwrap()
+        });
+        if re.is_match(input) {
+            Some((0.85, "polyglot_xss"))
+        } else {
+            None
+        }
+    }
+
+    fn detect_csp_bypass_xss(input: &str) -> Option<(f32, &'static str)> {
+        static CSP_BYPASS_XSS_RE: OnceLock<Regex> = OnceLock::new();
+        let re = CSP_BYPASS_XSS_RE.get_or_init(|| {
+            Regex::new(
+                r#"(?is)(?:\b(?:callback|jsonp|cb)\s*=\s*[a-z_$][\w$]*(?:\.[a-z_$][\w$]*)*(?:\s*\(|%28)|\{\{\s*7\s*\*\s*7\s*\}\}|ng-app\b[^>]*\{\{|\btrusted(?:html|script)\b)"#,
+            )
+            .unwrap()
+        });
+        if re.is_match(&input.to_ascii_lowercase()) {
+            Some((0.87, "csp_bypass_xss"))
+        } else {
+            None
+        }
+    }
 }
 
 impl L2Evaluator for XssEvaluator {
@@ -754,6 +814,85 @@ impl L2Evaluator for XssEvaluator {
                     interpretation: "Input breaks out of a quoted attribute value and appends attacker-controlled attributes".into(),
                     offset: position,
                     property: "User input inside HTML attributes must remain data and must not escape into new attribute assignments".into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type)) = Self::detect_dom_xss_sinks(input) {
+            detections.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "DOM-based XSS sink usage pattern".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: input.to_owned(),
+                    interpretation:
+                        "Input contains dangerous DOM sinks or assignments frequently abused for DOM XSS"
+                            .into(),
+                    offset: 0,
+                    property:
+                        "User-controlled data must not flow into script-capable DOM sink assignments"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type)) = Self::detect_svg_namespace_xss(input) {
+            detections.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "SVG/MathML namespace confusion XSS pattern".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: input.to_owned(),
+                    interpretation:
+                        "Input uses SVG/MathML parsing boundaries or namespace features to reach executable contexts"
+                            .into(),
+                    offset: 0,
+                    property:
+                        "User markup must remain inert across SVG/MathML namespace transitions".into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type)) = Self::detect_polyglot_xss(input) {
+            detections.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "Polyglot or heavily obfuscated XSS payload shape".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: input.to_owned(),
+                    interpretation:
+                        "Input matches cross-context polyglot payloads or encoded script syntax"
+                            .into(),
+                    offset: 0,
+                    property:
+                        "User input must be canonicalized and validated against multi-context XSS encodings"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type)) = Self::detect_csp_bypass_xss(input) {
+            detections.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "Potential CSP bypass vector for XSS execution".into(),
+                position: 0,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: input.to_owned(),
+                    interpretation:
+                        "Input includes JSONP, Angular expression, or Trusted Types abuse indicators used in CSP bypass chains"
+                            .into(),
+                    offset: 0,
+                    property:
+                        "CSP controls must not be bypassable through callback or trusted-type gadget injection"
+                            .into(),
                 }],
             });
         }
@@ -1354,6 +1493,10 @@ impl L2Evaluator for XssEvaluator {
             "dom_xss" => Some(InvariantClass::XssTagInjection),
             "proto_pollution_xss" => Some(InvariantClass::XssTagInjection),
             "dom_xss_storage_sink"
+            | "dom_xss_sink"
+            | "svg_namespace_xss"
+            | "polyglot_xss"
+            | "csp_bypass_xss"
             | "dom_xss_window_name_bracket"
             | "xss_svg_animate_js_to"
             | "xss_svg_animate_onbegin"
@@ -1814,5 +1957,33 @@ mod tests {
         let eval = XssEvaluator;
         let dets = eval.detect(r#"<div style="color:expr/**/ession(alert(1))">"#);
         assert!(has_type(&dets, "css_expression_split_keyword"));
+    }
+
+    #[test]
+    fn test_dom_xss_sinks_new_detector() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("setTimeout(\"alert(1)\", 0)");
+        assert!(has_type(&dets, "dom_xss_sink"));
+    }
+
+    #[test]
+    fn test_svg_namespace_xss_detector() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("<math><mtext></form><form><mglyph><svg onload=alert(1)>");
+        assert!(has_type(&dets, "svg_namespace_xss"));
+    }
+
+    #[test]
+    fn test_polyglot_xss_detector() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("\\u003cscript\\u003ealert(1)\\u003c/script\\u003e");
+        assert!(has_type(&dets, "polyglot_xss"));
+    }
+
+    #[test]
+    fn test_csp_bypass_xss_detector() {
+        let eval = XssEvaluator;
+        let dets = eval.detect("/api?callback=alert(1)");
+        assert!(has_type(&dets, "csp_bypass_xss"));
     }
 }

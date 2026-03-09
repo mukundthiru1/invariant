@@ -122,7 +122,7 @@ export const httpSmuggleClTe: InvariantClassModule = {
         const teMatches = d.match(/Transfer-Encoding\s*:/gi)
         if (teMatches && teMatches.length >= 2) return true
         // Obfuscated TE (tab, space, newline in header name area)
-        if (/Transfer[\s-]*Encoding\s*:(?:\s|\r?\n\s+)*(?:x?chunked|identity|cHuNkEd|CHUNKED)/i.test(d) && /\r?\n\r?\n.*(?:GET|POST|PUT|DELETE|PATCH)\s+\//i.test(d)) return true
+        if (/Transfer[\s-]*Encoding\s*:(?:\s|\r?\n\s+)*(?:xchunked|chunked)/i.test(d)) return true
         // TE with extension-like suffix
         if (/Transfer-Encoding\s*:\s*chunked;boundary=/i.test(d)) return true
         // HTTP/1.0 keep-alive CL:0 desync

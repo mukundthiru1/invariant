@@ -104,6 +104,19 @@ const POWERSHELL_DANGEROUS_SNIPPETS: readonly string[] = [
 
 const POWERSHELL_DANGEROUS_PATTERN = /(?:-[Ee]ncodedCommand|-[Ee]xec(?:utionPolicy)?\s+[Bb]ypass|IEX\s*\(|Invoke-Expression|Invoke-WebRequest|Start-Process\s+(?:-WindowStyle\s+)?[Hh]idden|\[Ref\]\.Assembly\.GetType)/
 
+const PROCESS_SUBSTITUTION_PATTERN = /[<>]\s*\([^()]{0,200}\)/
+const HEREDOC_START_RE = /<<-?\s*([A-Za-z_][A-Za-z0-9_]*)\s*\r?\n([\s\S]{0,600}?)^\1(?:\r?\n|$)/gm
+const HERESTRING_RE = /<<<\s*([^\r\n]{1,260})/g
+const BRACE_EXPANSION_PATTERN = /\{[^{}\r\n]{0,100},[^{}\r\n]{0,100}(?:,[^{}\r\n]{0,100})*\}/g
+const GLOBBING_ATTACK_RE = /\b(?:rm|cat|cp|chmod|ls)\b(?:\s+(?:-[^\s;|&<>"]{1,80})){0,4}\s+(\/(?:[^\s;|&<>"']{0,280}(?:\*|\?|\[[^\]\r\n]{1,24}\))[^\s;|&<>"']{0,280}))/g
+const GLOB_COMMANDS_FOR_ATTACK = new Set(['rm', 'cat', 'cp', 'chmod', 'ls'])
+
+const POWERSHELL_OBFUSCATED_KEYWORDS = ['powershell', 'pwsh', 'invoke', 'expression', 'iex', 'cmd', 'new-object', 'net.webclient']
+const PS_CHAR_SUBSTITUTION_RE = /\(\s*\[\s*char\s*]\s*\d{1,3}\s*\)(?:\s*\+\s*\(\s*\[\s*char\s*]\s*\d{1,3}\s*\))+/gi
+const PS_CHAR_ARRAY_JOIN_RE = /-join\(\s*\[char\[\]\]\((?:\s*\d{1,3}\s*,\s*){3,}\d{1,3}\s*\)\s*\)/gi
+const PS_STRING_CONCAT_RE = /(?:'[^']{1,24}'\s*\+\s*'[^']{1,24}'(?:\s*\+\s*'[^']{1,24}')*|"[^"]{1,24}"\s*\+\s*"[^"]{1,24}"(?:\s*\+\s*"[^"]{1,24}")*)/g
+const BACKTICK_OBFUSCATION_RE = /\b(?:[Ii]`[Ee]`[Xx]|[Pp]`[Oo]`[Ww]`[Ee]`[Rr]`[Ss]`[Hh]`[Ee]`[Ll]`[Ll]|[Ii]`[Nn]`[Vv]`[Oo]`[Kk]`[Ee]`[Nn]`[Gg]`[Ee]|[Ii]`[Nn]`[Vv]`[Oo]`[Kk]`[Ee]`-|[Ee]`[Xx]`[Pp]`[Rr]`[Ee]`[Ss]`[Ss]`[Ii]`[Oo]`[Nn])\b/
+
 
 // ── Tokenizer singleton ─────────────────────────────────────────
 
@@ -177,9 +190,21 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     detectNullByteBypass(rawInput, detections)
 
     // Strategy 12: Brace expansion command injection ({id,whoami}, {cat,/etc/passwd})
-    detectBraceExpansion(decoded, detections)
+    detectBraceExpansion(allTokens as any, decoded, detections)
 
-    // Strategy 13: Arithmetic expansion with nested command substitution
+    // Strategy 13: Process substitution (<(cmd), >(cmd))
+    detectProcessSubstitution(allTokens as any, decoded, detections)
+
+    // Strategy 14: Heredoc and herestring patterns (<<EOF ... EOF, <<<...)
+    detectHeredocInjection(decoded, detections)
+
+    // Strategy 15: Wildcard globbing in high-risk command contexts
+    detectGlobbingAttack(decoded, detections)
+
+    // Strategy 16: PowerShell obfuscation bypass
+    detectPowerShellObfuscation(decoded, detections)
+
+    // Strategy 17: Arithmetic expansion with nested command substitution
     // $((echo $(id))) — not caught by CMD_SUBST_OPEN because tokenizer sees $( then (
     detectArithmeticExpansion(decoded, detections)
 
@@ -724,52 +749,261 @@ function detectNullByteBypass(
 
 // ── Strategy 12: Brace Expansion ────────────────────────────────
 //
-// Invariant: Bash brace expansion {a,b,c} executes multiple commands when
-// the shell processes the expression as a word-list. input={id,whoami}
-// is equivalent to `id` + `whoami` executed via bash brace expansion.
-//
-// C-006: This bypass is not caught by separator/substitution strategies
-// because it uses no ;|& operators and no $(). The braces ARE the command
-// boundary creation mechanism.
-
-// Pattern: {word,word,...} where at least one member is a dangerous command
-// or path — e.g., {id,whoami}, {cat,/etc/passwd}, {ls,/tmp}
-const BRACE_EXPAND_RE = /\{([^{}]{1,400})\}/g
-
+// Invariant: Bash brace expansion `{...}` generates multiple words/commands
+// from a single token and should be treated as structural shell control.
 function detectBraceExpansion(
-    rawInput: string,
-    detections: CmdInjectionDetection[],
+    tokens: any[],
+    decoded: string,
+    detections: any[],
 ): void {
     let match: RegExpExecArray | null
-    const re = new RegExp(BRACE_EXPAND_RE.source, 'g')
+    const re = new RegExp(BRACE_EXPANSION_PATTERN.source, 'g')
 
-    while ((match = re.exec(rawInput)) !== null) {
-        const body = match[1]
-        const members = body.split(',').map(s => s.trim())
+    while ((match = re.exec(decoded)) !== null) {
+        const fragment = match[0]
+        const rawBody = fragment.slice(1, -1)
+        const members = rawBody.split(',').map(s => s.trim()).filter(Boolean)
 
-        // Must have 2+ members to be brace expansion (single-item braces are parameter expansion)
-        if (members.length < 2) continue
+        if (members.length < 1) continue
 
-        // At least one member must look like a command or path
-        const dangerousMembers = members.filter(m =>
-            KNOWN_DANGEROUS_COMMANDS.has(m.toLowerCase()) ||
-            looksLikeExecutablePath(m) ||
-            /^\/(?:etc|bin|sbin|usr|proc|sys|tmp|var|root|home)\b/.test(m)
-        )
-
-        if (dangerousMembers.length === 0) continue
-
-        const confidence = dangerousMembers.length >= 2 ? 0.88 : 0.78
+        const memberThreat = members.some(isDangerousBraceMember)
+        const adjacent = getAdjacentWord(decoded, match.index, fragment.length)
+        if (!memberThreat && !isDangerousBraceMember(adjacent)) continue
 
         detections.push({
             type: 'structural',
             separator: 'brace_expansion',
-            command: dangerousMembers.join(','),
-            detail: `Brace expansion: {${body}} — shell executes each member as separate command/path`,
+            command: rawBody,
+            detail: `Brace expansion detected: ${fragment}`,
             position: match.index,
-            confidence,
+            confidence: 0.82,
         })
     }
+}
+
+function isDangerousBraceMember(member: string): boolean {
+    if (!member) return false
+    const value = member.trim()
+    const lower = value.toLowerCase()
+    if (KNOWN_DANGEROUS_COMMANDS.has(lower)) return true
+    if (looksLikeExecutablePath(value)) return true
+    if (/^[A-Za-z]:\\/.test(value)) return true
+    if (/^\/(?:bin|sbin|usr|proc|sys|tmp|var|home|etc|root)\b/i.test(value)) return true
+    return false
+}
+
+function getAdjacentWord(decoded: string, start: number, length: number): string {
+    const before = decoded.slice(0, start)
+    const beforeMatch = before.match(/[A-Za-z0-9_.-]+$/)
+    if (beforeMatch && beforeMatch[0].length <= 64) return beforeMatch[0]
+
+    const after = decoded.slice(start + length)
+    const afterMatch = after.match(/^[A-Za-z0-9_.-]+/)
+    return afterMatch?.[0] ?? ''
+}
+
+function detectProcessSubstitution(
+    _tokens: any[],
+    decoded: string,
+    detections: any[],
+): void {
+    const regex = new RegExp(PROCESS_SUBSTITUTION_PATTERN.source, 'g')
+    let match: RegExpExecArray | null
+
+    while ((match = regex.exec(decoded)) !== null) {
+        const inner = match[0].slice(2, -1).trim()
+        if (!inner) continue
+
+        const command = inner.split(/\s+/)[0]?.toLowerCase() ?? ''
+        detections.push({
+            type: 'redirection',
+            separator: 'process_substitution',
+            command: isPotentiallyDangerousCommand(command) ? command : inner.slice(0, 80),
+            detail: `Process substitution detected: ${match[0].slice(0, 90)}`,
+            position: match.index,
+            confidence: 0.89,
+        })
+    }
+}
+
+function hasShellLikeBoundary(text: string): boolean {
+    return /[;&|`$()<>]/.test(text) ||
+        /\b(?:cat|ls|id|whoami|rm|cp|chmod|find|bash|sh|pwsh|powershell|curl|wget|nc|invoke|expression)\b/i.test(text)
+}
+
+function detectHeredocInjection(
+    decoded: string,
+    detections: any[],
+): void {
+    let match: RegExpExecArray | null
+    const heredocStart = new RegExp(HEREDOC_START_RE.source, HEREDOC_START_RE.flags)
+    while ((match = heredocStart.exec(decoded)) !== null) {
+        const delimiter = match[1]
+        const body = match[2]
+        if (!hasShellLikeBoundary(body)) continue
+
+        detections.push({
+            type: 'heredoc',
+            separator: 'heredoc',
+            command: delimiter,
+            detail: `Heredoc detected with delimiter <<${delimiter} and shell-like body`,
+            position: match.index,
+            confidence: 0.85,
+        })
+    }
+
+    const hereString = new RegExp(HERESTRING_RE.source, HERESTRING_RE.flags)
+    while ((match = hereString.exec(decoded)) !== null) {
+        const body = match[1]
+        if (!hasShellLikeBoundary(body)) continue
+
+        detections.push({
+            type: 'heredoc',
+            separator: 'herestring',
+            command: body.slice(0, 120),
+            detail: `Herestring payload detected: ${body.slice(0, 80)}`,
+            position: match.index,
+            confidence: 0.85,
+        })
+    }
+}
+
+function detectGlobbingAttack(
+    decoded: string,
+    detections: any[],
+): void {
+    let match: RegExpExecArray | null
+    const re = new RegExp(GLOBBING_ATTACK_RE.source, 'g')
+    while ((match = re.exec(decoded)) !== null) {
+        const command = match[1].toLowerCase()
+        const path = match[2]
+        if (!command || !path) continue
+        if (!path.includes('*') && !path.includes('?') && !path.includes('[')) continue
+
+        detections.push({
+            type: 'glob_path',
+            separator: 'globbing',
+            command: path,
+            detail: `Globbing attack after ${command}: ${path}`,
+            position: match.index,
+            confidence: 0.80,
+        })
+    }
+}
+
+function isPotentiallyDangerousCommand(command: string): boolean {
+    return KNOWN_DANGEROUS_COMMANDS.has(command) || GLOB_COMMANDS_FOR_ATTACK.has(command)
+}
+
+function detectPowerShellObfuscation(
+    decoded: string,
+    detections: any[],
+): void {
+    let match: RegExpExecArray | null = null
+    const concatRe = new RegExp(PS_STRING_CONCAT_RE.source, 'g')
+    const charSubRe = new RegExp(PS_CHAR_SUBSTITUTION_RE.source, 'gi')
+    const charJoinRe = new RegExp(PS_CHAR_ARRAY_JOIN_RE.source, 'gi')
+    let backtickObfuscationMatched = false
+
+    if (decoded.includes('`')) {
+        if (BACKTICK_OBFUSCATION_RE.test(decoded)) {
+            const normalized = decoded.replace(/`/g, '').toLowerCase()
+            const backtickMatch = BACKTICK_OBFUSCATION_RE.exec(decoded)
+            if (/powershell|pwsh|invoke|expression|iex/.test(normalized) &&
+                backtickMatch) {
+                detections.push({
+                    type: 'structural',
+                    separator: 'powershell_btick',
+                    command: backtickMatch[0],
+                    detail: `PowerShell obfuscation with backtick escaping: ${backtickMatch[0]}`,
+                    position: backtickMatch.index,
+                    confidence: 0.88,
+                })
+                backtickObfuscationMatched = true
+            }
+        }
+
+        if (!backtickObfuscationMatched) {
+            const normalized = decoded.replace(/`/g, '').toLowerCase()
+            const matchedKeyword = /\b(?:powershell|pwsh|invoke-expression|invoke|new-object|net\.webclient|iex)\b/.exec(normalized)
+            const hasPowershellContext = /\b(?:[Ii]nvoke|[Ee]xpression|[Ww]eb[Cc]lient|[Pp]ower[Ss]hell|[Pp]wsh|[Ii]EX)\b/.test(decoded.replace(/`/g, ''))
+            if (matchedKeyword && hasPowershellContext) {
+                detections.push({
+                    type: 'structural',
+                    separator: 'powershell_btick',
+                    command: matchedKeyword[0],
+                    detail: `PowerShell obfuscation with backtick escaping: ${matchedKeyword[0]}`,
+                    position: decoded.indexOf('`'),
+                    confidence: 0.88,
+                })
+            }
+        }
+    }
+
+    while ((match = concatRe.exec(decoded)) !== null) {
+        const concat = match[0].replace(/['"]|\s+/g, '')
+            .split('+')
+            .join('')
+
+        if (isPowerShellObfuscationWord(concat)) {
+            detections.push({
+                type: 'structural',
+                separator: 'powershell_concat',
+                command: concat.slice(0, 120),
+                detail: `PowerShell string concatenation obfuscation: ${match[0]}`,
+                position: match.index,
+                confidence: 0.88,
+            })
+        }
+    }
+
+    while ((match = charSubRe.exec(decoded)) !== null) {
+        const decodedWord = (match[0].match(/\d{1,3}/g) ?? [])
+            .map(v => {
+                const code = Number(v)
+                return code >= 0 && code <= 126 ? String.fromCharCode(code) : ''
+            })
+            .join('')
+
+        if (isPowerShellObfuscationWord(decodedWord)) {
+            detections.push({
+                type: 'structural',
+                separator: 'powershell_char_sub',
+                command: decodedWord,
+                detail: `PowerShell [char] substitution resolves to: ${decodedWord}`,
+                position: match.index,
+                confidence: 0.88,
+            })
+        }
+    }
+
+    while ((match = charJoinRe.exec(decoded)) !== null) {
+        const decodedWord = (match[0].match(/\d{1,3}/g) ?? [])
+            .map(v => {
+                const code = Number(v)
+                return code >= 0 && code <= 126 ? String.fromCharCode(code) : ''
+            })
+            .join('')
+
+        if (isPowerShellObfuscationWord(decodedWord)) {
+            detections.push({
+                type: 'structural',
+                separator: 'powershell_char_sub',
+                command: match[0],
+                detail: `PowerShell [char[]] join resolves to: ${decodedWord}`,
+                position: match.index,
+                confidence: 0.88,
+            })
+        }
+    }
+}
+
+function isPowerShellObfuscationWord(word: string): boolean {
+    const lowered = word.toLowerCase()
+    const normalized = lowered.replace(/[^a-z0-9.-]/g, '')
+    return POWERSHELL_OBFUSCATED_KEYWORDS.some(k =>
+        normalized.includes(k.replace(/-/g, '')) || normalized.includes(k),
+    )
 }
 
 

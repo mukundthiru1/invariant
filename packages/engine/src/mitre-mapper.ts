@@ -260,6 +260,9 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     graphql_batch_abuse: { invariantClass: 'graphql_batch_abuse', techniques: [T1499], rationale: 'GraphQL batch/nested queries cause denial of service' },
     graphql_injection: { invariantClass: 'graphql_injection', techniques: [T1190, T1046], rationale: 'GraphQL probing and introspection abuse exploit public API query surfaces for schema and data discovery' },
     graphql_dos: { invariantClass: 'graphql_dos', techniques: [T1499], rationale: 'Extreme GraphQL depth, fragment cycles, and alias bombs exhaust resolver and application resources' },
+    graphql_depth_attack: { invariantClass: 'graphql_depth_attack', techniques: [T1499], rationale: 'Deep nested GraphQL selections and circular fragment chains can exhaust resolver and application resources' },
+    compression_bomb: { invariantClass: 'compression_bomb', techniques: [T1499], rationale: 'Nested compression declarations and oversized compressed payload indicators can trigger resource exhaustion' },
+    http2_pseudo_header_injection: { invariantClass: 'http2_pseudo_header_injection', techniques: [T1557], rationale: 'Malformed HTTP/2 pseudo-headers can cause protocol desynchronization and parser abuse' },
 
     // ReDoS (1 class)
     regex_dos: { invariantClass: 'regex_dos', techniques: [T1499], rationale: 'Catastrophic regex backtracking causes CPU exhaustion' },

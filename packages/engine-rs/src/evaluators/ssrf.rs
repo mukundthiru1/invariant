@@ -491,11 +491,16 @@ fn has_obfuscated_ipv4_notation(host: &str) -> bool {
 
 fn host_looks_internal_name(host: &str) -> bool {
     let h = host.to_lowercase();
+    let labels: Vec<&str> = h.split('.').collect();
+    let has_internal_label = labels.iter().any(|label| {
+        *label == "internal" || label.starts_with("internal-") || label.ends_with("-internal")
+    });
     h == "localhost"
         || h.ends_with(".localhost")
         || h.ends_with(".local")
         || h == "0"
-        || h.contains("internal")
+        || h.ends_with(".internal")
+        || has_internal_label
         || CLOUD_METADATA_HOSTNAMES.contains(&h.as_str())
 }
 
@@ -784,6 +789,138 @@ fn detect_parser_confusion(decoded: &str, parsed: &ParsedUrl, dets: &mut Vec<L2D
 fn is_cloud_metadata_path(path: &str) -> bool {
     let p = path.to_lowercase();
     CLOUD_METADATA_PATHS.iter().any(|needle| p.contains(needle))
+}
+
+/// Cloud metadata endpoint detection: AWS, GCP, Azure, K8s, Oracle.
+/// Returns (confidence, detection_type, position, matched_snippet) when matched.
+fn detect_cloud_metadata(input: &str) -> Option<(f64, &'static str, usize, String)> {
+    let lower = input.to_ascii_lowercase();
+    let is_domain_token = |needle: &str| {
+        needle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    };
+    let is_hostname_bounded_match = |text: &str, start: usize, needle: &str| {
+        let end = start + needle.len();
+        let left_ok = if start == 0 {
+            true
+        } else {
+            let c = text.as_bytes()[start - 1] as char;
+            !(c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        };
+        let right_ok = if end >= text.len() {
+            true
+        } else {
+            let c = text.as_bytes()[end] as char;
+            !(c.is_ascii_alphanumeric() || c == '-' || c == '.')
+        };
+        left_ok && right_ok
+    };
+
+    const NEEDLES: &[&str] = &[
+        "169.254.169.254",
+        "169.254.170.2",
+        "fd00:ec2::254",
+        "instance-data",
+        "metadata.google.internal",
+        "metadata.google",
+        "computemetadata",
+        "imds.internal",
+        "kubernetes.default.svc",
+        "kubernetes.default",
+        "10.96.0.1",
+        "192.0.0.192",
+    ];
+    // Azure: 169.254.169.254/metadata (path)
+    let mut best: Option<(usize, String)> = None;
+    for needle in NEEDLES {
+        if let Some(pos) = lower.find(needle) {
+            if is_domain_token(needle) && !is_hostname_bounded_match(&lower, pos, needle) {
+                continue;
+            }
+            let end = (pos + needle.len() + 40).min(input.len());
+            let snippet = input.get(pos..end).unwrap_or(needle).to_string();
+            match &best {
+                None => best = Some((pos, snippet)),
+                Some((p, _)) if *p > pos => best = Some((pos, snippet)),
+                _ => {}
+            }
+        }
+    }
+    if lower.contains("169.254.169.254") && lower.contains("/metadata") {
+        if let Some(pos) = lower.find("169.254.169.254") {
+            let snippet = "169.254.169.254/...metadata".to_string();
+            match &best {
+                None => best = Some((pos, snippet)),
+                Some((p, _)) if *p > pos => best = Some((pos, snippet)),
+                _ => {}
+            }
+        }
+    }
+    best.map(|(pos, matched)| (0.93, "cloud_metadata_endpoint", pos, matched))
+}
+
+/// DNS rebinding bypass: octal/hex IP, localhost shorthands, IPv6 loopback, 0.0.0.0.
+/// Returns (confidence, detection_type, position, matched_snippet) when matched.
+fn detect_dns_rebinding_bypass(input: &str) -> Option<(f64, &'static str, usize, String)> {
+    // Octal IP: 0177.0.0.1 — one or more octets in octal form
+    static OCTAL_IP_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"0[0-7]{1,3}\.(?:[0-9]{1,3}\.){2}[0-9]{1,3}").unwrap()
+    });
+    if let Some(m) = OCTAL_IP_RE.find(input) {
+        return Some((0.88, "dns_rebinding_bypass", m.start(), m.as_str().to_string()));
+    }
+    // Hex integer IP: 0x7f000001 (exactly 8 hex digits to avoid runaway match)
+    static HEX_IP_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?i)0x[0-9a-f]{8}").unwrap());
+    if let Some(m) = HEX_IP_RE.find(input) {
+        return Some((0.88, "dns_rebinding_bypass", m.start(), m.as_str().to_string()));
+    }
+    // 127.1, 127.0.1 shorthand
+    static LOCALHOST_SHORT_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"127\.0?\.0?\.1\b|127\.0?\.1\b|127\.1\b").unwrap());
+    if let Some(m) = LOCALHOST_SHORT_RE.find(input) {
+        return Some((0.88, "dns_rebinding_bypass", m.start(), m.as_str().to_string()));
+    }
+    // IPv6 localhost: ::1, [::1], ::ffff:127.0.0.1
+    static IPV6_LOOPBACK_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\[?::1\]?|::ffff:127\.0\.0\.1").unwrap()
+    });
+    if let Some(m) = IPV6_LOOPBACK_RE.find(input) {
+        return Some((0.88, "dns_rebinding_bypass", m.start(), m.as_str().to_string()));
+    }
+    // 0.0.0.0
+    if let Some(pos) = input.find("0.0.0.0") {
+        return Some((0.88, "dns_rebinding_bypass", pos, "0.0.0.0".to_string()));
+    }
+    None
+}
+
+/// URL confusion: @ before IP/domain, backslash normalization, double slash after host.
+/// Returns (confidence, detection_type, position, matched_snippet) when matched.
+fn detect_url_confusion(input: &str) -> Option<(f64, &'static str, usize, String)> {
+    // @ in URL before IP/domain: http://evil@192.168.1.1/
+    static AT_BEFORE_HOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)https?://[^/?#\s]+@(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|[a-zA-Z0-9][a-zA-Z0-9.-]*)").unwrap()
+    });
+    if let Some(m) = AT_BEFORE_HOST_RE.find(input) {
+        return Some((0.85, "url_confusion", m.start(), m.as_str().to_string()));
+    }
+    // Backslash URL: http:\\192.168.1.1/
+    static BACKSLASH_HOST_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)https?:\\\\[^\s/]+").unwrap()
+    });
+    if let Some(m) = BACKSLASH_HOST_RE.find(input) {
+        return Some((0.85, "url_confusion", m.start(), m.as_str().to_string()));
+    }
+    // Double slash after host: //192.168.1.1/path
+    static DOUBLE_SLASH_PATH_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)https?://[^/]+//").unwrap()
+    });
+    if let Some(m) = DOUBLE_SLASH_PATH_RE.find(input) {
+        return Some((0.85, "url_confusion", m.start(), m.as_str().to_string()));
+    }
+    None
 }
 
 fn is_dns_rebind_target(host: &str) -> Option<String> {
@@ -1269,6 +1406,52 @@ impl L2Evaluator for SsrfEvaluator {
 
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
         let lowered_decoded = decoded.to_lowercase();
+
+        if let Some((conf, dtype, pos, matched)) = detect_cloud_metadata(&decoded) {
+            dets.push(L2Detection {
+                detection_type: dtype.into(),
+                confidence: conf,
+                detail: format!("Cloud metadata endpoint pattern: {}", matched),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched.clone(),
+                    interpretation: "Input targets cloud metadata endpoint (AWS/GCP/Azure/K8s/Oracle)".into(),
+                    offset: pos,
+                    property: "Server-side requests must not reach cloud metadata endpoints".into(),
+                }],
+            });
+        }
+        if let Some((conf, dtype, pos, matched)) = detect_dns_rebinding_bypass(&decoded) {
+            dets.push(L2Detection {
+                detection_type: dtype.into(),
+                confidence: conf,
+                detail: format!("DNS rebinding bypass pattern: {}", matched),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched.clone(),
+                    interpretation: "Numeric/localhost encoding can bypass DNS rebinding and host allowlists".into(),
+                    offset: pos,
+                    property: "Canonicalize and block all localhost and internal IP representations".into(),
+                }],
+            });
+        }
+        if let Some((conf, dtype, pos, matched)) = detect_url_confusion(&decoded) {
+            dets.push(L2Detection {
+                detection_type: dtype.into(),
+                confidence: conf,
+                detail: format!("URL confusion pattern: {}", matched),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: matched.clone(),
+                    interpretation: "URL authority/path confusion can cause parser divergence and bypass host checks".into(),
+                    offset: pos,
+                    property: "Normalize URL form and validate host after canonical parsing".into(),
+                }],
+            });
+        }
 
         static SSRF_IPV6_MAPPED_METADATA_RE: std::sync::LazyLock<Regex> =
             std::sync::LazyLock::new(|| {
@@ -1887,8 +2070,11 @@ impl L2Evaluator for SsrfEvaluator {
             | "ssrf_ipv6_zone_localhost"
             | "ssrf_decimal_ip_loopback"
             | "ssrf_ipv6_mapped_metadata"
-            | "ssrf_decimal_ip_with_port" => Some(InvariantClass::SsrfInternalReach),
+            | "ssrf_decimal_ip_with_port"
+            | "dns_rebinding_bypass"
+            | "url_confusion" => Some(InvariantClass::SsrfInternalReach),
             "cloud_metadata"
+            | "cloud_metadata_endpoint"
             | "ssrf_cloud_metadata_alt_path"
             | "ssrf_aws_imdsv2_token_url"
             | "ssrf_imdsv2_token_path_probe" => Some(InvariantClass::SsrfCloudMetadata),
@@ -2412,5 +2598,47 @@ mod tests {
         let eval = SsrfEvaluator;
         let dets = eval.detect("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts");
         assert!(dets.iter().any(|d| d.detection_type == "ssrf_cloud_metadata_alt_path"));
+    }
+
+    #[test]
+    fn test_detect_cloud_metadata_endpoint() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://169.254.169.254/latest/");
+        assert!(
+            dets.iter().any(|d| d.detection_type == "cloud_metadata_endpoint"),
+            "cloud_metadata_endpoint should be detected for AWS metadata IP"
+        );
+        let dets2 = eval.detect("http://metadata.google.internal/");
+        assert!(dets2.iter().any(|d| d.detection_type == "cloud_metadata_endpoint"));
+        let dets3 = eval.detect("http://10.96.0.1/");
+        assert!(dets3.iter().any(|d| d.detection_type == "cloud_metadata_endpoint"));
+    }
+
+    #[test]
+    fn test_detect_dns_rebinding_bypass() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://0177.0.0.1/admin");
+        assert!(
+            dets.iter().any(|d| d.detection_type == "dns_rebinding_bypass"),
+            "octal IP should trigger dns_rebinding_bypass"
+        );
+        let dets2 = eval.detect("http://0x7f000001/");
+        assert!(dets2.iter().any(|d| d.detection_type == "dns_rebinding_bypass"));
+        let dets3 = eval.detect("http://127.1/");
+        assert!(dets3.iter().any(|d| d.detection_type == "dns_rebinding_bypass"));
+    }
+
+    #[test]
+    fn test_detect_url_confusion() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://evil@192.168.1.1/");
+        assert!(
+            dets.iter().any(|d| d.detection_type == "url_confusion"),
+            "@ before IP should trigger url_confusion"
+        );
+        let dets2 = eval.detect("http:\\\\192.168.1.1/");
+        assert!(dets2.iter().any(|d| d.detection_type == "url_confusion"));
+        let dets3 = eval.detect("http://example.com//path");
+        assert!(dets3.iter().any(|d| d.detection_type == "url_confusion"));
     }
 }

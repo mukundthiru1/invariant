@@ -224,6 +224,126 @@ fn looks_like_filesystem_path(value: &str) -> bool {
         || value.starts_with("./")
 }
 
+fn looks_like_command_token(value: &str) -> bool {
+    let token = value.trim().trim_matches(&['"', '\'', '`'][..]);
+    if token.is_empty() {
+        return false;
+    }
+    if token == "." || token == ".." {
+        return false;
+    }
+    if token.starts_with("./") || token.starts_with("../") {
+        return true;
+    }
+    if looks_like_executable_path(token) {
+        return true;
+    }
+    if token.contains('/') || token.contains('\\') {
+        return true;
+    }
+    if token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.') && token.len() <= 24
+    {
+        if is_known_dangerous(&token.to_lowercase()) {
+            return true;
+        }
+        !matches!(token, "." | "..") && token.chars().any(|c| c.is_ascii_alphabetic())
+    } else {
+        false
+    }
+}
+
+fn detect_brace_expansion_match(
+    input: &str,
+) -> Option<(f32, &'static str, usize, usize)> {
+    static BRACE_EXPANSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"\{[^{}\r\n]{1,80}(?:,[^{}\r\n]{0,80})+\}").unwrap()
+    });
+    for m in BRACE_EXPANSION_RE.find_iter(input) {
+        let inner = &m.as_str()[1..m.as_str().len() - 1];
+        if inner.split(',').any(|token| looks_like_command_token(token)) {
+            return Some((0.82, "brace_expansion", m.start(), m.end()));
+        }
+    }
+    None
+}
+
+fn detect_brace_expansion(input: &str) -> Option<(f32, &'static str)> {
+    detect_brace_expansion_match(input).map(|(conf, label, _, _)| (conf, label))
+}
+
+fn detect_process_substitution_match(
+    input: &str,
+) -> Option<(f32, &'static str, usize, usize)> {
+    static PROCESS_SUBSTITUTION_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"[<>]\([^\r\n)]{1,120}\)").unwrap());
+    PROCESS_SUBSTITUTION_RE
+        .find(input)
+        .map(|m| (0.89, "process_substitution", m.start(), m.end()))
+}
+
+fn detect_process_substitution(input: &str) -> Option<(f32, &'static str)> {
+    detect_process_substitution_match(input).map(|(conf, label, _, _)| (conf, label))
+}
+
+fn detect_heredoc_injection_match(
+    input: &str,
+) -> Option<(f32, &'static str, usize, usize)> {
+    static HEREDOC_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"<<\s*[A-Za-z_][A-Za-z0-9_]{0,31}\b").unwrap());
+    static HERE_STRING_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"<<<\S{1,64}").unwrap());
+    HEREDOC_RE
+        .find(input)
+        .map(|m| (0.85, "heredoc_injection", m.start(), m.end()))
+        .or_else(|| {
+            HERE_STRING_RE
+                .find(input)
+                .map(|m| (0.85, "heredoc_injection", m.start(), m.end()))
+        })
+}
+
+fn detect_heredoc_injection(input: &str) -> Option<(f32, &'static str)> {
+    detect_heredoc_injection_match(input).map(|(conf, label, _, _)| (conf, label))
+}
+
+fn detect_powershell_char_obfuscation_match(
+    input: &str,
+) -> Option<(f32, &'static str, usize, usize)> {
+    let lowered = input.to_lowercase();
+    let ps_context = lowered.contains("powershell") || lowered.contains("pwsh");
+    if !ps_context
+        && !lowered.contains("invoke-expression")
+        && !lowered.contains("iwr")
+        && !lowered.contains("iex")
+        && !lowered.contains("new-object")
+    {
+        return None;
+    }
+
+    static PS_BACKTICK_OBF_RE: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?i)[a-z0-9_]{1,24}`[a-z0-9_]{1,24}(?:`[a-z0-9_]{1,24})+").unwrap());
+    static PS_CHAR_ARRAY_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)\[char\[\]\]\(\s*(?:\d{1,3}\s*,\s*){1,20}\d{1,3}\s*\)").unwrap()
+    });
+    static PS_JOIN_CODES_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(r"(?i)-join\s*\(\s*(?:\d{1,3}\s*,\s*){1,20}\d{1,3}\s*\)").unwrap()
+    });
+
+    if let Some(m) = PS_BACKTICK_OBF_RE.find(input) {
+        return Some((0.88, "powershell_char_obfuscation", m.start(), m.end()));
+    }
+    if let Some(m) = PS_CHAR_ARRAY_RE.find(input) {
+        return Some((0.88, "powershell_char_obfuscation", m.start(), m.end()));
+    }
+    PS_JOIN_CODES_RE
+        .find(input)
+        .map(|m| (0.88, "powershell_char_obfuscation", m.start(), m.end()))
+}
+
+fn detect_powershell_char_obfuscation(input: &str) -> Option<(f32, &'static str)> {
+    detect_powershell_char_obfuscation_match(input).map(|(conf, label, _, _)| (conf, label))
+}
+
 pub struct CmdInjectionEvaluator;
 
 impl CmdInjectionEvaluator {
@@ -1892,6 +2012,81 @@ impl L2Evaluator for CmdInjectionEvaluator {
             });
         }
 
+        if let Some((confidence, detection_type, start, end)) =
+            detect_brace_expansion_match(&decoded)
+        {
+            dets.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "Brace expansion detected: comma-separated alternatives".into(),
+                position: start,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[start..end].to_owned(),
+                    interpretation:
+                        "Brace expansion can generate alternative command paths/arguments".into(),
+                    offset: start,
+                    property:
+                        "User input must not use shell brace expansion with command/path alternatives"
+                            .into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type, start, end)) =
+            detect_process_substitution_match(&decoded)
+        {
+            dets.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "Bash process substitution detected".into(),
+                position: start,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[start..end].to_owned(),
+                    interpretation: "Process substitution executes a nested command".into(),
+                    offset: start,
+                    property: "User input must not contain process substitution constructs".into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type, start, end)) = detect_heredoc_injection_match(&decoded)
+        {
+            dets.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "Here-document/string redirection detected".into(),
+                position: start,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::ContextEscape,
+                    matched_input: decoded[start..end].to_owned(),
+                    interpretation: "Here-doc/here-string redirects attacker-controlled inline data".into(),
+                    offset: start,
+                    property: "User input must not contain here-doc or here-string operators".into(),
+                }],
+            });
+        }
+
+        if let Some((confidence, detection_type, start, end)) =
+            detect_powershell_char_obfuscation_match(&decoded)
+        {
+            dets.push(L2Detection {
+                detection_type: detection_type.into(),
+                confidence: confidence as f64,
+                detail: "PowerShell character-level obfuscation detected".into(),
+                position: start,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: decoded[start..end].to_owned(),
+                    interpretation: "PowerShell backtick/[char[]] constructs can reconstruct command text".into(),
+                    offset: start,
+                    property:
+                        "User input must not use PowerShell character-level obfuscation".into(),
+                }],
+            });
+        }
+
         let tokenizer = ShellTokenizer;
         let stream = tokenizer.tokenize(&decoded);
         let tokens = stream.all().to_vec();
@@ -1961,6 +2156,7 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "cmd_backtick_chained_exec"
             | "cmd_process_substitution_output_cat_passwd"
             | "powershell_cradle"
+            | "process_substitution"
             | "shell_evasion_ansi_c_quote"
             | "shell_evasion_process_substitution"
             | "shell_evasion_arith_cmd_sub" => Some(InvariantClass::CmdSubstitution),
@@ -1997,7 +2193,10 @@ impl L2Evaluator for CmdInjectionEvaluator {
             | "wsl_bash_bypass"
             | "blind_cmdi_dns"
             | "shellshock_function_injection"
-            | "sourced_script_injection" => Some(InvariantClass::CmdArgumentInjection),
+            | "sourced_script_injection"
+            | "brace_expansion"
+            | "powershell_char_obfuscation" => Some(InvariantClass::CmdArgumentInjection),
+            "heredoc_injection" => Some(InvariantClass::CmdSeparator),
             "blind_timing_injection" | "here_string_injection" => {
                 Some(InvariantClass::CmdSeparator)
             }

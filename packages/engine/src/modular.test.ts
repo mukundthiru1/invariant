@@ -80,10 +80,10 @@ describe('Class Module Counts', () => {
     it('Path: 5', () => expect(PATH_CLASSES.length).toBe(5))
     it('SSRF: 3', () => expect(SSRF_CLASSES.length).toBe(3))
     it('Deser: 4', () => expect(DESER_CLASSES.length).toBe(4))
-    it('Auth: 23', () => expect(AUTH_CLASSES.length).toBe(23))
-    it('Injection: 109', () => expect(INJECTION_CLASSES.length).toBe(109))
+    it('Auth: 24', () => expect(AUTH_CLASSES.length).toBe(24))
+    it('Injection: 113', () => expect(INJECTION_CLASSES.length).toBe(113))
     it('Hygiene: 26', () => expect(HYGIENE_CLASSES.length).toBe(26))
-    it('Total: 194', () => expect(ALL_CLASS_MODULES.length).toBe(194))
+    it('Total: 199', () => expect(ALL_CLASS_MODULES.length).toBe(199))
 })
 
 

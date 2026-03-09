@@ -92,6 +92,25 @@ const DOM_CLOBBERING_TAGS = new Set(['form', 'img', 'input', 'textarea', 'select
 const DOM_CLOBBERING_ID_VALUES = new Set(['__proto__', 'prototype', 'constructor'])
 const DOM_CLOBBERING_NAME_VALUES = new Set(['domain', 'polluted', 'constructor', 'prototype', '__proto__'])
 
+const DOM_CLOBBERING_RE = /<(?:form|input|img|a|iframe)\s[^>]{0,200}(?:id|name)\s*=\s*['"]?(?:body|document|location|frames|window|history|navigator|top|parent|opener)['"]?/i
+const DOM_CLOBBERING_OWNER_DOC_RE = /<input\s[^>]{0,200}\bname\s*=\s*['"]?ownerdocument['"]?/i
+const DOM_CLOBBERING_ANCHOR_JS_RE = /<a\s[^>]{0,200}\bid\s*=\s*['"]?location['"]?[^>]{0,200}\bhref\s*=\s*['"]?\s*javascript:/i
+
+const MUTATION_XSS_NOSCRIPT_RE = /<noscript\b[^>]{0,120}>\s*<p\b[^>]{0,200}\btitle\s*=\s*['"]?[^>'"\n]{0,120}\s*<\/noscript>\s*<img\b/i
+const MUTATION_XSS_FOREIGN_OBJECT_RE = /<svg\b[^>]{0,120}>[\s\S]{0,200}<foreignObject\b[^>]{0,120}>[\s\S]{0,200}<html\b/i
+const MUTATION_XSS_MATHML_RE = /<math\b[^>]{0,120}>[\s\S]{0,200}<mtext\b[^>]{0,120}>\s*<\/form>\s*<form\b[^>]{0,120}>[\s\S]{0,200}<mglyph\b[^>]{0,120}>[\s\S]{0,200}<svg\b/i
+const MUTATION_XSS_TEMPLATE_RE = /<template\b[^>]{0,120}>[\s\S]{0,200}<script\b/i
+
+const DANGLING_MARKUP_IMG_RE = /<img\b[^>\n]{0,180}\bsrc\s*=\s*['"]\s*https?:\/\/[^'"\n>]{1,200}(?:\n|$)/i
+const DANGLING_MARKUP_BASE_RE = /<base\b[^>\n]{0,180}\bhref\s*=\s*['"]\s*https?:\/\/[^'"\n>]{1,200}(?:\n|$)/i
+const DANGLING_MARKUP_LINK_RE = /<link\b[^>\n]{0,120}\brel\s*=\s*['"]?stylesheet['"]?[^>\n]{0,120}\bhref\s*=\s*['"]\s*https?:\/\/[^'"\n>]{1,200}(?:\n|$)/i
+
+const CSS_EXPRESSION_XSS_RE = /\bexpression\s*\(\s*(?:alert|document|window)[^)]{0,180}\)/i
+const CSS_MOZ_BINDING_RE = /\b-moz-binding\s*:\s*url\s*\(\s*['"]?[^)]{0,180}\)/i
+const CSS_BEHAVIOR_XSS_RE = /\bbehavior\s*:\s*url\s*\(\s*['"]?[^)]{0,180}\)/i
+const CSS_IMPORT_JS_DATA_RE = /@import\s+(?:url\s*\(\s*['"]?\s*)?(?:javascript:|data:)[^'"\s)]{0,220}/i
+const CSS_URL_JS_DATA_RE = /\burl\s*\(\s*['"]?\s*(?:javascript:|data:)[^)]{0,220}\)/i
+
 
 // ── HTML Fragment Tokenizer ──────────────────────────────────────
 
@@ -384,7 +403,16 @@ function detectElementThreats(elem: ParsedHtmlElement): XssDetection[] {
 
 export interface XssDetection {
     /** Type of XSS vector */
-    type: 'tag_injection' | 'event_handler' | 'protocol_handler' | 'template_expression' | 'attribute_escape'
+    type:
+    | 'tag_injection'
+    | 'event_handler'
+    | 'protocol_handler'
+    | 'template_expression'
+    | 'attribute_escape'
+    | 'dom_clobbering'
+    | 'mutation_xss'
+    | 'dangling_markup'
+    | 'css_expression'
     /** The dangerous element */
     element: string
     /** What specifically is dangerous */
@@ -417,7 +445,87 @@ export function detectXssVectors(input: string): XssDetection[] {
         detections.push(...detectElementThreats(elem))
     }
 
+    detections.push(...detectDomClobbering(input))
+    detections.push(...detectMutationXSS(input))
+    detections.push(...detectDanglingMarkup(input))
+    detections.push(...detectCssExpressionXss(input))
+
     return detections
+}
+
+export function detectDomClobbering(input: string): XssDetection[] {
+    if (
+        !DOM_CLOBBERING_RE.test(input)
+        && !DOM_CLOBBERING_OWNER_DOC_RE.test(input)
+        && !DOM_CLOBBERING_ANCHOR_JS_RE.test(input)
+    ) {
+        return []
+    }
+
+    return [{
+        type: 'dom_clobbering',
+        element: '<dom-clobbering>',
+        detail: 'DOM clobbering via named/id element shadowing critical document globals',
+        position: 0,
+        confidence: 0.87,
+    }]
+}
+
+export function detectMutationXSS(input: string): XssDetection[] {
+    if (
+        !MUTATION_XSS_NOSCRIPT_RE.test(input)
+        && !MUTATION_XSS_FOREIGN_OBJECT_RE.test(input)
+        && !MUTATION_XSS_MATHML_RE.test(input)
+        && !MUTATION_XSS_TEMPLATE_RE.test(input)
+    ) {
+        return []
+    }
+
+    return [{
+        type: 'mutation_xss',
+        element: '<mutation-xss>',
+        detail: 'Potential parser-mutation or namespace confusion XSS pattern',
+        position: 0,
+        confidence: 0.88,
+    }]
+}
+
+export function detectDanglingMarkup(input: string): XssDetection[] {
+    if (
+        !DANGLING_MARKUP_IMG_RE.test(input)
+        && !DANGLING_MARKUP_BASE_RE.test(input)
+        && !DANGLING_MARKUP_LINK_RE.test(input)
+    ) {
+        return []
+    }
+
+    return [{
+        type: 'dangling_markup',
+        element: '<dangling-markup>',
+        detail: 'Unclosed quoted attribute can steal following markup or data',
+        position: 0,
+        confidence: 0.82,
+    }]
+}
+
+export function detectCssExpressionXss(input: string): XssDetection[] {
+    if (
+        !CSS_EXPRESSION_XSS_RE.test(input)
+        && !CSS_MOZ_BINDING_RE.test(input)
+        && !CSS_BEHAVIOR_XSS_RE.test(input)
+        && !CSS_IMPORT_JS_DATA_RE.test(input)
+        && !CSS_URL_JS_DATA_RE.test(input)
+    ) {
+        return []
+    }
+
+    return [{
+        type: 'css_expression',
+        element: '<css-expression>',
+        detail: 'Legacy CSS execution primitive or JavaScript/data URL in CSS context',
+        position: 0,
+        confidence: 0.86,
+    }]
 }
 
 function hasDangerousScheme(value: string): boolean {

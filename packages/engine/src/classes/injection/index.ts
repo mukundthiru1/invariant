@@ -48,6 +48,7 @@ import { ws_injection, ws_hijack } from './websocket.js'
 import { websocket_origin_bypass, websocket_message_injection, websocket_dos } from './websocket-attacks.js'
 import { cachePoisoning, cacheDeception } from './cache-poisoning.js'
 import { bolaIdor, apiMassEnum } from './api-abuse.js'
+import { csvInjection } from './csv-injection.js'
 import { credentialStuffing } from '../auth/index.js'
 import {
     xmlBombDos,
@@ -64,6 +65,9 @@ import {
     terraformInjection,
     dockerEscapeIndicator,
     cloudMetadataAdvanced,
+    compressionBomb,
+    http2PseudoHeaderInjection,
+    graphqlDepthAttack,
 } from './infra-attacks.js'
 import {
     raceConditionProbe,
@@ -125,6 +129,7 @@ export { ws_injection, ws_hijack } from './websocket.js'
 export { websocket_origin_bypass, websocket_message_injection, websocket_dos } from './websocket-attacks.js'
 export { cachePoisoning, cacheDeception } from './cache-poisoning.js'
 export { bolaIdor, apiMassEnum } from './api-abuse.js'
+export { csvInjection } from './csv-injection.js'
 export {
     xmlBombDos,
     httpVerbTampering,
@@ -140,6 +145,9 @@ export {
     terraformInjection,
     dockerEscapeIndicator,
     cloudMetadataAdvanced,
+    compressionBomb,
+    http2PseudoHeaderInjection,
+    graphqlDepthAttack,
 } from './infra-attacks.js'
 export {
     raceConditionProbe,
@@ -246,6 +254,8 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     // API logic abuse
     bolaIdor,
     apiMassEnum,
+    // CSV formula / DDE injection
+    csvInjection,
     // Rate-based auth abuse
     credentialStuffing,
     // Nation-state / Advanced Threats
@@ -262,6 +272,9 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     terraformInjection,
     dockerEscapeIndicator,
     cloudMetadataAdvanced,
+    compressionBomb,
+    http2PseudoHeaderInjection,
+    graphqlDepthAttack,
     // Timing/desync/cache/HPP advanced classes
     raceConditionProbe,
     redosPayload,

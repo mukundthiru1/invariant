@@ -3,7 +3,7 @@
  */
 import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
-import { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret } from './jwt-attacks.js'
+import { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret, jwtClaimConfusion } from './jwt-attacks.js'
 import { jwtConfusion } from './jwt-abuse.js'
 import { oauthRedirectManipulation, oauthStateBypass, pkceDowngrade } from './oauth-attacks.js'
 import { oauthRedirectHijack, oauthTokenLeak, jwtAlgorithmConfusion, oidcNonceReplay, samlSignatureWrapping } from './protocol-attacks.js'
@@ -21,7 +21,7 @@ function decodeBase64Url(value: string): string | null {
 
 function findJwtToken(input: string): string | null {
     const decoded = deepDecode(input)
-    const jwtMatch = decoded.match(/\b(?:Bearer\s+)?(eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*)/i)
+    const jwtMatch = decoded.match(/\b(?:Bearer\s+)?(eyJ[A-Za-z0-9_\-+\/=]{8,}\.[A-Za-z0-9_\-+\/=]{8,}\.[A-Za-z0-9_\-+\/=]*)/i)
     return jwtMatch?.[1] ?? null
 }
 
@@ -55,7 +55,7 @@ function parseJwtPayload(token: string): Record<string, unknown> | null {
 
 function looksLikeJwtContext(input: string): boolean {
     return /\b(?:jwt|bearer|authorization|token|claim)\b/i.test(input) ||
-        /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]*/.test(input)
+        /\beyJ[A-Za-z0-9_\-+\/=]{8,}\.[A-Za-z0-9_\-+\/=]{8,}\.[A-Za-z0-9_\-+\/=]*/.test(input)
 }
 
 export const authNoneAlgorithm: InvariantClassModule = {
@@ -853,7 +853,7 @@ export const passwordSprayIndicator: InvariantClassModule = {
     },
 }
 
-export { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret } from './jwt-attacks.js'
+export { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret, jwtClaimConfusion } from './jwt-attacks.js'
 export { jwtConfusion } from './jwt-abuse.js'
 export { oauthRedirectManipulation, oauthStateBypass, pkceDowngrade } from './oauth-attacks.js'
 
@@ -881,4 +881,5 @@ export const AUTH_CLASSES: InvariantClassModule[] = [
     jwtKidInjection,
     jwtJwkEmbedding,
     jwtConfusion,
+    jwtClaimConfusion,
 ]
