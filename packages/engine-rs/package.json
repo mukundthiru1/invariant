@@ -1,0 +1,24 @@
+{
+    "name": "@santh/engine-rs",
+    "version": "0.1.0",
+    "private": true,
+    "description": "INVARIANT engine-rs — Rust/WASM high-performance security detection engine",
+    "type": "module",
+    "exports": {
+        ".": {
+            "types": "./src/index.d.ts",
+            "import": "./src/index.js",
+            "default": "./src/index.js"
+        }
+    },
+    "main": "./src/index.js",
+    "types": "./src/index.d.ts",
+    "scripts": {
+        "build:wasm": "wasm-pack build --target bundler --features wasm",
+        "typecheck": "tsc --noEmit"
+    },
+    "dependencies": {},
+    "devDependencies": {
+        "typescript": "^5.7.0"
+    }
+}

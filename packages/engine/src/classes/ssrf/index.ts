@@ -22,6 +22,13 @@ export const ssrfInternalReach: InvariantClassModule = {
         'http://192.168.1.1',
         'http://[::1]',
         'http://0x7f000001',
+        'http://2130706433',
+        'http://0177.0.0.1',
+        'http://[::ffff:127.0.0.1]',
+        'http://[::ffff:7f00:1]',
+        'http://[0:0:0:0:0:0:0:1]',
+        'http://[::ffff:7f00:0001]',
+        'http://[fe80::1%25lo]',
     ],
 
     knownBenign: [
@@ -32,16 +39,29 @@ export const ssrfInternalReach: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|0177\.0\.0\.01)/i.test(d)
+        return /(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|\[0:0:0:0:0:0:0:1\]|\[::ffff:127\.0\.0\.1\]|\[::ffff:7f00:1\]|\[::ffff:7f00:0001\]|\[fe80::1(?:%25|%|).*\]|0177\.0\.0\.01|0177\.0\.0\.1)/i.test(d)
     },
     detectL2: l2SsrfInternal,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             'http://127.0.0.1', 'http://localhost', 'http://0.0.0.0',
             'http://10.0.0.1', 'http://192.168.1.1', 'http://172.16.0.1',
             'http://[::1]', 'http://0x7f000001', 'http://2130706433',
             'http://0177.0.0.01', 'http://127.1', 'http://127.0.0.1:8080/admin',
         ]
+        const mutated = [
+            'HTTP://127.0.0.1',
+            'http://0177.0.0.1',
+            'http://017700000001',
+            '%68%74%74%70://127.0.0.1',
+            '%2568%2574%2574%2570%253A%252F%252F127.0.0.1',
+            '%48%54%54%50://localhost',
+            'http://[::ffff:127.0.0.1]',
+            'http://[::ffff:7f00:1]',
+            'http://0x7f000001:80',
+            'http://2130706433/admin',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => ssrfInternalReach.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r
@@ -62,6 +82,7 @@ export const ssrfCloudMetadata: InvariantClassModule = {
         'http://169.254.169.254/latest/meta-data/',
         'http://metadata.google.internal/computeMetadata/v1/',
         'http://100.100.100.200/latest/meta-data/',
+        'http://168.63.129.16/metadata',
     ],
 
     knownBenign: [
@@ -72,11 +93,11 @@ export const ssrfCloudMetadata: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254|metadata\.azure\.com/i.test(d)
+        return /169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|fd00:ec2::254|metadata\.azure\.com|168\.63\.129\.16/i.test(d)
     },
     detectL2: l2SsrfCloudMetadata,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             'http://169.254.169.254/latest/meta-data/',
             'http://169.254.169.254/latest/meta-data/iam/security-credentials/',
             'http://metadata.google.internal/computeMetadata/v1/',
@@ -84,6 +105,17 @@ export const ssrfCloudMetadata: InvariantClassModule = {
             'http://169.254.169.254/metadata/v1/',
             'http://[fd00:ec2::254]/latest/meta-data/',
         ]
+        const mutated = [
+            'HTTP://169.254.169.254/latest/meta-data/',
+            '%68%74%74%70://169.254.169.254/latest/meta-data/',
+            '%2568%2574%2574%2570%253A%252F%252F169.254.169.254%252Flatest%252Fmeta-data%252F',
+            'http://metadata.google.internal/computeMetadata/v1/?recursive=true',
+            '%68%74%74%70://metadata.google.internal/computeMetadata/v1/',
+            'http://168.63.129.16/metadata/instance',
+            '%68%74%74%70://100.100.100.200/latest/meta-data/',
+            'http://[fd00:ec2::254]:80/latest/meta-data/',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => ssrfCloudMetadata.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r
@@ -120,11 +152,21 @@ export const ssrfProtocolSmuggle: InvariantClassModule = {
     },
     detectL2: l2SsrfProtocolSmuggle,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             'file:///etc/passwd', 'gopher://127.0.0.1:6379/_*1%0d%0a$8%0d%0aflushall',
             'dict://127.0.0.1:6379/INFO', 'ldap://evil.com/x',
             'file:///c:/windows/win.ini', 'phar:///tmp/evil.phar',
         ]
+        const mutated = [
+            'FILE:///etc/passwd',
+            '%66%69%6c%65:///%65%74%63/%70%61%73%73%77%64',
+            '%2566%2569%256c%2565%253A%252F%252F%252Fetc%252Fpasswd',
+            'GOPHER://127.0.0.1:6379/_*1%0d%0a$4%0d%0aINFO',
+            '%67%6f%70%68%65%72://127.0.0.1:6379/_%2a1%0d%0a',
+            'dict://127.0.0.1:6379/%49%4e%46%4f',
+            'phar:///%74%6d%70/%65%76%69%6c.phar',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => ssrfProtocolSmuggle.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r

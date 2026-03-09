@@ -139,6 +139,28 @@ describe('Adversarial: XSS (polyglots + WAF bypasses)', () => {
         // DOM-based patterns
         ['"><img src=x onerror=alert(1)>', 'break_attr_inject'],
         ["'><script>alert(1)</script>", 'break_attr_script'],
+
+        // Mutation XSS (browser-context mXSS vectors)
+        ['<table><td><a href="javascript:alert(1)">x</td></table>', 'table_anchor_mxss'],
+        ["<noscript><p title='</noscript><img src=x onerror=alert(1)>'>", 'noscript_attr_breakout'],
+        ['<template><img src=x onerror=alert(1)></template>', 'template_img_event'],
+
+        // DOM clobbering
+        ['<img id=x name=domain src=//evil.com>', 'dom_clobbering_img'],
+        ['<form id=__proto__><input name=polluted value=1>', 'dom_clobbering_form'],
+
+        // SVG SMIL events and animation sinks
+        ['<svg><animate onbegin=alert(1)>', 'svg_animate_onbegin'],
+        ['<svg><set attributeName=href to=javascript:alert(1)>', 'svg_set_to_js'],
+        ['<svg><animateMotion onend=alert(1)>', 'svg_animateMotion_onend'],
+
+        // Data URI in src attributes
+        ["<script src='data:text/javascript,alert(1)'>", 'script_data_js_uri'],
+        ["<iframe src='data:text/html,<script>alert(1)</script>'>", 'iframe_data_html_uri'],
+
+        // PostMessage and DOM globals
+        ["window.addEventListener('message', function(e) { eval(e.data) })", 'postmessage_eval'],
+        ["document.domain = ''", 'document_domain_blank'],
     ]
 
     it('detects all XSS payloads', () => {

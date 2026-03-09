@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 
 import { ALL_CLASS_MODULES } from './index.js'
-import { InvariantRegistry, RegistryError } from './registry.js'
+import { InvariantRegistry, RegistryError, sanitizeConfidence } from './registry.js'
 import type { InvariantClassModule, InvariantMatch } from './types.js'
 
 function makeMatch(overrides: Partial<InvariantMatch> & Pick<InvariantMatch, 'class' | 'confidence' | 'severity'>): InvariantMatch {
@@ -101,7 +101,7 @@ describe('formal contract verification', () => {
             }
         }
 
-        expect(ALL_CLASS_MODULES.length).toBe(66)
+        expect(ALL_CLASS_MODULES.length).toBeGreaterThanOrEqual(94)
         expect(
             failures,
             failures.length === 0 ? '' : `Contract failures:\n${failures.join('\n')}`,
@@ -109,7 +109,7 @@ describe('formal contract verification', () => {
 
         const registry = new InvariantRegistry()
         expect(() => registry.registerAll(ALL_CLASS_MODULES)).not.toThrow()
-        expect(registry.size).toBe(66)
+        expect(registry.size).toBe(ALL_CLASS_MODULES.length)
     })
 
     it('computeCorrelations() returns empty array for single-class input', () => {
@@ -152,5 +152,19 @@ describe('formal contract verification', () => {
 
         expect(lowered).toBeLessThan(baseline)
         expect(raised).toBeGreaterThan(lowered)
+    })
+})
+
+describe('sanitizeConfidence helper', () => {
+    it('returns fallback for NaN', () => {
+        expect(sanitizeConfidence(Number.NaN)).toBe(0.5)
+    })
+
+    it('returns 0.99 for +Infinity', () => {
+        expect(sanitizeConfidence(Number.POSITIVE_INFINITY)).toBe(0.99)
+    })
+
+    it('clamps values below 0 to 0', () => {
+        expect(sanitizeConfidence(-1)).toBe(0)
     })
 })

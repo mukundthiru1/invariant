@@ -280,6 +280,36 @@ function detectNormalizationBypass(input: string, decoded: string, resolution: P
     return null
 }
 
+function detectFileUrlTraversal(input: string, decoded: string): PathTraversalDetection | null {
+    const directTraversalPattern = /file:\/\/[^?]*\/\.\./i
+    if (directTraversalPattern.test(input) || directTraversalPattern.test(decoded)) {
+        return {
+            type: 'dotdot_escape',
+            detail: 'file:// URL contains traversal segment (../)',
+            resolvedPath: decoded.replace(/^file:\/\//i, ''),
+            escapeDepth: 1,
+            confidence: 0.95,
+        }
+    }
+
+    const fileUrlMatch = decoded.match(/^file:\/\/\/?(.*)$/i)
+    if (!fileUrlMatch) return null
+
+    const filePathPart = fileUrlMatch[1] ?? ''
+    const fileResolution = resolvePath(filePathPart)
+    const hasTraversalSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(filePathPart)
+
+    if (!hasTraversalSegment && !fileResolution.targetsSensitiveFile) return null
+
+    return {
+        type: 'dotdot_escape',
+        detail: `file:// URL traversal path detected (${hasTraversalSegment ? 'contains ../' : 'sensitive target'})`,
+        resolvedPath: fileResolution.resolvedPath,
+        escapeDepth: fileResolution.escapeDepth,
+        confidence: fileResolution.targetsSensitiveFile ? 0.93 : 0.88,
+    }
+}
+
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -292,7 +322,8 @@ export function detectPathTraversal(input: string): PathTraversalDetection[] {
 
     // Don't waste time on short inputs or inputs without path-like chars
     if (input.length < 3) return detections
-    if (!input.includes('.') && !input.includes('%') && !input.includes('\\')) {
+    const looksLikeFileUrl = input.trimStart().toLowerCase().startsWith('file://')
+    if (!looksLikeFileUrl && !input.includes('.') && !input.includes('%') && !input.includes('\\')) {
         return detections
     }
 
@@ -307,6 +338,7 @@ export function detectPathTraversal(input: string): PathTraversalDetection[] {
     const resolution = resolvePath(decoded)
 
     const detectors: Array<() => PathTraversalDetection | null> = [
+        () => detectFileUrlTraversal(input, decoded),
         () => detectDotdotEscape(input, decoded, resolution),
         () => detectNullTerminate(input, decoded),
         () => detectEncodingBypass(input, decoded, layers, resolution),

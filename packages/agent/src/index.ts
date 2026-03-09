@@ -22,18 +22,20 @@
 import { InvariantDB, type DefenseMode } from './db.js'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
+import { createHash } from 'node:crypto'
 import { scanDependencies, type ScanResult } from './scanner/deps.js'
 import { auditConfiguration } from './scanner/config.js'
 import { type SqlRaspConfig, wrapPgModule, wrapMysqlModule } from './rasp/sql.js'
 import { type FsRaspConfig, wrapFsOperation } from './rasp/fs.js'
 import { type HttpRaspConfig, wrapFetch } from './rasp/http.js'
-import { type ExecRaspConfig, wrapExec } from './rasp/exec.js'
+import { type ExecRaspConfig, installVmRuntimeHooks, wrapExec } from './rasp/exec.js'
 import { type DeserRaspConfig, wrapJsonParse } from './rasp/deser.js'
 import { type WebSocketRaspConfig, wrapWebSocketSend } from './rasp/websocket.js'
 import { type GrpcRaspConfig, wrapGrpcClient } from './rasp/grpc.js'
 import { AutonomousDefenseController, type DefenseDecision } from './autonomous-defense.js'
 import { AdaptiveCalibrator, type CalibrationReport } from './calibration.js'
 import { RuntimeHealthMonitor, type RuntimeHealthSnapshot } from './runtime.js'
+import { flushSignals, queueSignal } from './intel-feedback.js'
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -68,6 +70,16 @@ export interface AgentStatus {
     findings: { total: number; critical: number; high: number; open: number }
     signals: { total: number; blocked: number }
     lastScan: string | null
+}
+
+export class AgentPublicError extends Error {
+    readonly code: string
+
+    constructor(code: string, message: string) {
+        super(message)
+        this.name = 'AgentPublicError'
+        this.code = code
+    }
 }
 
 // ── Agent ────────────────────────────────────────────────────────
@@ -113,82 +125,133 @@ export class InvariantAgent {
     }
 
     async start(): Promise<void> {
-        if (this.started) return
-        this.started = true
+        try {
+            if (this.started) return
+            this.started = true
 
-        this.log('INVARIANT agent starting...')
-        this.log(`Mode: ${this.config.mode}`)
-        this.log(`Project: ${this.config.projectDir}`)
+            this.log('INVARIANT agent starting...')
+            this.log(`Mode: ${this.config.mode}`)
+            this.log(`Project: ${this.config.projectDir}`)
 
-        if (this.config.captureRuntimeExceptions) {
-            this.installProcessErrorHandlers()
-        }
-
-        if (this.config.autoConfigure) {
-            await this.autoConfigureRuntime()
-        }
-
-        // Run initial scans
-        if (this.config.auditOnStart) {
-            this.log('Running configuration audit...')
-            const audit = auditConfiguration(this.config.projectDir, this.db)
-            this.log(`Config audit: ${audit.total} checks, ${audit.findings} findings`)
-        }
-
-        if (this.config.scanOnStart) {
-            this.log('Scanning dependencies...')
-            try {
-                const scan = await scanDependencies(this.config.projectDir, this.db)
-                this.log(`Dependency scan: ${scan.totalDeps} packages, ${scan.vulnerabilities.length} vulnerabilities (${scan.scanDuration}ms)`)
-            } catch (err) {
-                this.log(`Dependency scan failed: ${err}`)
+            if (this.config.captureRuntimeExceptions) {
+                this.installProcessErrorHandlers()
             }
-        }
 
-        // Set up periodic rescan
-        if (this.config.rescanInterval > 0) {
-            const intervalMs = this.config.rescanInterval * 60 * 60 * 1000
-            this.scanTimer = setInterval(async () => {
+            if (this.config.autoConfigure) {
+                await this.autoConfigureRuntime()
+            }
+
+            // Run initial scans
+            if (this.config.auditOnStart) {
+                this.log('Running configuration audit...')
+                const audit = auditConfiguration(this.config.projectDir, this.db)
+                this.log(`Config audit: ${audit.total} checks, ${audit.findings} findings`)
+            }
+
+            if (this.config.scanOnStart) {
+                this.log('Scanning dependencies...')
                 try {
                     await scanDependencies(this.config.projectDir, this.db)
-                    auditConfiguration(this.config.projectDir, this.db)
-                } catch { /* Periodic scan failure is not critical */ }
-            }, intervalMs)
-            // Don't prevent process exit
-            if (this.scanTimer.unref) this.scanTimer.unref()
+                    this.log('Dependency scan completed')
+                } catch (error) {
+                    this.handleInternalError('start.scanDependencies', error)
+                    this.log('Dependency scan failed')
+                }
+            }
+
+            // Set up periodic rescan
+            if (this.config.rescanInterval > 0) {
+                const intervalMs = this.config.rescanInterval * 60 * 60 * 1000
+                this.scanTimer = setInterval(async () => {
+                    try {
+                        await scanDependencies(this.config.projectDir, this.db)
+                        auditConfiguration(this.config.projectDir, this.db)
+                    } catch (error) {
+                        this.handleInternalError('start.periodicRescan', error)
+                    }
+                }, intervalMs)
+                // Don't prevent process exit
+                if (this.scanTimer.unref) this.scanTimer.unref()
+            }
+
+            // Calculate and store initial posture
+            this.updatePosture()
+
+            this.log('INVARIANT agent ready')
+        } catch (error) {
+            this.started = false
+            throw this.toPublicError('start', 'Failed to start INVARIANT agent', error)
         }
-
-        // Calculate and store initial posture
-        this.updatePosture()
-
-        this.log('INVARIANT agent ready')
     }
 
     // ── RASP Setup ───────────────────────────────────────────────
 
     /** Get SQL RASP config for wrapping database modules */
     getSqlRaspConfig(): SqlRaspConfig {
-        return { mode: this.config.mode, db: this.db }
+        return {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                this.reportViolation('sql', violation.query, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
     }
 
     /** Get FS RASP config for wrapping filesystem operations */
     getFsRaspConfig(allowedRoots?: string[]): FsRaspConfig {
-        return { mode: this.config.mode, db: this.db, allowedRoots: allowedRoots ?? [this.config.projectDir] }
+        return {
+            mode: this.config.mode,
+            db: this.db,
+            allowedRoots: allowedRoots ?? [this.config.projectDir],
+            onViolation: (violation) => {
+                this.reportViolation('fs', violation.path, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
     }
 
     /** Get HTTP RASP config for wrapping outbound requests */
     getHttpRaspConfig(): HttpRaspConfig {
-        return { mode: this.config.mode, db: this.db }
+        return {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                this.reportViolation('http', violation.url, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
     }
 
     /** Get exec RASP config for wrapping child_process */
     getExecRaspConfig(): ExecRaspConfig {
-        return { mode: this.config.mode, db: this.db }
+        return {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                const isVmRuntimeViolation =
+                    violation.invariantClass === 'vm_code_execution' ||
+                    violation.invariantClass === 'worker_eval_execution' ||
+                    violation.invariantClass === 'native_binding_access' ||
+                    violation.invariantClass.startsWith('inspector_')
+                this.reportViolation(
+                    isVmRuntimeViolation ? 'vm_code_execution' : 'exec',
+                    violation.command,
+                    violation.invariantClass,
+                    violation.confidence,
+                    violation.action,
+                    violation.timestamp,
+                )
+            },
+        }
     }
 
     /** Get deserialization RASP config */
     getDeserRaspConfig(): DeserRaspConfig {
-        return { mode: this.config.mode, db: this.db }
+        return {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                this.reportViolation('deser', violation.input, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
     }
 
     /**
@@ -251,6 +314,17 @@ export class InvariantAgent {
         this.log('child_process module wrapped with command injection detection')
     }
 
+    /** Hook VM, Worker, inspector, and native binding bypass vectors. */
+    wrapRuntimeEscapes(): void {
+        if (this.wrapped.has('runtime_execution')) return
+        const require = createRequire(import.meta.url)
+        const vm = require('node:vm') as Record<string, unknown>
+        installVmRuntimeHooks(this.getExecRaspConfig(), vm)
+        this.wrapped.add('runtime_execution')
+        this.healthMonitor.markIntegrationWrapped('runtime_execution')
+        this.log('runtime execution bypass controls activated for vm/worker_threads/inspector/_linkedBinding')
+    }
+
     /** Auto-wrap core filesystem APIs for path traversal detection. */
     wrapFsModule(allowedRoots?: string[]): void {
         if (this.wrapped.has('fs')) return
@@ -269,7 +343,13 @@ export class InvariantAgent {
 
     /** Wrap a loaded ws module (WebSocket/WebSocketServer). */
     wrapWebSocket(wsModule: Record<string, unknown>): void {
-        const cfg: WebSocketRaspConfig = { mode: this.config.mode, db: this.db }
+        const cfg: WebSocketRaspConfig = {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                this.reportViolation('deser', violation.direction, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
         const wsClass = wsModule.WebSocket as { prototype?: Record<string, unknown> } | undefined
         if (wsClass?.prototype?.send && typeof wsClass.prototype.send === 'function') {
             wsClass.prototype.send = wrapWebSocketSend(wsClass.prototype.send as (...args: unknown[]) => unknown, cfg)
@@ -279,7 +359,13 @@ export class InvariantAgent {
 
     /** Wrap a loaded gRPC client object/module. */
     wrapGrpc(grpcClient: Record<string, unknown>): void {
-        const cfg: GrpcRaspConfig = { mode: this.config.mode, db: this.db }
+        const cfg: GrpcRaspConfig = {
+            mode: this.config.mode,
+            db: this.db,
+            onViolation: (violation) => {
+                this.reportViolation('deser', violation.method, violation.invariantClass, violation.confidence, violation.action, violation.timestamp)
+            },
+        }
         wrapGrpcClient(grpcClient, cfg)
         this.healthMonitor.markIntegrationWrapped('grpc')
     }
@@ -323,46 +409,50 @@ export class InvariantAgent {
      * Marks uploaded signals in the database.
      */
     async uploadSignalsToServer(ingestUrl: string, sensorToken?: string): Promise<void> {
-        const signals = this.db.getUnuploadedSignals(100)
-        if (signals.length === 0) return
+        try {
+            const signals = this.db.getUnuploadedSignals(100)
+            if (signals.length === 0) return
 
-        const batchSize = 50
-        for (let i = 0; i < signals.length; i += batchSize) {
-            const batch = signals.slice(i, i + batchSize)
-            const payload = {
-                timestamp: new Date().toISOString(),
-                source_hash: 'agent_batch',
-                detections: batch.map(s => ({
-                    class: s.type,
-                    confidence: 1.0,
-                    surface: 'agent_db',
-                    key: s.path
-                }))
+            const batchSize = 50
+            for (let i = 0; i < signals.length; i += batchSize) {
+                const batch = signals.slice(i, i + batchSize)
+                const payload = {
+                    timestamp: new Date().toISOString(),
+                    source_hash: 'agent_batch',
+                    detections: batch.map(s => ({
+                        class: s.type,
+                        confidence: 1.0,
+                        surface: 'agent_db',
+                        key: s.path
+                    }))
+                }
+
+                const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+                if (sensorToken) {
+                    headers['Authorization'] = `Bearer ${sensorToken}`
+                }
+
+                const abortController = new AbortController()
+                const timeout = setTimeout(() => abortController.abort(), 5000)
+
+                try {
+                    await fetch(ingestUrl, {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(payload),
+                        signal: abortController.signal as any
+                    })
+
+                    const ids = batch.map(s => s.id!).filter(id => id !== undefined)
+                    this.db.markSignalsUploaded(ids)
+                } catch (error) {
+                    this.handleInternalError('uploadSignalsToServer.fetch', error)
+                } finally {
+                    clearTimeout(timeout)
+                }
             }
-
-            const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-            if (sensorToken) {
-                headers['Authorization'] = `Bearer ${sensorToken}`
-            }
-
-            const abortController = new AbortController()
-            const timeout = setTimeout(() => abortController.abort(), 5000)
-
-            try {
-                await fetch(ingestUrl, {
-                    method: 'POST',
-                    headers,
-                    body: JSON.stringify(payload),
-                    signal: abortController.signal as any
-                })
-                
-                const ids = batch.map(s => s.id!).filter(id => id !== undefined)
-                this.db.markSignalsUploaded(ids)
-            } catch (err) {
-                // Fail silently
-            } finally {
-                clearTimeout(timeout)
-            }
+        } catch (error) {
+            throw this.toPublicError('uploadSignalsToServer', 'Failed to upload signals', error)
         }
     }
 
@@ -407,15 +497,24 @@ export class InvariantAgent {
 
     /** Run a manual dependency scan */
     async rescan(): Promise<ScanResult> {
-        return scanDependencies(this.config.projectDir, this.db)
+        try {
+            return await scanDependencies(this.config.projectDir, this.db)
+        } catch (error) {
+            throw this.toPublicError('rescan', 'Dependency rescan failed', error)
+        }
     }
 
     /** Best-effort auto-configuration for runtime interception. */
     async autoConfigureRuntime(): Promise<void> {
-        this.safeRun('autoConfigure.wrapJsonParse', () => this.wrapJsonParse())
-        this.safeRun('autoConfigure.wrapGlobalFetch', () => this.wrapGlobalFetch())
-        this.safeRun('autoConfigure.wrapChildProcess', () => this.wrapChildProcess())
-        this.safeRun('autoConfigure.wrapFsModule', () => this.wrapFsModule())
+        try {
+            this.safeRun('autoConfigure.wrapJsonParse', () => this.wrapJsonParse())
+            this.safeRun('autoConfigure.wrapGlobalFetch', () => this.wrapGlobalFetch())
+            this.safeRun('autoConfigure.wrapChildProcess', () => this.wrapChildProcess())
+            this.safeRun('autoConfigure.wrapFsModule', () => this.wrapFsModule())
+            this.safeRun('autoConfigure.wrapRuntimeEscapes', () => this.wrapRuntimeEscapes())
+        } catch (error) {
+            throw this.toPublicError('autoConfigureRuntime', 'Runtime auto-configuration failed', error)
+        }
     }
 
     // ── Posture ──────────────────────────────────────────────────
@@ -454,6 +553,7 @@ export class InvariantAgent {
             clearInterval(this.scanTimer)
             this.scanTimer = null
         }
+        void flushSignals()
         this.removeProcessErrorHandlers()
         this.db.close()
         this.started = false
@@ -478,9 +578,15 @@ export class InvariantAgent {
         this.healthMonitor.recordInternalError(context, error)
         try {
             this.config.onInternalError(error, context)
-        } catch {
-            // Never let internal callbacks throw into host app.
+        } catch (callbackError) {
+            this.healthMonitor.recordInternalError('onInternalError.callback', callbackError)
+            this.log(`Internal error callback failed for context: ${context}`)
         }
+    }
+
+    private toPublicError(context: string, message: string, error: unknown): AgentPublicError {
+        this.handleInternalError(`public.${context}`, error)
+        return new AgentPublicError(`AGENT_${context.toUpperCase()}_FAILED`, message)
     }
 
     private installProcessErrorHandlers(): void {
@@ -505,6 +611,23 @@ export class InvariantAgent {
     private readonly onUncaughtExceptionMonitor = (error: Error): void => {
         this.handleInternalError('process.uncaughtExceptionMonitor', error)
     }
+
+    private reportViolation(
+        _surface: 'sql' | 'http' | 'exec' | 'fs' | 'deser' | 'vm_code_execution',
+        context: string,
+        invariantClass: string,
+        confidence: number,
+        action: string,
+        _timestamp: string,
+    ): void {
+        if (action !== 'blocked') return
+
+        queueSignal(invariantClass, this.hashPayload(context), confidence)
+    }
+
+    private hashPayload(input: string): string {
+        return createHash('sha256').update(input).digest('hex').slice(0, 32)
+    }
 }
 
 // ── Re-exports ───────────────────────────────────────────────────
@@ -526,6 +649,7 @@ export { ChainCorrelator, ATTACK_CHAINS, type ChainMatch, type ChainSignal } fro
 export { BehavioralAnalyzer, type BehaviorSignal, type BehaviorResult, type RequestContext } from './behavioral.js'
 export { type RequestSessionData, type RaspEvent, type CompoundDetection, recordRaspEvent, startRequestSession, finalizeRequestSession, getCurrentSession, runWithSession } from './rasp/request-session.js'
 export { AdaptiveCalibrator, type ClassCalibrationState, type CalibrationReport } from './calibration.js'
+export { queueSignal, flushSignals } from './intel-feedback.js'
 export { invariantFastify } from './middleware/fastify.js'
 export { invariantKoa } from './middleware/koa.js'
 export { invariantHono } from './middleware/hono.js'

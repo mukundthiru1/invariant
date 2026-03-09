@@ -5,6 +5,11 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
+const PROTOCOL_HANDLER_PATTERN = /(?:javascript|vbscript|livescript)\s*:/i
+const DATA_JAVASCRIPT_PATTERN = /data\s*:\s*text\/javascript/i
+const DATA_HTML_OR_XHTML_PATTERN = /data\s*:\s*(?:text\/html|application\/xhtml)/i
+const OBFUSCATED_JAVASCRIPT_PROTOCOL_PATTERN = /j(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*a(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*v(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*a(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*s(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*c(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*r(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*i(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*p(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:9|0a|0d);)*t\s*:/i
+
 export const xssProtocolHandler: InvariantClassModule = {
     id: 'xss_protocol_handler',
     description: 'javascript:, vbscript:, or data: URI protocol handlers to execute script',
@@ -17,10 +22,15 @@ export const xssProtocolHandler: InvariantClassModule = {
 
     knownPayloads: [
         'javascript:alert(1)',
+        'data:text/javascript,alert(1)',
         'vbscript:MsgBox("XSS")',
         'data:text/html,<script>alert(1)</script>',
         'javascript:void(0)',
         'JaVaScRiPt:alert(1)',
+        'java\nscript:alert(1)',
+        'java script:alert(1)',
+        'j&Tab;avascript:alert(1)',
+        'java&#9;script:alert(1)',
     ],
 
     knownBenign: [
@@ -32,24 +42,24 @@ export const xssProtocolHandler: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:javascript|vbscript|livescript)\s*:/i.test(d) ||
-            /data\s*:\s*(?:text\/html|application\/xhtml)/i.test(d)
+        return PROTOCOL_HANDLER_PATTERN.test(d) ||
+            DATA_JAVASCRIPT_PATTERN.test(d) ||
+            DATA_HTML_OR_XHTML_PATTERN.test(d) ||
+            OBFUSCATED_JAVASCRIPT_PROTOCOL_PATTERN.test(input)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const vectors = detectXssVectors(d)
-            const match = vectors.find(v => v.type === 'protocol_handler')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `HTML analysis: ${match.detail}`,
-                    evidence: match.element,
-                }
+        const vectors = detectXssVectors(d)
+        const match = vectors.find(v => v.type === 'protocol_handler')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `HTML analysis: ${match.detail}`,
+                evidence: match.element,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

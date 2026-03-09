@@ -1,0 +1,26 @@
+{
+  "id": "org/log4shell",
+  "name": "Log4Shell CVE-2021-44228",
+  "description": "Detects Log4Shell JNDI injection attempts",
+  "severity": "critical",
+  "class": "cve_log4shell",
+  "confidence": 0.99,
+  "patterns": [
+    {
+      "type": "contains_any",
+      "value": [
+        "${jndi:ldap://",
+        "${jndi:rmi://",
+        "${jndi:dns://"
+      ]
+    },
+    {
+      "type": "contains_any",
+      "value": [
+        "${j${::-n}di:",
+        "${jndi:${lower:l}dap://"
+      ]
+    }
+  ],
+  "cves": ["CVE-2021-44228", "CVE-2021-45046"]
+}

@@ -27,6 +27,7 @@ export interface DeserViolation {
     input: string
     invariantClass: string
     action: DefenseAction
+    confidence: number
     timestamp: string
 }
 
@@ -150,6 +151,7 @@ export function wrapJsonParse(
                     input: text.slice(0, 200),
                     invariantClass: violations[0].id,
                     action,
+                    confidence: action === 'blocked' ? 0.95 : 0.85,
                     timestamp: now,
                 })
             } catch { /* Never break */ }

@@ -3,7 +3,15 @@
     "version": "1.0.0",
     "private": true,
     "description": "INVARIANT edge sensor — Cloudflare Worker that defends applications at the edge.",
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
     "type": "module",
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js"
+        }
+    },
     "scripts": {
         "dev": "wrangler dev",
         "deploy": "wrangler deploy",

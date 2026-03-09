@@ -22,6 +22,8 @@ import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.j
 // to avoid false positives on English prose like "'OR contact support".
 // Other SQL keywords (UNION, SELECT, DROP, etc.) are unambiguous.
 const SQL_KEYWORDS_AFTER_TERMINATOR = /['\"`]\s*\)?\s*(?:;|\bOR\b\s+(?:\d|['"`(]|\S+\s*[=<>!]|NULL\b|TRUE\b|FALSE\b|NOT\b)|\bAND\b\s+(?:\d|['"`(]|\S+\s*[=<>!]|NULL\b|TRUE\b|FALSE\b|NOT\b)|\bUNION\b|\bSELECT\b|\bINSERT\b|\bUPDATE\b|\bDELETE\b|\bDROP\b|\bEXEC\b)/i
+const SQL_CONDITIONAL_COMMENT_AFTER_BACKTICK = /`\s*\/\*!\d{5}\s*(?:UNION|SELECT|OR|AND)\b[\s\S]*?\*\//i
+const SQL_LINE_COMMENT_NEWLINE_REENTRY = /['"`]\s*--[^\n\r]*[\r\n]+\s*(?:OR\b\s+(?:\d|['"`(]|\S+\s*[=<>!]|NULL\b|TRUE\b|FALSE\b|NOT\b)|UNION\b)/i
 
 export const sqlStringTermination: InvariantClassModule = {
     id: 'sql_string_termination',
@@ -49,6 +51,8 @@ export const sqlStringTermination: InvariantClassModule = {
         "'; DROP TABLE users--",
         '" OR ""="',
         "') OR 1=1--",
+        '`/*!50000UNION*/ SELECT 1',
+        "'-- bypass\nOR 1=1--",
     ],
 
     knownBenign: [
@@ -61,23 +65,23 @@ export const sqlStringTermination: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return SQL_KEYWORDS_AFTER_TERMINATOR.test(d)
+        return SQL_KEYWORDS_AFTER_TERMINATOR.test(d) ||
+            SQL_CONDITIONAL_COMMENT_AFTER_BACKTICK.test(d) ||
+            SQL_LINE_COMMENT_NEWLINE_REENTRY.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const detections = detectSqlStructural(d)
-            const match = detections.find(det => det.type === 'string_termination')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `Token analysis: ${match.detail}`,
-                    evidence: match.detail,
-                }
+        const detections = detectSqlStructural(d)
+        const match = detections.find(det => det.type === 'string_termination')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `Token analysis: ${match.detail}`,
+                evidence: match.detail,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

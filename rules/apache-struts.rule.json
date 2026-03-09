@@ -1,0 +1,20 @@
+{
+  "id": "org/apache-struts",
+  "name": "Apache Struts RCE CVE-2017-5638",
+  "description": "Detects Apache Struts OGNL injection",
+  "severity": "critical",
+  "class": "cve_apache_struts",
+  "confidence": 0.99,
+  "patterns": [
+    {
+      "type": "contains_any",
+      "value": [
+        "%{#_memberAccess",
+        "%{(#_='multipart/form-data')",
+        "OgnlContext@DEFAULT_MEMBER_ACCESS",
+        "#_memberAccess[\"allowStaticMethodAccess\"]"
+      ]
+    }
+  ],
+  "cves": ["CVE-2017-5638"]
+}

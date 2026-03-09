@@ -15,6 +15,9 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.js'
 
+const UNION_EXTRACT_PATTERN = /UNION\s+(?:ALL\s+)?SELECT\s/i
+const UNION_EXTRACT_OBFUSCATED_PATTERN = /(?:^|[^a-z])U\s*N\s*I\s*O\s*N\s*(?:A\s*L\s*L\s*)?S\s*E\s*L\s*E\s*C\s*T(?:\s|$)/i
+
 export const sqlUnionExtraction: InvariantClassModule = {
     id: 'sql_union_extraction',
     description: 'UNION SELECT to extract data from other tables/columns',
@@ -35,6 +38,9 @@ export const sqlUnionExtraction: InvariantClassModule = {
         "' UNION SELECT username,password FROM users--",
         "' UNION SELECT 1,@@version,3--",
         '" UNION SELECT 1,2,3--',
+        "' UN/**/ION SE/**/LECT 1,2,3--",
+        "' U/**/NION ALL SE/**/LECT NULL,NULL--",
+        "' UNION%0BSELECT 1,2,3--",
     ],
 
     knownBenign: [
@@ -47,23 +53,21 @@ export const sqlUnionExtraction: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /UNION\s+(?:ALL\s+)?SELECT\s/i.test(d)
+        return UNION_EXTRACT_PATTERN.test(d) || UNION_EXTRACT_OBFUSCATED_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const detections = detectSqlStructural(d)
-            const match = detections.find(det => det.type === 'union_extraction')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `Token analysis: ${match.detail}`,
-                    evidence: match.detail,
-                }
+        const detections = detectSqlStructural(d)
+        const match = detections.find(det => det.type === 'union_extraction')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `Token analysis: ${match.detail}`,
+                evidence: match.detail,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

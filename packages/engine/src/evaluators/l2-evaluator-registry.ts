@@ -77,6 +77,19 @@ export interface L2EvaluatorDescriptor {
 
 type ProofEvidence = NonNullable<DetectionLevelResult['structuredEvidence']>[number]
 
+function mapL2Detections<T extends { type: string; confidence: number; detail: string }>(
+    input: string,
+    detect: (input: string) => readonly T[],
+    buildEvidence: (detection: T, input: string) => ProofEvidence[] | undefined,
+): L2Detection[] {
+    return detect(input).map(detection => ({
+        type: detection.type,
+        confidence: detection.confidence,
+        detail: detection.detail,
+        proofEvidence: buildEvidence(detection, input),
+    }))
+}
+
 
 // ── Proof Evidence Helpers ──────────────────────────────────────
 
@@ -593,9 +606,9 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     // Deser
     deser_java_gadget: 'deser', deser_php_object: 'deser', deser_python_pickle: 'deser',
     // SSTI
-    ssti_jinja_twig: 'injection', ssti_el_expression: 'injection',
+    ssti_jinja_twig: 'injection', ssti_el_expression: 'injection', template_injection_generic: 'injection',
     // Auth
-    auth_none_algorithm: 'auth', auth_header_spoof: 'auth', cors_origin_abuse: 'auth',
+    auth_none_algorithm: 'auth', auth_header_spoof: 'auth', credential_stuffing: 'auth', cors_origin_abuse: 'auth',
     mass_assignment: 'auth',
     // JWT
     jwt_kid_injection: 'auth', jwt_jwk_embedding: 'auth', jwt_confusion: 'auth',
@@ -669,7 +682,8 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     graphql_introspection: 'medium', sql_comment_truncation: 'medium',
     path_null_terminate: 'medium', path_normalization_bypass: 'medium',
     xss_template_expression: 'medium', xss_attribute_escape: 'medium',
-    auth_header_spoof: 'medium', api_mass_enum: 'medium',
+    auth_header_spoof: 'medium', credential_stuffing: 'high', api_mass_enum: 'medium',
+    template_injection_generic: 'high',
     http_smuggle_chunk_ext: 'medium', http_smuggle_zero_cl: 'medium',
     http_smuggle_expect: 'medium',
 }
@@ -704,12 +718,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // SQL: Structural analysis (6 classes)
     {
         id: 'sql_structural',
-        detect: (input: string) => detectSqlStructural(input).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildSqlStructuralEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectSqlStructural, buildSqlStructuralEvidence),
         typeToClass: {
             string_termination: 'sql_string_termination' as InvariantClass,
             union_extraction: 'sql_union_extraction' as InvariantClass,
@@ -724,12 +733,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // XSS: Context-aware HTML analysis (5 classes)
     {
         id: 'xss_context',
-        detect: (input: string) => detectXssVectors(input).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildXssEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectXssVectors, buildXssEvidence),
         typeToClass: {
             tag_injection: 'xss_tag_injection' as InvariantClass,
             event_handler: 'xss_event_handler' as InvariantClass,
@@ -743,12 +747,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Command Injection (3 classes — invariant-based structural detection)
     {
         id: 'cmd_injection',
-        detect: (input: string) => detectCmdInjection(input).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildCmdEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectCmdInjection, buildCmdEvidence),
         typeToClass: {
             // Primary structural violations
             separator: 'cmd_separator' as InvariantClass,
@@ -768,12 +767,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Path Traversal (4 classes)
     {
         id: 'path_traversal',
-        detect: (input: string) => (detectPathTraversal(input) as PathTraversalDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildPathTraversalEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectPathTraversal, buildPathTraversalEvidence),
         typeToClass: {
             dotdot_escape: 'path_dotdot_escape' as InvariantClass,
             null_terminate: 'path_null_terminate' as InvariantClass,
@@ -786,12 +780,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // SSRF (3 classes)
     {
         id: 'ssrf',
-        detect: (input: string) => (detectSSRF(input) as SSRFDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildSsrfEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectSSRF, buildSsrfEvidence),
         typeToClass: {
             internal_reach: 'ssrf_internal_reach' as InvariantClass,
             cloud_metadata: 'ssrf_cloud_metadata' as InvariantClass,
@@ -803,12 +792,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // SSTI (2 classes)
     {
         id: 'ssti',
-        detect: (input: string) => (detectSSTI(input) as SSTIDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildSstiEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectSSTI, buildSstiEvidence),
         typeToClass: {
             jinja_twig: 'ssti_jinja_twig' as InvariantClass,
             el_expression: 'ssti_el_expression' as InvariantClass,
@@ -819,12 +803,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // NoSQL (2 classes)
     {
         id: 'nosql',
-        detect: (input: string) => (detectNoSQLInjection(input) as NoSQLDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildNoSqlEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectNoSQLInjection, buildNoSqlEvidence),
         typeToClass: {
             operator_injection: 'nosql_operator_injection' as InvariantClass,
             js_injection: 'nosql_js_injection' as InvariantClass,
@@ -835,12 +814,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // XXE (1 class — maps multiple detection types to single class)
     {
         id: 'xxe',
-        detect: (input: string) => (detectXXE(input) as XXEDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildXxeEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectXXE, buildXxeEvidence),
         typeToClass: {
             external_entity: 'xxe_entity_expansion' as InvariantClass,
             parameter_entity: 'xxe_entity_expansion' as InvariantClass,
@@ -853,12 +827,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // CRLF (2 classes)
     {
         id: 'crlf',
-        detect: (input: string) => (detectCRLFInjection(input) as CRLFDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildCrlfEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectCRLFInjection, buildCrlfEvidence),
         typeToClass: {
             header_injection: 'crlf_header_injection' as InvariantClass,
             response_split: 'crlf_header_injection' as InvariantClass,
@@ -870,12 +839,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Open Redirect (1 class — maps all types to single class)
     {
         id: 'open_redirect',
-        detect: (input: string) => (detectOpenRedirect(input) as OpenRedirectDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildOpenRedirectEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectOpenRedirect, buildOpenRedirectEvidence),
         typeToClass: {
             protocol_relative: 'open_redirect_bypass' as InvariantClass,
             backslash: 'open_redirect_bypass' as InvariantClass,
@@ -890,12 +854,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Prototype Pollution (1 class)
     {
         id: 'proto_pollution',
-        detect: (input: string) => (detectPrototypePollution(input) as ProtoPollutionDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildProtoPollutionEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectPrototypePollution, buildProtoPollutionEvidence),
         typeToClass: {
             proto_key_assignment: 'proto_pollution' as InvariantClass,
             constructor_chain: 'proto_pollution' as InvariantClass,
@@ -908,12 +867,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Log4Shell (1 class)
     {
         id: 'log4shell',
-        detect: (input: string) => (detectLog4Shell(input) as Log4ShellDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildLog4ShellEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectLog4Shell, buildLog4ShellEvidence),
         typeToClass: {
             jndi_direct: 'log_jndi_lookup' as InvariantClass,
             jndi_obfuscated: 'log_jndi_lookup' as InvariantClass,
@@ -926,12 +880,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Deserialization (3 classes)
     {
         id: 'deser',
-        detect: (input: string) => (detectDeserialization(input) as DeserDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildDeserEvidence(detection, input),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectDeserialization, buildDeserEvidence),
         typeToClass: {
             java_gadget: 'deser_java_gadget' as InvariantClass,
             php_object: 'deser_php_object' as InvariantClass,
@@ -943,12 +892,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // LDAP (1 class)
     {
         id: 'ldap',
-        detect: (input: string) => (detectLDAPInjection(input) as LDAPDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildLdapEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectLDAPInjection, (detection, _input) => buildLdapEvidence([detection])),
         typeToClass: {
             filter_break: 'ldap_filter_injection' as InvariantClass,
             wildcard_enum: 'ldap_filter_injection' as InvariantClass,
@@ -961,12 +905,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // GraphQL (2 classes)
     {
         id: 'graphql',
-        detect: (input: string) => (detectGraphQLAbuse(input) as GraphQLDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildGraphqlEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectGraphQLAbuse, (detection, _input) => buildGraphqlEvidence([detection])),
         typeToClass: {
             introspection: 'graphql_introspection' as InvariantClass,
             depth_abuse: 'graphql_batch_abuse' as InvariantClass,
@@ -980,12 +919,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // HTTP Smuggling (2 classes)
     {
         id: 'http_smuggle',
-        detect: (input: string) => (detectHTTPSmuggling(input) as HTTPSmuggleDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildHttpSmuggleEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectHTTPSmuggling, (detection, _input) => buildHttpSmuggleEvidence([detection])),
         typeToClass: {
             cl_te_desync: 'http_smuggle_cl_te' as InvariantClass,
             te_te_desync: 'http_smuggle_cl_te' as InvariantClass,
@@ -1000,12 +934,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Mass Assignment (1 class)
     {
         id: 'mass_assignment',
-        detect: (input: string) => (detectMassAssignment(input) as MassAssignmentDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildMassAssignmentEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectMassAssignment, (detection, _input) => buildMassAssignmentEvidence([detection])),
         typeToClass: {
             privilege_injection: 'mass_assignment' as InvariantClass,
             suspicious_key_combo: 'mass_assignment' as InvariantClass,
@@ -1017,12 +946,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Supply Chain (3 classes)
     {
         id: 'supply_chain',
-        detect: (input: string) => (detectSupplyChain(input) as SupplyChainDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildSupplyChainEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectSupplyChain, (detection, _input) => buildSupplyChainEvidence([detection])),
         typeToClass: {
             dependency_confusion: 'dependency_confusion' as InvariantClass,
             postinstall_injection: 'postinstall_injection' as InvariantClass,
@@ -1034,12 +958,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // LLM Injection (3 classes)
     {
         id: 'llm',
-        detect: (input: string) => (detectLLMInjection(input) as LLMDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildLlmEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectLLMInjection, (detection, _input) => buildLlmEvidence([detection])),
         typeToClass: {
             prompt_injection: 'llm_prompt_injection' as InvariantClass,
             data_exfiltration: 'llm_data_exfiltration' as InvariantClass,
@@ -1051,12 +970,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // WebSocket (2 classes)
     {
         id: 'websocket',
-        detect: (input: string) => (detectWebSocketAttack(input) as WebSocketDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildWebsocketEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectWebSocketAttack, (detection, _input) => buildWebsocketEvidence([detection])),
         typeToClass: {
             ws_injection: 'ws_injection' as InvariantClass,
             ws_hijack: 'ws_hijack' as InvariantClass,
@@ -1067,12 +981,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // JWT Abuse (3 classes)
     {
         id: 'jwt',
-        detect: (input: string) => (detectJWTAbuse(input) as JWTDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildJwtEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectJWTAbuse, (detection, _input) => buildJwtEvidence([detection])),
         typeToClass: {
             jwt_kid_injection: 'jwt_kid_injection' as InvariantClass,
             jwt_jwk_embedding: 'jwt_jwk_embedding' as InvariantClass,
@@ -1084,12 +993,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // Cache Attacks (2 classes)
     {
         id: 'cache',
-        detect: (input: string) => (detectCacheAttack(input) as CacheDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildCacheEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectCacheAttack, (detection, _input) => buildCacheEvidence([detection])),
         typeToClass: {
             cache_poisoning: 'cache_poisoning' as InvariantClass,
             cache_deception: 'cache_deception' as InvariantClass,
@@ -1100,12 +1004,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // API Abuse (2 classes)
     {
         id: 'api_abuse',
-        detect: (input: string) => (detectAPIAbuse(input) as APIAbuseDetection[]).map(detection => ({
-            type: detection.type,
-            confidence: detection.confidence,
-            detail: detection.detail,
-            proofEvidence: buildApiAbuseEvidence([detection]),
-        })),
+        detect: (input: string) => mapL2Detections(input, detectAPIAbuse, (detection, _input) => buildApiAbuseEvidence([detection])),
         typeToClass: {
             bola_idor: 'bola_idor' as InvariantClass,
             api_mass_enum: 'api_mass_enum' as InvariantClass,

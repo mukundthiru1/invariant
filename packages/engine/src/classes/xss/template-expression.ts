@@ -5,6 +5,12 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
+const TEMPLATE_MUSTACHE_PATTERN = /\{\{.*(?:constructor|__proto__|prototype|\$on|\$emit|\$eval|alert|prompt|confirm|document|window|globalThis|Function).*\}\}/i
+const TEMPLATE_EXPRESSION_PATTERN = /\$\{.*(?:alert|document|window|constructor|eval|Function)\s*\(.*\}\s*/i
+const TEMPLATE_EVENT_HANDLER_PATTERN = /(?:window\.)?addEventListener\s*\(\s*['"]message['"][\s\S]*?\beval\s*\(/i
+const DOCUMENT_DOMAIN_PATTERN = /\bdocument\.domain\s*=\s*['"][^'"]*['"]/i
+const TEMPLATE_TAG_PATTERN = /<(?:img|form)\b[^>]+\b(?:id\s*=\s*['"]?(?:__proto__|prototype|constructor)|name\s*=\s*['"]?(?:domain|polluted|__proto__|prototype|constructor))\b[^>]*>/i
+
 export const xssTemplateExpression: InvariantClassModule = {
     id: 'xss_template_expression',
     description: 'Client-side template expression injection (Angular, Vue, etc.) or DOM-based template literals',
@@ -17,8 +23,13 @@ export const xssTemplateExpression: InvariantClassModule = {
 
     knownPayloads: [
         '{{constructor.constructor("alert(1)")()}}',
+        "{{constructor.constructor('alert(1)')()}}",
         '${alert(1)}',
         '{{$on.constructor("alert(1)")()}}',
+        '<img id=x name=domain src=//evil.com>',
+        '<form id=__proto__><input name=polluted value=1>',
+        "window.addEventListener('message', function(e) { eval(e.data) })",
+        'document.domain = \"\"',
     ],
 
     knownBenign: [
@@ -30,24 +41,27 @@ export const xssTemplateExpression: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /\{\{.*(?:constructor|__proto__|prototype|\$on|\$emit|\$eval|alert|prompt|confirm|document|window|globalThis|Function).*\}\}/i.test(d) ||
-            /\$\{.*(?:alert|document|window|constructor|eval|Function)\s*\(.*\}\s*/i.test(d)
+        return (
+            TEMPLATE_MUSTACHE_PATTERN.test(d)
+            || TEMPLATE_EXPRESSION_PATTERN.test(d)
+            || TEMPLATE_EVENT_HANDLER_PATTERN.test(d)
+            || DOCUMENT_DOMAIN_PATTERN.test(d)
+            || TEMPLATE_TAG_PATTERN.test(d)
+        )
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const vectors = detectXssVectors(d)
-            const match = vectors.find(v => v.type === 'template_expression')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `HTML analysis: ${match.detail}`,
-                    evidence: match.element,
-                }
+        const vectors = detectXssVectors(d)
+        const match = vectors.find(v => v.type === 'template_expression')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `HTML analysis: ${match.detail}`,
+                evidence: match.element,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

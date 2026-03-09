@@ -24,6 +24,7 @@ export const protoPollution: InvariantClassModule = {
     knownBenign: [
         'prototype pattern',
         'constructor call()',
+        'prototype chain inspection',
     ],
 
     detect: (input: string): boolean => {
@@ -76,6 +77,7 @@ export const massAssignment: InvariantClassModule = {
     knownBenign: [
         'role=user',
         'isAdmin=false',
+        '{"name":"test","role":"user"}',
     ],
 
     detect: (input: string): boolean => {
@@ -126,6 +128,7 @@ export const graphqlIntrospection: InvariantClassModule = {
     knownBenign: [
         'query { users { name } }',
         'mutation { createUser }',
+        '{ user(id: "123") { id name } }',
     ],
 
     detect: (input: string): boolean => {

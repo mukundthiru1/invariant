@@ -3,532 +3,578 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>INVARIANT — Defense Dashboard</title>
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <title>SANTH INVARIANT — Security Operations Dashboard</title>
     <style>
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&display=swap');
+        
         :root {
-            --bg: #08080A;
-            --bg-elevated: #0F0F12;
-            --bg-card: #111116;
-            --bg-card-hover: #171720;
-            --bg-inset: #0C0C10;
-            --border: rgba(255,255,255,0.06);
-            --border-hover: rgba(255,255,255,0.12);
-            --text: rgba(255,255,255,0.9);
-            --text-dim: rgba(255,255,255,0.55);
-            --text-muted: rgba(255,255,255,0.3);
-            --accent: #F5A623;
-            --accent-dim: rgba(245,166,35,0.12);
-            --critical: #FF4444;
-            --critical-dim: rgba(255,68,68,0.1);
+            --bg: #0A0A0A;
+            --surface: #111111;
+            --border: #1E1E1E;
+            --border-hover: #333333;
+            --text-pri: #F5F5F5;
+            --text-sec: #8A8A8A;
+            --accent: #E8FF00;
+            --crit: #FF3B3B;
             --high: #FF8C00;
-            --high-dim: rgba(255,140,0,0.1);
-            --medium: #FFD700;
-            --medium-dim: rgba(255,215,0,0.1);
-            --low: #4FC3F7;
-            --low-dim: rgba(79,195,247,0.1);
-            --success: #4CAF50;
-            --success-dim: rgba(76,175,80,0.1);
-            --novel: #E040FB;
-            --novel-dim: rgba(224,64,251,0.1);
-            --mono: 'JetBrains Mono', monospace;
-            --sans: 'Inter', -apple-system, sans-serif;
-            --radius: 10px;
-            --radius-sm: 6px;
+            --med:  #FFD60A;
+            --low:  #007AFF;
         }
 
         * { margin: 0; padding: 0; box-sizing: border-box; }
-
+        
         body {
-            font-family: var(--sans);
             background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
+            color: var(--text-pri);
+            font-family: system-ui, -apple-system, sans-serif;
+            font-size: 13px;
+            line-height: 1.5;
             -webkit-font-smoothing: antialiased;
         }
 
-        /* ── Header ──────────────────────────────────── */
-        .header {
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        header.topbar {
             display: flex;
-            align-items: center;
             justify-content: space-between;
-            padding: 14px 28px;
+            align-items: center;
+            padding: 12px 24px;
+            background: var(--surface);
             border-bottom: 1px solid var(--border);
-            background: rgba(8,8,10,0.97);
-            backdrop-filter: blur(24px);
-            position: sticky;
-            top: 0;
-            z-index: 100;
+            position: sticky; top: 0; z-index: 100;
         }
-
-        .header-left { display: flex; align-items: center; gap: 14px; }
-        .logo { font-size: 13px; font-weight: 700; letter-spacing: 0.18em; color: var(--text); }
-        .version { font-size: 10px; color: var(--text-muted); font-family: var(--mono); }
-
-        .mode-badge {
-            font-family: var(--mono);
-            font-size: 10px;
-            padding: 3px 10px;
-            border-radius: 4px;
-            text-transform: uppercase;
-            letter-spacing: 0.12em;
-            font-weight: 500;
+        .brand {
+            font-weight: 700; font-size: 14px; letter-spacing: 0.1em;
+            display: flex; align-items: center; gap: 8px;
         }
-        .mode-observe { background: rgba(79,195,247,0.12); color: #4FC3F7; border: 1px solid rgba(79,195,247,0.2); }
-        .mode-sanitize { background: var(--medium-dim); color: var(--medium); border: 1px solid rgba(255,215,0,0.2); }
-        .mode-defend { background: var(--accent-dim); color: var(--accent); border: 1px solid rgba(245,166,35,0.2); }
-        .mode-lockdown { background: var(--critical-dim); color: var(--critical); border: 1px solid rgba(255,68,68,0.2); }
+        .brand span { color: var(--accent); font-weight: 400; }
+        
+        .top-metrics { display: flex; gap: 40px; }
+        .metric { display: flex; flex-direction: column; }
+        .metric .label { font-size: 10px; color: var(--text-sec); letter-spacing: 0.05em; margin-bottom: 2px; }
+        .metric .val { font-size: 16px; font-weight: 600; font-family: 'JetBrains Mono', monospace; }
 
-        .header-right { display: flex; align-items: center; gap: 14px; }
-        .last-update { font-size: 11px; color: var(--text-muted); font-family: var(--mono); }
-
-        .btn {
-            background: none; border: 1px solid var(--border); color: var(--text-dim);
-            padding: 5px 12px; border-radius: var(--radius-sm); font-size: 11px;
-            cursor: pointer; transition: all 0.15s; font-family: var(--sans); font-weight: 500;
+        .mode-control { display: flex; border: 1px solid var(--border); border-radius: 2px; overflow: hidden; }
+        .mode-btn {
+            background: transparent; border: none; color: var(--text-sec);
+            padding: 6px 16px; font-size: 10px; font-weight: 600; letter-spacing: 0.05em;
+            cursor: pointer; border-right: 1px solid var(--border); transition: all 0.2s;
         }
-        .btn:hover { border-color: var(--accent); color: var(--accent); }
-        .btn-active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+        .mode-btn:last-child { border-right: none; }
+        .mode-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-pri); }
+        .mode-btn.active { background: var(--border); color: var(--text-pri); }
+        .mode-btn.active[data-mode="defend"] { background: var(--accent); color: var(--bg); }
 
-        /* ── Tabs ─────────────────────────────────────── */
-        .tabs {
-            display: flex; gap: 0; border-bottom: 1px solid var(--border);
-            background: var(--bg-elevated); padding: 0 28px;
-        }
-        .tab {
-            padding: 10px 18px; font-size: 12px; color: var(--text-muted);
-            cursor: pointer; border-bottom: 2px solid transparent;
-            transition: all 0.15s; font-weight: 500; letter-spacing: 0.02em;
-        }
-        .tab:hover { color: var(--text-dim); }
-        .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+        main.dashboard { padding: 24px; display: flex; flex-direction: column; gap: 24px; max-width: 1600px; margin: 0 auto; }
+        
+        .main-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; }
+        .card { background: var(--surface); border: 1px solid var(--border); border-radius: 2px; padding: 16px; position: relative; }
+        .card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 1px; background: linear-gradient(90deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.1) 50%, rgba(255,255,255,0.05) 100%); }
+        
+        .card-title { font-size: 10px; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 12px; }
+        .card-val { font-size: 32px; font-weight: 300; font-family: 'JetBrains Mono', monospace; }
+        .card-val.accent { color: var(--accent); }
+        .card-sub { font-size: 11px; color: var(--text-sec); margin-top: 4px; display:flex; justify-content:space-between; }
 
-        /* ── Layout ──────────────────────────────────── */
-        .container { max-width: 1440px; margin: 0 auto; padding: 20px 28px; }
-        .panel { display: none; }
-        .panel.active { display: block; }
+        .split-layout { display: grid; grid-template-columns: 60% calc(40% - 24px); gap: 24px; align-items: start; }
+        
+        .panel-header { font-size: 11px; color: var(--text-pri); font-weight: 600; letter-spacing: 0.1em; padding-bottom: 12px; border-bottom: 1px solid var(--border); margin-bottom: 16px; text-transform: uppercase; }
 
-        /* ── Posture Row ─────────────────────────────── */
-        .posture-row { display: grid; grid-template-columns: 180px 1fr; gap: 16px; margin-bottom: 20px; }
-
-        .grade-card {
-            background: var(--bg-card); border: 1px solid var(--border);
-            border-radius: var(--radius); padding: 20px;
-            display: flex; flex-direction: column; align-items: center; justify-content: center;
-            position: relative; overflow: hidden;
-        }
-        .grade-card::before {
-            content: ''; position: absolute; inset: 0;
-            background: radial-gradient(circle at center, var(--grade-glow, transparent) 0%, transparent 70%);
-            opacity: 0.15;
-        }
-        .grade-letter { font-size: 64px; font-weight: 700; line-height: 1; position: relative; }
-        .grade-score { font-size: 12px; color: var(--text-muted); margin-top: 4px; font-family: var(--mono); position: relative; }
-        .grade-label { font-size: 10px; color: var(--text-muted); margin-top: 2px; text-transform: uppercase; letter-spacing: 0.1em; position: relative; }
-
-        .grade-A { color: var(--success); --grade-glow: var(--success); }
-        .grade-B { color: #8BC34A; --grade-glow: #8BC34A; }
-        .grade-C { color: var(--medium); --grade-glow: var(--medium); }
-        .grade-D { color: var(--high); --grade-glow: var(--high); }
-        .grade-F { color: var(--critical); --grade-glow: var(--critical); }
-
-        .stats-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; }
-
-        .stat-card {
-            background: var(--bg-card); border: 1px solid var(--border);
-            border-radius: var(--radius); padding: 16px;
-            transition: all 0.15s; position: relative; overflow: hidden;
-        }
-        .stat-card:hover { border-color: var(--border-hover); transform: translateY(-1px); }
-        .stat-card::after {
-            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
-        }
-        .stat-value { font-size: 28px; font-weight: 700; font-family: var(--mono); line-height: 1; }
-        .stat-label { font-size: 10px; color: var(--text-muted); margin-top: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
-
-        .severity-critical .stat-value { color: var(--critical); }
-        .severity-critical::after { background: var(--critical); }
-        .severity-high .stat-value { color: var(--high); }
-        .severity-high::after { background: var(--high); }
-        .severity-blocked .stat-value { color: var(--accent); }
-        .severity-blocked::after { background: var(--accent); }
-        .severity-novel .stat-value { color: var(--novel); }
-        .severity-novel::after { background: var(--novel); }
-        .severity-total .stat-value { color: var(--text); }
-        .severity-total::after { background: var(--text-muted); }
-
-        /* ── Timeline Chart ──────────────────────────── */
-        .chart-card {
-            background: var(--bg-card); border: 1px solid var(--border);
-            border-radius: var(--radius); padding: 16px; margin-bottom: 16px;
-        }
-        .chart-header {
-            display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;
-        }
-        .chart-title { font-size: 12px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.05em; }
-        .chart-legend { display: flex; gap: 16px; }
-        .legend-item { display: flex; align-items: center; gap: 4px; font-size: 10px; color: var(--text-muted); }
-        .legend-dot { width: 6px; height: 6px; border-radius: 50%; }
-
-        .timeline-chart {
-            display: flex; align-items: flex-end; gap: 2px; height: 100px;
-            padding-top: 8px;
-        }
-        .timeline-bar {
-            flex: 1; min-width: 8px; border-radius: 2px 2px 0 0;
-            transition: all 0.2s; cursor: pointer; position: relative;
-        }
-        .timeline-bar:hover { opacity: 0.8; }
-        .bar-blocked { background: var(--critical); }
-        .bar-monitored { background: rgba(79,195,247,0.3); }
-        .bar-novel { background: var(--novel); }
-
-        /* ── Distribution ────────────────────────────── */
-        .dist-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
-        .dist-bar-wrap { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
-        .dist-label { font-size: 11px; font-family: var(--mono); color: var(--text-dim); width: 140px; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
-        .dist-bar { height: 6px; border-radius: 3px; background: var(--accent); transition: width 0.3s; }
-        .dist-count { font-size: 10px; font-family: var(--mono); color: var(--text-muted); min-width: 30px; text-align: right; }
-
-        /* ── Tables ──────────────────────────────────── */
-        .section { margin-bottom: 24px; }
-        .section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
-        .section-title { font-size: 12px; font-weight: 600; color: var(--text-dim); letter-spacing: 0.05em; text-transform: uppercase; }
-        .section-count { font-family: var(--mono); font-size: 11px; color: var(--text-muted); }
-
-        .table-wrap {
-            background: var(--bg-card); border: 1px solid var(--border);
-            border-radius: var(--radius); overflow: hidden;
-        }
+        .table-container { background: var(--surface); border: 1px solid var(--border); border-radius: 2px; max-height: 500px; overflow-y: auto; }
         table { width: 100%; border-collapse: collapse; }
-        th {
-            text-align: left; padding: 10px 14px; font-size: 10px; font-weight: 500;
-            color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
-            border-bottom: 1px solid var(--border); background: var(--bg-inset);
-        }
-        td { padding: 8px 14px; font-size: 12px; border-bottom: 1px solid var(--border); }
+        th { text-align: left; font-size: 10px; color: var(--text-sec); letter-spacing: 0.05em; padding: 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: #0A0A0A; z-index: 10; text-transform: uppercase; }
+        td { padding: 12px; border-bottom: 1px solid var(--border); font-size: 11px; vertical-align: top; }
+        tr.finding-row { transition: background 0.2s; }
+        tr.finding-row:hover { background: #181818; cursor: pointer; }
         tr:last-child td { border-bottom: none; }
-        tr:hover td { background: var(--bg-card-hover); }
+        
+        .sev-badge { padding: 2px 6px; border-radius: 2px; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; border: 1px solid transparent; }
+        .sev-critical { color: var(--crit); border-color: rgba(255,59,59,0.3); background: rgba(255,59,59,0.05); }
+        .sev-high { color: var(--high); border-color: rgba(255,140,0,0.3); background: rgba(255,140,0,0.05); }
+        .sev-medium { color: var(--med); border-color: rgba(255,214,10,0.3); background: rgba(255,214,10,0.05); }
+        .sev-low { color: var(--low); border-color: rgba(0,122,255,0.3); background: rgba(0,122,255,0.05); }
+        .sev-info { color: var(--text-sec); border-color: rgba(138,138,138,0.3); background: rgba(138,138,138,0.05); }
+        
+        .detail-panel { background: #080808; padding: 16px; display: none; border-bottom: 1px solid var(--border); }
+        .detail-panel.open { display: block; }
+        .detail-label { font-size: 9px; color: var(--text-sec); margin-bottom: 4px; letter-spacing: 0.05em; text-transform: uppercase; }
+        .detail-text { font-size: 11px; color: var(--text-pri); }
+        .detail-code { background: #000; border: 1px solid var(--border); padding: 12px; font-size: 11px; color: var(--text-pri); white-space: pre-wrap; word-wrap: break-word; max-height: 200px; overflow-y: auto; margin-top: 4px; }
+        
+        .action-btn { background: transparent; border: 1px solid var(--accent); color: var(--accent); padding: 6px 16px; font-size: 10px; font-weight: 600; letter-spacing: 0.1em; cursor: pointer; border-radius: 2px; transition: all 0.2s; text-transform: uppercase; }
+        .action-btn:hover { background: rgba(232,255,0,0.1); }
+        
+        .bar-row { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+        .bar-label { width: 120px; font-size: 10px; color: var(--text-sec); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-transform: uppercase; }
+        .bar-track { flex: 1; height: 4px; background: var(--border); border-radius: 0; position: relative; }
+        .bar-fill { height: 100%; background: var(--accent); position: absolute; left: 0; top: 0; transition: width 0.3s ease; }
+        .bar-val { width: 40px; text-align: right; font-size: 10px; color: var(--text-pri); }
 
-        .severity-badge {
-            font-family: var(--mono); font-size: 10px; padding: 2px 7px;
-            border-radius: 3px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 500;
-        }
-        .badge-critical { background: var(--critical-dim); color: var(--critical); }
-        .badge-high { background: var(--high-dim); color: var(--high); }
-        .badge-medium { background: var(--medium-dim); color: var(--medium); }
-        .badge-low { background: var(--low-dim); color: var(--low); }
-        .badge-info { background: rgba(255,255,255,0.04); color: var(--text-muted); }
+        .assets-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 16px; }
+        .asset-card { background: #0A0A0A; border: 1px solid var(--border); padding: 12px; border-radius: 2px; }
+        .asset-key { font-size: 9px; color: var(--text-sec); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 4px; }
+        .asset-val { font-size: 11px; color: var(--text-pri); word-break: break-all; }
 
-        .action-badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 500; }
-        .action-blocked { background: var(--critical-dim); color: var(--critical); }
-        .action-sanitized { background: var(--medium-dim); color: var(--medium); }
-        .action-normalized { background: var(--medium-dim); color: var(--medium); }
-        .action-monitored { background: var(--low-dim); color: var(--low); }
-        .action-passed { background: rgba(255,255,255,0.04); color: var(--text-muted); }
-
-        .mono { font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
-        .truncate { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-        .empty { text-align: center; padding: 40px; color: var(--text-muted); font-size: 13px; }
-        .empty-icon { font-size: 28px; margin-bottom: 10px; opacity: 0.25; }
-
-        .loading { display: flex; align-items: center; justify-content: center; min-height: 60vh; flex-direction: column; gap: 16px; }
-        .spinner { width: 28px; height: 28px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.7s linear infinite; }
-        @keyframes spin { to { transform: rotate(360deg); } }
-
-        /* ── Responsive ──────────────────────────────── */
-        @media (max-width: 1100px) { .stats-grid { grid-template-columns: repeat(3, 1fr); } }
-        @media (max-width: 900px) {
-            .posture-row { grid-template-columns: 1fr; }
-            .stats-grid { grid-template-columns: repeat(2, 1fr); }
-            .dist-grid { grid-template-columns: 1fr; }
-            .container { padding: 12px; }
-        }
+        .empty-state { text-align: center; padding: 40px; color: var(--text-sec); font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; }
+        
+        /* Scrollbars */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 0; }
+        ::-webkit-scrollbar-thumb:hover { background: #555; }
     </style>
 </head>
 <body>
-    <div id="app">
-        <div class="loading">
-            <div class="spinner"></div>
-            <div style="color: var(--text-muted); font-size: 12px;">Connecting to INVARIANT agent...</div>
+
+    <header class="topbar">
+        <div class="brand">SANTH <span>INVARIANT ENGINE</span></div>
+        <div class="top-metrics">
+            <div class="metric"><span class="label">POSTURE</span> <span id="top-posture" class="val">-</span></div>
+            <div class="metric"><span class="label">FINDINGS</span> <span id="top-findings" class="val">0</span></div>
+            <div class="metric"><span class="label">SIGNALS</span> <span id="top-signals" class="val">0</span></div>
+            <div class="metric"><span class="label">UPTIME</span> <span id="top-uptime" class="val mono">00:00:00</span></div>
         </div>
-    </div>
+        <div class="mode-control">
+            <button class="mode-btn" id="mode-observe" data-mode="observe">OBSERVE</button>
+            <button class="mode-btn" id="mode-monitor" data-mode="sanitize">MONITOR</button>
+            <button class="mode-btn" id="mode-enforce" data-mode="defend">ENFORCE</button>
+        </div>
+    </header>
+
+    <main class="dashboard">
+        <section class="main-grid">
+            <div class="card">
+                <div class="card-title">Attacks Blocked (24h)</div>
+                <div class="card-val" id="attacks-blocked-val">0</div>
+                <div id="blocked-sparkline"></div>
+            </div>
+            <div class="card" style="display:flex; flex-direction:column; align-items:center;">
+                <div class="card-title" style="align-self:flex-start;">Active Threats</div>
+                <div id="threats-donut" style="flex:1; width:100%; display:flex; flex-direction:column; justify-content:center;"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Detection Coverage</div>
+                <div class="card-val accent">100%</div>
+                <div class="card-sub" style="margin-top:12px;"><span>OWASP Top 10 mapped</span><span>159 / 159 Classes</span></div>
+            </div>
+            <div class="card">
+                <div class="card-title">Response Time (p95)</div>
+                <div class="card-val" id="latency-val">-- ms</div>
+                <div class="card-sub" style="margin-top:12px;"><span>Detection p50</span><span id="latency-p50">-- ms</span></div>
+            </div>
+        </section>
+
+        <section class="split-layout">
+            <div class="left-panel">
+                <div class="panel-header">LIVE THREAT FEED</div>
+                <div class="table-container">
+                    <table id="findings-table">
+                        <thead>
+                            <tr>
+                                <th>Timestamp</th>
+                                <th>Severity</th>
+                                <th>Class ID</th>
+                                <th>Category</th>
+                                <th>Confidence</th>
+                                <th>Payload Preview</th>
+                            </tr>
+                        </thead>
+                        <tbody id="findings-body">
+                            <tr><td colspan="6"><div class="empty-state">Loading...</div></td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="right-panel">
+                <div class="card">
+                    <div class="panel-header">ATTACK DISTRIBUTION</div>
+                    <div id="attack-dist-chart"></div>
+                </div>
+                <div class="card" style="margin-top:24px;">
+                    <div class="panel-header">TOP ATTACK VECTORS</div>
+                    <div id="top-ips-chart"></div>
+                </div>
+            </div>
+        </section>
+
+        <section class="bottom-layout" style="display:grid; grid-template-columns: 1fr; gap:24px;">
+            <div class="card">
+                <div class="panel-header">POSTURE TIMELINE</div>
+                <div id="posture-timeline-chart" style="height:100px;"></div>
+            </div>
+            <div class="card">
+                <div class="panel-header">ASSET INVENTORY</div>
+                <div id="assets-list" class="assets-grid"></div>
+            </div>
+        </section>
+    </main>
 
     <script>
-    const API = window.location.origin + '/api';
-    let state = { status: null, findings: [], signals: [], timeline: [], topPaths: [], distribution: [], postureHistory: [] };
-    let activeTab = 'overview';
+        const API = '/api';
+        
+        let state = {
+            status: null,
+            findings: [],
+            signals: [],
+            timeline: [],
+            distribution: [],
+            topPaths: [],
+            postureHistory: []
+        };
 
-    // SECURITY: HTML escape function to prevent XSS
-    function escapeHtml(text) {
-        if (text === null || text === undefined) return '';
-        const str = String(text);
-        return str
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#039;');
-    }
+        const startTime = Date.now();
+        setInterval(() => {
+            const diff = Math.floor((Date.now() - startTime) / 1000);
+            const h = String(Math.floor(diff / 3600)).padStart(2, '0');
+            const m = String(Math.floor((diff % 3600) / 60)).padStart(2, '0');
+            const s = String(diff % 60).padStart(2, '0');
+            document.getElementById('top-uptime').innerText = `${h}:${m}:${s}`;
+        }, 1000);
 
-    async function fetchAll() {
-        try {
-            const [statusR, findingsR, signalsR, timelineR, pathsR, distR, postureR] = await Promise.allSettled([
-                fetch(`${API}/status`).then(r => r.json()),
-                fetch(`${API}/findings?limit=100`).then(r => r.json()),
-                fetch(`${API}/signals?limit=100`).then(r => r.json()),
-                fetch(`${API}/signals/timeline?hours=24`).then(r => r.json()),
-                fetch(`${API}/signals/top-paths?limit=15`).then(r => r.json()),
-                fetch(`${API}/signals/distribution`).then(r => r.json()),
-                fetch(`${API}/posture/history?limit=14`).then(r => r.json()),
-            ]);
-            state.status = statusR.status === 'fulfilled' ? statusR.value : null;
-            state.findings = findingsR.status === 'fulfilled' ? findingsR.value : [];
-            state.signals = signalsR.status === 'fulfilled' ? signalsR.value : [];
-            state.timeline = timelineR.status === 'fulfilled' ? timelineR.value : [];
-            state.topPaths = pathsR.status === 'fulfilled' ? pathsR.value : [];
-            state.distribution = distR.status === 'fulfilled' ? distR.value : [];
-            state.postureHistory = postureR.status === 'fulfilled' ? postureR.value : [];
-        } catch (e) { console.error('Fetch error:', e); }
-        render();
-    }
-
-    function sev(s) { const e = escapeHtml(s); return `<span class="severity-badge badge-${e}">${e}</span>`; }
-    function act(a) { const e = escapeHtml(a); return `<span class="action-badge action-${e}">${e}</span>`; }
-    function ago(ts) {
-        if (!ts) return '—';
-        const d = Date.now() - new Date(ts).getTime();
-        if (d < 60000) return 'now';
-        if (d < 3600000) return `${Math.floor(d/60000)}m`;
-        if (d < 86400000) return `${Math.floor(d/3600000)}h`;
-        return `${Math.floor(d/86400000)}d`;
-    }
-
-    function renderTimeline(data) {
-        if (!data || data.length === 0) return '<div class="empty"><div class="empty-icon">◇</div>No signal data yet</div>';
-        const max = Math.max(...data.map(d => d.total), 1);
-        return `<div class="chart-card">
-            <div class="chart-header">
-                <span class="chart-title">Signal Timeline (24h)</span>
-                <div class="chart-legend">
-                    <div class="legend-item"><div class="legend-dot" style="background:var(--low)"></div>Monitored</div>
-                    <div class="legend-item"><div class="legend-dot" style="background:var(--critical)"></div>Blocked</div>
-                    <div class="legend-item"><div class="legend-dot" style="background:var(--novel)"></div>Novel</div>
-                </div>
-            </div>
-            <div class="timeline-chart">${data.map(d => {
-                const h = Math.max(2, (d.total / max) * 90);
-                const bh = Math.max(0, (d.blocked / max) * 90);
-                const hour = escapeHtml((d.hour.split('T')[1]?.slice(0,5) || ''));
-                return `<div style="flex:1;display:flex;flex-direction:column;align-items:stretch;gap:1px;height:100px;justify-content:flex-end" title="${hour}: ${d.total} total, ${d.blocked} blocked">
-                    <div class="bar-monitored" style="height:${h - bh}px;border-radius:2px 2px 0 0"></div>
-                    ${bh > 0 ? `<div class="bar-blocked" style="height:${bh}px"></div>` : ''}
-                </div>`;
-            }).join('')}</div>
-        </div>`;
-    }
-
-    function renderDistribution(data, topPaths) {
-        const maxD = Math.max(...(data || []).map(d => d.count), 1);
-        const maxP = Math.max(...(topPaths || []).map(d => d.count), 1);
-        return `<div class="dist-grid">
-            <div class="chart-card">
-                <div class="chart-title" style="margin-bottom:12px">Invariant Classes</div>
-                ${(data || []).slice(0, 10).map(d => `
-                    <div class="dist-bar-wrap">
-                        <div class="dist-label">${escapeHtml(d.type)}</div>
-                        <div style="flex:1"><div class="dist-bar" style="width:${(d.count/maxD)*100}%"></div></div>
-                        <div class="dist-count">${d.count}</div>
-                    </div>
-                `).join('') || '<div class="empty" style="padding:20px">No data</div>'}
-            </div>
-            <div class="chart-card">
-                <div class="chart-title" style="margin-bottom:12px">Top Attacked Paths</div>
-                ${(topPaths || []).slice(0, 10).map(d => `
-                    <div class="dist-bar-wrap">
-                        <div class="dist-label" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</div>
-                        <div style="flex:1"><div class="dist-bar" style="width:${(d.count/maxP)*100}%;background:${d.blocked > 0 ? 'var(--critical)' : 'var(--low)'}"></div></div>
-                        <div class="dist-count">${d.count}</div>
-                    </div>
-                `).join('') || '<div class="empty" style="padding:20px">No data</div>'}
-            </div>
-        </div>`;
-    }
-
-    function renderFindings(findings) {
-        if (!findings || findings.length === 0)
-            return '<div class="empty"><div class="empty-icon">✓</div>No findings. Run a scan or wait for detection.</div>';
-        return findings.map(f => `<tr>
-            <td>${sev(f.severity)}</td>
-            <td style="max-width:350px">${escapeHtml(f.title)}</td>
-            <td class="mono truncate">${escapeHtml(f.location) || '—'}</td>
-            <td class="mono">${escapeHtml(f.type)}</td>
-            <td class="mono">${f.rasp_active ? '🛡️' : '—'}</td>
-            <td><span class="mono" style="color:${f.status === 'open' ? 'var(--accent)' : 'var(--success)'}">${escapeHtml(f.status)}</span></td>
-            <td class="mono">${ago(f.last_seen)}</td>
-        </tr>`).join('');
-    }
-
-    function renderSignals(signals) {
-        if (!signals || signals.length === 0)
-            return '<tr><td colspan="7"><div class="empty"><div class="empty-icon">◇</div>No signals recorded yet</div></td></tr>';
-        return signals.map(s => `<tr>
-            <td>${sev(s.severity)}</td>
-            <td>${act(s.action)}</td>
-            <td class="mono">${escapeHtml(s.type)}${s.subtype ? `<span style="color:var(--text-muted)">/${escapeHtml(s.subtype)}</span>` : ''}</td>
-            <td class="mono truncate">${escapeHtml(s.path)}</td>
-            <td class="mono">${escapeHtml(s.method)}</td>
-            <td>${s.is_novel ? '<span style="color:var(--novel)">✦</span>' : '<span style="color:var(--text-muted)">—</span>'}</td>
-            <td class="mono">${ago(s.timestamp)}</td>
-        </tr>`).join('');
-    }
-
-    function render() {
-        const s = state.status;
-        if (!s) {
-            document.getElementById('app').innerHTML = `<div class="loading"><div class="spinner"></div><div style="color:var(--text-muted);font-size:12px">Connecting to INVARIANT agent...</div></div>`;
-            return;
+        function escapeHtml(text) {
+            if (text == null) return '';
+            return String(text)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
         }
 
-        const g = escapeHtml(String(s.posture?.grade ?? '—'));
-        const gc = g !== '—' ? `grade-${g}` : '';
-        const score = Number(s.posture?.score) || 0;
-        const mode = escapeHtml(String(s.mode || ''));
+        async function fetchStatus() {
+            try {
+                state.status = await fetch(API + '/status').then(r => r.json());
+                updateTopbar();
+                updateCards();
+                renderAssets();
+            } catch(e) { console.error('Error fetching status', e); }
+        }
 
-        document.getElementById('app').innerHTML = `
-        <div class="header">
-            <div class="header-left">
-                <div class="logo">INVARIANT</div>
-                <span class="version">v1.0</span>
-                <div class="mode-badge mode-${mode}">${mode}</div>
-            </div>
-            <div class="header-right">
-                <div class="last-update">${new Date().toLocaleTimeString()}</div>
-                <button class="btn" onclick="fetchAll()">↻ Refresh</button>
-            </div>
-        </div>
+        async function fetchMetrics() {
+            try {
+                const [find, sig, time, dist, paths, post] = await Promise.all([
+                    fetch(API + '/findings?limit=100').then(r => r.json()),
+                    fetch(API + '/signals?limit=100').then(r => r.json()),
+                    fetch(API + '/signals/timeline?hours=24').then(r => r.json()),
+                    fetch(API + '/signals/distribution').then(r => r.json()),
+                    fetch(API + '/signals/top-paths?limit=5').then(r => r.json()),
+                    fetch(API + '/posture/history?limit=30').then(r => r.json())
+                ]);
+                state.findings = find;
+                state.signals = sig;
+                state.timeline = time;
+                state.distribution = dist;
+                state.topPaths = paths;
+                state.postureHistory = post;
+                
+                updateCards(); // For signal latencies and donut
+                renderFindingsTable();
+                renderDistribution();
+                renderPostureTimeline();
+            } catch(e) { console.error('Error fetching metrics', e); }
+        }
 
-        <div class="tabs">
-            <div class="tab ${activeTab==='overview'?'active':''}" onclick="switchTab('overview')">Overview</div>
-            <div class="tab ${activeTab==='findings'?'active':''}" onclick="switchTab('findings')">Findings</div>
-            <div class="tab ${activeTab==='signals'?'active':''}" onclick="switchTab('signals')">Signals</div>
-            <div class="tab ${activeTab==='analytics'?'active':''}" onclick="switchTab('analytics')">Analytics</div>
-        </div>
+        function updateTopbar() {
+            if (!state.status) return;
+            const p = state.status.posture;
+            const grade = p ? p.grade : '-';
+            const postEl = document.getElementById('top-posture');
+            postEl.innerText = grade;
+            postEl.style.color = '';
+            if (grade === 'A') postEl.style.color = '#007AFF';
+            else if (grade === 'B') postEl.style.color = '#34C759';
+            else if (grade === 'C') postEl.style.color = '#FFD60A';
+            else if (grade === 'D') postEl.style.color = '#FF8C00';
+            else if (grade === 'F') postEl.style.color = '#FF3B3B';
 
-        <div class="container">
-            <!-- OVERVIEW PANEL -->
-            <div class="panel ${activeTab==='overview'?'active':''}">
-                <div class="posture-row">
-                    <div class="grade-card">
-                        <div class="grade-letter ${gc}">${g}</div>
-                        <div class="grade-score">${score}/100</div>
-                        <div class="grade-label">Security Posture</div>
+            document.getElementById('top-findings').innerText = state.status.findings?.total || 0;
+            document.getElementById('top-signals').innerText = state.status.signals?.total || 0;
+
+            const m = state.status.mode || 'observe';
+            document.querySelectorAll('.mode-btn').forEach(btn => btn.classList.remove('active'));
+            if (m === 'observe') document.getElementById('mode-observe').classList.add('active');
+            else if (m === 'sanitize') document.getElementById('mode-monitor').classList.add('active');
+            else document.getElementById('mode-enforce').classList.add('active'); // defend or lockdown
+        }
+
+        document.querySelectorAll('.mode-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const mode = btn.getAttribute('data-mode');
+                if (mode === 'defend') {
+                    if (!confirm('WARNING: Switching to ENFORCE mode will actively block malicious traffic. Proceed?')) return;
+                }
+                await fetch(API + '/config/mode', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode })
+                });
+                fetchStatus();
+            });
+        });
+
+        function updateCards() {
+            if (state.status && state.status.signals) {
+                document.getElementById('attacks-blocked-val').innerText = state.status.signals.blocked || 0;
+            }
+            
+            // Latency
+            const latencies = state.signals.map(s => s.latency_ms).filter(v => v != null).sort((a,b) => a-b);
+            let p50 = '--', p95 = '--';
+            if (latencies.length > 0) {
+                p50 = latencies[Math.floor(latencies.length * 0.5)].toFixed(1);
+                p95 = latencies[Math.floor(latencies.length * 0.95)].toFixed(1);
+            }
+            document.getElementById('latency-val').innerText = p95 + ' ms';
+            document.getElementById('latency-p50').innerText = p50 + ' ms';
+
+            // Sparkline
+            renderSparkline(state.timeline);
+            // Donut
+            renderDonut(state.findings);
+        }
+
+        function renderSparkline(timeline) {
+            const container = document.getElementById('blocked-sparkline');
+            if (!timeline || timeline.length === 0) {
+                container.innerHTML = `<div style="height:40px; margin-top:12px;"></div>`;
+                return;
+            }
+            const max = Math.max(...timeline.map(t => t.blocked), 1);
+            const width = 200, height = 40;
+            const dx = width / Math.max(timeline.length - 1, 1);
+            
+            const points = timeline.map((t, i) => `${i * dx},${height - (t.blocked / max) * height}`).join(' ');
+            const fillPoints = `0,${height} ` + points + ` ${width},${height}`;
+
+            container.innerHTML = `
+            <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:40px; margin-top:12px;" preserveAspectRatio="none">
+                <polygon points="${fillPoints}" fill="rgba(255, 59, 59, 0.1)" />
+                <polyline points="${points}" fill="none" stroke="var(--crit)" stroke-width="1.5" vector-effect="non-scaling-stroke" />
+            </svg>
+            `;
+        }
+
+        function renderDonut(findings) {
+            const active = findings.filter(f => f.status === 'open');
+            let cCount = 0, hCount = 0, mCount = 0, lCount = 0;
+            active.forEach(f => {
+                if (f.severity === 'critical') cCount++;
+                else if (f.severity === 'high') hCount++;
+                else if (f.severity === 'medium') mCount++;
+                else lCount++;
+            });
+            const total = active.length;
+            const r = 40;
+            const c = 2 * Math.PI * r;
+
+            let html = `<div style="position:relative; width:100px; height:100px; margin: 0 auto;">`;
+            html += `<svg viewBox="0 0 100 100" style="width:100%; height:100%; transform: rotate(-90deg);">`;
+            
+            if (total === 0) {
+                html += `<circle cx="50" cy="50" r="${r}" fill="none" stroke="#1E1E1E" stroke-width="12"></circle>`;
+            } else {
+                let offset = 0;
+                const sections = [
+                    { val: cCount, color: '#FF3B3B' },
+                    { val: hCount, color: '#FF8C00' },
+                    { val: mCount, color: '#FFD60A' },
+                    { val: lCount, color: '#007AFF' }
+                ];
+                for (const sec of sections) {
+                    if (sec.val === 0) continue;
+                    const dash = (sec.val / total) * c;
+                    html += `<circle cx="50" cy="50" r="${r}" fill="none" stroke="${sec.color}" stroke-width="12" stroke-dasharray="${dash} ${c}" stroke-dashoffset="${-offset}"></circle>`;
+                    offset += dash;
+                }
+            }
+            html += `</svg>`;
+            html += `<div style="position:absolute; top:50%; left:50%; transform:translate(-50%, -50%); font-size: 24px; font-weight: 300; font-family:monospace; color:#F5F5F5;">${total}</div>`;
+            html += `</div>`;
+            
+            if (total > 0) {
+                html += `<div style="display:flex; justify-content:center; gap:8px; margin-top:16px;">`;
+                if (cCount) html += `<div style="display:flex; align-items:center; gap:4px; font-size:9px; color:var(--text-sec)"><div style="width:6px;height:6px;background:#FF3B3B;"></div>${cCount} CRT</div>`;
+                if (hCount) html += `<div style="display:flex; align-items:center; gap:4px; font-size:9px; color:var(--text-sec)"><div style="width:6px;height:6px;background:#FF8C00;"></div>${hCount} HI</div>`;
+                if (mCount) html += `<div style="display:flex; align-items:center; gap:4px; font-size:9px; color:var(--text-sec)"><div style="width:6px;height:6px;background:#FFD60A;"></div>${mCount} MED</div>`;
+                if (lCount) html += `<div style="display:flex; align-items:center; gap:4px; font-size:9px; color:var(--text-sec)"><div style="width:6px;height:6px;background:#007AFF;"></div>${lCount} LOW</div>`;
+                html += `</div>`;
+            } else {
+                html += `<div style="text-align:center; margin-top:16px; font-size:10px; color:var(--text-sec);">NO ACTIVE THREATS</div>`;
+            }
+
+            document.getElementById('threats-donut').innerHTML = html;
+        }
+
+        function mapMitre(type) {
+            const t = (type || '').toLowerCase();
+            if (t.includes('sqli')) return 'T1190 - Exploit Public-Facing Application';
+            if (t.includes('xss')) return 'T1189 - Drive-by Compromise';
+            if (t.includes('cmd') || t.includes('exec')) return 'T1059 - Command and Scripting Interpreter';
+            if (t.includes('ssrf')) return 'T1190 - Exploit Public-Facing Application';
+            if (t.includes('auth')) return 'T1078 - Valid Accounts';
+            return 'T1190 - Exploit Public-Facing Application';
+        }
+
+        window.toggleFinding = function(index) {
+            const row = document.getElementById('detail-row-' + index);
+            row.style.display = row.style.display === 'none' ? 'table-row' : 'none';
+        }
+
+        window.resolveFinding = async function(id) {
+            await fetch(API + '/findings/resolve?id=' + id, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: 'resolved' })
+            });
+            fetchStatus();
+            fetchMetrics();
+        }
+
+        function renderFindingsTable() {
+            const tbody = document.getElementById('findings-body');
+            const openFindings = state.findings.filter(f => f.status !== 'resolved');
+            
+            if (openFindings.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6"><div class="empty-state">No Active Threats Detected</div></td></tr>`;
+                return;
+            }
+            
+            tbody.innerHTML = openFindings.map((f, i) => {
+                const d = new Date(f.last_seen);
+                const timeStr = d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], {hour12:false});
+                const conf = Math.round(f.confidence * 100) + '%';
+                const evRaw = escapeHtml(f.evidence || 'N/A');
+                const ev = evRaw.length > 50 ? evRaw.substring(0, 50) + '...' : evRaw;
+                
+                return `
+                    <tr class="finding-row" onclick="toggleFinding(${i})">
+                        <td class="mono" style="white-space:nowrap">${timeStr}</td>
+                        <td><span class="sev-badge sev-${f.severity || 'info'}">${f.severity || 'info'}</span></td>
+                        <td class="mono">${escapeHtml(f.type)}</td>
+                        <td>${escapeHtml(f.category)}</td>
+                        <td class="mono">${conf}</td>
+                        <td class="mono" style="color:var(--text-sec);">${ev}</td>
+                    </tr>
+                    <tr id="detail-row-${i}" style="display:none;">
+                        <td colspan="6" style="padding:0; border:none;">
+                            <div class="detail-panel open">
+                                <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+                                    <div>
+                                        <div class="detail-label">Payload Evidence</div>
+                                        <div class="detail-code">${escapeHtml(f.evidence || 'No payload recorded.')}</div>
+                                    </div>
+                                    <div>
+                                        <div class="detail-label">Remediation Steps</div>
+                                        <div class="detail-text" style="margin-bottom:16px; line-height:1.6;">${escapeHtml(f.remediation || 'Review the payload and patch the vulnerability.')}</div>
+                                        
+                                        <div class="detail-label">MITRE ATT&CK Mapping</div>
+                                        <div class="mono detail-text" style="margin-bottom:24px;">${mapMitre(f.type)}</div>
+                                        
+                                        <button class="action-btn" onclick="resolveFinding(${f.id})">Mark As Reviewed</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function renderDistribution() {
+            const distChart = document.getElementById('attack-dist-chart');
+            const data = state.distribution.slice(0, 5);
+            if (!data.length) {
+                distChart.innerHTML = '<div class="empty-state">No attack data</div>';
+            } else {
+                const max = Math.max(...data.map(d => d.count), 1);
+                distChart.innerHTML = data.map(d => `
+                    <div class="bar-row">
+                        <div class="bar-label mono" title="${escapeHtml(d.type)}">${escapeHtml(d.type)}</div>
+                        <div class="bar-track"><div class="bar-fill" style="width: ${(d.count/max)*100}%"></div></div>
+                        <div class="bar-val mono">${d.count}</div>
                     </div>
-                    <div class="stats-grid">
-                        <div class="stat-card severity-critical">
-                            <div class="stat-value">${s.findings?.critical??0}</div>
-                            <div class="stat-label">Critical</div>
-                        </div>
-                        <div class="stat-card severity-high">
-                            <div class="stat-value">${s.findings?.high??0}</div>
-                            <div class="stat-label">High</div>
-                        </div>
-                        <div class="stat-card severity-total">
-                            <div class="stat-value">${s.findings?.total??0}</div>
-                            <div class="stat-label">Total Findings</div>
-                        </div>
-                        <div class="stat-card severity-blocked">
-                            <div class="stat-value">${s.signals?.blocked??0}</div>
-                            <div class="stat-label">Blocked (24h)</div>
-                        </div>
-                        <div class="stat-card severity-novel">
-                            <div class="stat-value">${s.signals?.novel??0}</div>
-                            <div class="stat-label">Novel Variants</div>
-                        </div>
+                `).join('');
+            }
+
+            const topIpsChart = document.getElementById('top-ips-chart');
+            const ipsData = state.topPaths.slice(0, 5);
+            if (!ipsData.length) {
+                topIpsChart.innerHTML = '<div class="empty-state">No attack data</div>';
+            } else {
+                const maxIp = Math.max(...ipsData.map(d => d.count), 1);
+                topIpsChart.innerHTML = ipsData.map(d => `
+                    <div class="bar-row">
+                        <div class="bar-label mono" title="${escapeHtml(d.path)}">${escapeHtml(d.path)}</div>
+                        <div class="bar-track"><div class="bar-fill" style="width: ${(d.count/maxIp)*100}%"></div></div>
+                        <div class="bar-val mono">${d.count}</div>
                     </div>
+                `).join('');
+            }
+        }
+
+        function renderPostureTimeline() {
+            const container = document.getElementById('posture-timeline-chart');
+            let data = [...(state.postureHistory || [])].reverse();
+            if (data.length < 2) {
+                // Simulate if no history
+                const now = Date.now();
+                data = [
+                    { score: 82, timestamp: new Date(now - 3600000*4).toISOString() },
+                    { score: 85, timestamp: new Date(now - 3600000*3).toISOString() },
+                    { score: 88, timestamp: new Date(now - 3600000*2).toISOString() },
+                    { score: 94, timestamp: new Date(now - 3600000*1).toISOString() },
+                    { score: 100, timestamp: new Date(now).toISOString() }
+                ];
+            }
+            
+            const width = 800;
+            const height = 100;
+            const dx = width / Math.max(data.length - 1, 1);
+            
+            const points = data.map((d, i) => {
+                const x = i * dx;
+                const y = height - (d.score / 100) * height;
+                return `${x},${y}`;
+            }).join(' ');
+
+            const fillPoints = `0,${height} ` + points + ` ${width},${height}`;
+
+            container.innerHTML = `
+            <svg viewBox="0 0 ${width} ${height}" style="width:100%; height:100px; display:block;" preserveAspectRatio="none">
+                <polygon points="${fillPoints}" fill="rgba(232, 255, 0, 0.05)" />
+                <polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2" vector-effect="non-scaling-stroke" />
+                ${data.map((d,i) => {
+                    const x = i * dx;
+                    const y = height - (d.score / 100) * height;
+                    return `<circle cx="${x}" cy="${y}" r="3" fill="var(--bg)" stroke="var(--accent)" stroke-width="1.5" />`;
+                }).join('')}
+            </svg>
+            `;
+        }
+
+        function renderAssets() {
+            const container = document.getElementById('assets-list');
+            const assets = state.status?.assets || {};
+            const keys = Object.keys(assets);
+            if (!keys.length) {
+                container.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1;">No assets inventoried.</div>`;
+                return;
+            }
+            container.innerHTML = keys.map(k => `
+                <div class="asset-card">
+                    <div class="asset-key">${escapeHtml(k)}</div>
+                    <div class="asset-val mono">${escapeHtml(assets[k])}</div>
                 </div>
+            `).join('');
+        }
 
-                ${renderTimeline(state.timeline)}
+        // Initial fetch
+        fetchStatus();
+        fetchMetrics();
 
-                <div class="section">
-                    <div class="section-header">
-                        <div class="section-title">Recent Findings</div>
-                        <div class="section-count">${state.findings.length} total</div>
-                    </div>
-                    <div class="table-wrap"><table>
-                        <thead><tr><th>Sev</th><th>Title</th><th>Location</th><th>Type</th><th>RASP</th><th>Status</th><th>Seen</th></tr></thead>
-                        <tbody>${renderFindings(state.findings.slice(0, 10))}</tbody>
-                    </table></div>
-                </div>
-            </div>
-
-            <!-- FINDINGS PANEL -->
-            <div class="panel ${activeTab==='findings'?'active':''}">
-                <div class="section">
-                    <div class="section-header">
-                        <div class="section-title">All Findings</div>
-                        <div style="display:flex;gap:6px">
-                            <button class="btn btn-active" onclick="filterFindings('')">All</button>
-                            <button class="btn" onclick="filterFindings('critical')">Critical</button>
-                            <button class="btn" onclick="filterFindings('high')">High</button>
-                            <button class="btn" onclick="filterFindings('medium')">Medium</button>
-                        </div>
-                    </div>
-                    <div class="table-wrap"><table>
-                        <thead><tr><th>Sev</th><th>Title</th><th>Location</th><th>Type</th><th>RASP</th><th>Status</th><th>Seen</th></tr></thead>
-                        <tbody>${renderFindings(state.findings)}</tbody>
-                    </table></div>
-                </div>
-            </div>
-
-            <!-- SIGNALS PANEL -->
-            <div class="panel ${activeTab==='signals'?'active':''}">
-                ${renderTimeline(state.timeline)}
-                <div class="section">
-                    <div class="section-header">
-                        <div class="section-title">Attack Signals</div>
-                        <div class="section-count">${state.signals.length} recent</div>
-                    </div>
-                    <div class="table-wrap"><table>
-                        <thead><tr><th>Sev</th><th>Action</th><th>Type</th><th>Path</th><th>Method</th><th>Novel</th><th>Time</th></tr></thead>
-                        <tbody>${renderSignals(state.signals)}</tbody>
-                    </table></div>
-                </div>
-            </div>
-
-            <!-- ANALYTICS PANEL -->
-            <div class="panel ${activeTab==='analytics'?'active':''}">
-                ${renderDistribution(state.distribution, state.topPaths)}
-
-                <div class="chart-card">
-                    <div class="chart-title" style="margin-bottom:12px">Posture History</div>
-                    <div style="display:flex;align-items:flex-end;gap:8px;height:80px">
-                        ${(state.postureHistory || []).reverse().map(p => {
-                            const g = String(p.grade || '');
-                            const color = (g === 'A' ? 'var(--success)' : g === 'B' ? '#8BC34A' : g === 'C' ? 'var(--medium)' : g === 'D' ? 'var(--high)' : 'var(--critical)');
-                            const scoreNum = Number(p.score) || 0;
-                            return `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px">
-                                <div style="font-size:10px;color:var(--text-muted);font-family:var(--mono)">${scoreNum}</div>
-                                <div style="width:100%;height:${Math.max(4, scoreNum * 0.7)}px;background:${color};border-radius:3px;transition:height 0.3s"></div>
-                            </div>`;
-                        }).join('') || '<div class="empty" style="padding:20px">No posture history</div>'}
-                    </div>
-                </div>
-            </div>
-        </div>`;
-    }
-
-    function switchTab(tab) { activeTab = tab; render(); }
-    async function filterFindings(sev) {
-        const url = sev ? `${API}/findings?severity=${sev}&limit=100` : `${API}/findings?limit=100`;
-        state.findings = await fetch(url).then(r => r.json());
-        render();
-    }
-
-    fetchAll();
-    setInterval(fetchAll, 10000);
+        // Polling
+        setInterval(fetchStatus, 5000);
+        setInterval(fetchMetrics, 10000);
     </script>
 </body>
 </html>

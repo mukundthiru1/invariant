@@ -48,18 +48,16 @@ export const sqlCommentTruncation: InvariantClassModule = {
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const detections = detectSqlStructural(d)
-            const match = detections.find(det => det.type === 'comment_truncation')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `Token analysis: ${match.detail}`,
-                    evidence: match.detail,
-                }
+        const detections = detectSqlStructural(d)
+        const match = detections.find(det => det.type === 'comment_truncation')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `Token analysis: ${match.detail}`,
+                evidence: match.detail,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

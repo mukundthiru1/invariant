@@ -1,0 +1,265 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90m/home/mukund-thiru/Santh/invariant[39m
+
+ [31m❯[39m packages/engine/src/classes/encoding.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 5[2mms[22m[39m
+[31m     [31m×[31m Fix 1: decodes URL-safe base64 data URIs and standalone[39m[32m 4[2mms[22m[39m
+     [32m✓[39m Fix 2: normalizes fullwidth characters[32m 0[2mms[22m[39m
+     [32m✓[39m Fix 3: decodes %5Cu unicode escapes[32m 0[2mms[22m[39m
+     [32m✓[39m Fix 4: decodes IIS %uXXXX escapes[32m 0[2mms[22m[39m
+ [31m❯[39m packages/engine/src/evaluators/deser-evaluator.test.ts [2m([22m[2m13 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 8[2mms[22m[39m
+     [32m✓[39m detects 'java serialized base64 magic'[32m 2[2mms[22m[39m
+     [32m✓[39m detects 'python pickle opcode chain'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'php serialized object'[32m 0[2mms[22m[39m
+[31m     [31m×[31m detects 'dotnet binaryformatter base64 prefix'[39m[32m 3[2mms[22m[39m
+     [32m✓[39m detects 'ruby marshal magic'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'yaml python apply'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'yaml java processbuilder'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'json type gadget key'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'xml decoder gadget'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'node json prototype mutation'[32m 0[2mms[22m[39m
+     [32m✓[39m detects 'messagepack typed ext chain'[32m 0[2mms[22m[39m
+     [32m✓[39m decodes base64 payloads before magic-byte checks[32m 0[2mms[22m[39m
+     [32m✓[39m avoids flagging short benign text[32m 0[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/input-shape-validator.test.ts [2m([22m[2m38 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m packages/agent/src/session.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+ [32m✓[39m packages/agent/src/db-extended.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32m✓[39m packages/engine/src/chain-detector.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [31m❯[39m packages/engine/src/classes/hygiene/index.test.ts [2m([22m[2m79 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 18[2mms[22m[39m
+     [32m✓[39m registers all hygiene classes[32m 1[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+[31m       [31m×[31m detects known payloads[39m[32m 4[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+[31m       [31m×[31m detects known payloads[39m[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+[31m       [31m×[31m detects known payloads[39m[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 2[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+       [32m✓[39m has required metadata and vectors[32m 0[2mms[22m[39m
+       [32m✓[39m detects known payloads[32m 0[2mms[22m[39m
+       [32m✓[39m does not detect known benign samples[32m 0[2mms[22m[39m
+ [32m✓[39m packages/agent/src/calibration.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/wave2-l2-evaluators.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m packages/agent/src/chain-defense.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32m✓[39m packages/engine/src/auto-fixer.test.ts [2m([22m[2m6 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m packages/agent/src/behavioral.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/sql-expression-evaluator.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m packages/edge-sensor/tests/axiom-drift-merge.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m packages/engine/src/plugin.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 5[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/canonical-normalizer.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/entropy-analyzer.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32m✓[39m packages/agent/src/rasp.test.ts [2m([22m[2m27 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32m✓[39m packages/engine/src/config.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/cmdi-path-bypass-regressions.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m packages/edge-sensor/src/crypto/crypto.test.ts [2m([22m[2m31 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32m✓[39m packages/engine/src/config-integration.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [32m✓[39m packages/engine/src/classes/injection/misc-l2.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 4[2mms[22m[39m
+ [32m✓[39m packages/engine/src/evaluators/new-l2-evaluators.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m packages/engine/src/auth-cmdi-hardening.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 8[2mms[22m[39m
+ [32m✓[39m packages/engine/src/capability-index.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 3[2mms[22m[39m
+ [31m❯[39m packages/engine/src/engine.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/edge-sensor/src/layers/ws-interceptor.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/evaluators/effect-simulator.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/agent/src/agent.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/evaluators/polyglot-detector.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/classes/registry.test.ts [2m([22m[2m10 tests[22m[2m | [22m[31m4 failed[39m[2m)[22m[32m 48[2mms[22m[39m
+     [32m✓[39m registering a module where knownPayloads are all detected succeeds without error[32m 1[2mms[22m[39m
+     [32m✓[39m registering a module where detect() misses a knownPayload throws RegistryError with payload details[32m 0[2mms[22m[39m
+     [32m✓[39m registering a module where detect() false-positives on a knownBenign throws RegistryError with benign details[32m 0[2mms[22m[39m
+[31m     [31m×[31m all pre-registered ALL_CLASS_MODULES pass their own knownPayloads/knownBenign contracts[39m[32m 38[2mms[22m[39m
+[31m     [31m×[31m computeCorrelations() returns empty array for single-class input[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m computeCorrelations() returns CompoundConfidence >= 0.99 for SQL triad (string_termination + union_extraction + comment_truncation)[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m setCalibrationOverride() changes confidence output of computeConfidence() in the expected direction[39m[32m 2[2mms[22m[39m
+     [32m✓[39m returns fallback for NaN[32m 0[2mms[22m[39m
+     [32m✓[39m returns 0.99 for +Infinity[32m 0[2mms[22m[39m
+     [32m✓[39m clamps values below 0 to 0[32m 0[2mms[22m[39m
+ [31m❯[39m packages/engine/src/evaluators/intent-classifier.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/modular.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/validation.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/engine/src/proof-constructor.test.ts [2m([22m[2m36 tests[22m[2m | [22m[31m5 failed[39m[2m)[22m[32m 244[2mms[22m[39m
+     [32m✓[39m constructs complete proof for classic SQLi[32m 4[2mms[22m[39m
+     [32m✓[39m includes semantic_eval step when L2 fires[32m 0[2mms[22m[39m
+     [32m✓[39m verifies OR 1=1 payload with AST evaluation[32m 0[2mms[22m[39m
+     [32m✓[39m produces proof without L2 (structural only)[32m 0[2mms[22m[39m
+     [32m✓[39m extracts correct escape character offset[32m 0[2mms[22m[39m
+     [32m✓[39m handles UNION SELECT injection[32m 0[2mms[22m[39m
+     [32m✓[39m handles stacked query injection[32m 0[2mms[22m[39m
+     [32m✓[39m constructs proof for script injection[32m 1[2mms[22m[39m
+     [32m✓[39m detects event handler XSS[32m 0[2mms[22m[39m
+     [32m✓[39m constructs proof for separator + command injection[32m 1[2mms[22m[39m
+     [32m✓[39m constructs proof for command substitution[32m 0[2mms[22m[39m
+     [32m✓[39m constructs proof for directory traversal[32m 1[2mms[22m[39m
+     [32m✓[39m detects null byte termination in repair[32m 0[2mms[22m[39m
+     [32m✓[39m counts traversal depth in proof[32m 1[2mms[22m[39m
+     [32m✓[39m produces complete proof with traversal + target + null byte[32m 0[2mms[22m[39m
+     [32m✓[39m targets Windows system files[32m 0[2mms[22m[39m
+     [32m✓[39m detects proc filesystem access[32m 0[2mms[22m[39m
+     [32m✓[39m constructs proof for metadata endpoint access[32m 0[2mms[22m[39m
+     [32m✓[39m detects localhost targeting with port[32m 0[2mms[22m[39m
+     [32m✓[39m detects private network ranges (10.x, 192.168.x)[32m 0[2mms[22m[39m
+     [32m✓[39m detects dangerous schemes (gopher, file)[32m 0[2mms[22m[39m
+     [32m✓[39m produces complete proof for metadata with sensitive path[32m 0[2mms[22m[39m
+     [32m✓[39m detects protocol-relative URLs[32m 0[2mms[22m[39m
+     [32m✓[39m constructs proof for external entity[32m 0[2mms[22m[39m
+     [32m✓[39m complete proof (3 phases + L2) has highest confidence[32m 0[2mms[22m[39m
+     [32m✓[39m incomplete proof has lower confidence[32m 0[2mms[22m[39m
+     [32m✓[39m L2 semantic step adds confidence bonus[32m 0[2mms[22m[39m
+     [32m✓[39m path traversal proofs have verified verification level[32m 0[2mms[22m[39m
+     [32m✓[39m SSRF proofs have verified verification level[32m 0[2mms[22m[39m
+     [32m✓[39m constructs minimal proof from L2 evidence for unknown domain[32m 0[2mms[22m[39m
+     [32m✓[39m returns null for unknown domain with no L2 evidence[32m 0[2mms[22m[39m
+[31m     [31m×[31m detectDeep attaches proofs to SQL injection matches[39m[32m 218[2mms[22m[39m
+[31m     [31m×[31m detectDeep attaches proofs to XSS matches[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m detectDeep attaches proofs to path traversal matches[39m[32m 7[2mms[22m[39m
+[31m     [31m×[31m complete proof acts as confidence floor[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m proof steps are sorted by offset[39m[32m 2[2mms[22m[39m
+ [31m❯[39m packages/engine/src/adversarial.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [31m❯[39m packages/agent/src/middleware/handler.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m4 failed[39m[2m)[22m[32m 25[2mms[22m[39m
+[31m     [31m×[31m passes clean requests[39m[32m 15[2mms[22m[39m
+[31m     [31m×[31m detects SQL injection in request body[39m[32m 4[2mms[22m[39m
+[31m     [31m×[31m blocks in enforce mode[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m monitors in monitor mode[39m[32m 3[2mms[22m[39m
+ [31m❯[39m packages/engine/src/rule-format.test.ts [2m([22m[2m4 tests[22m[2m | [22m[31m4 failed[39m[2m)[22m[32m 26[2mms[22m[39m
+[31m     [31m×[31m loads a contains_any rule from JSON object and detects payload[39m[32m 15[2mms[22m[39m
+[31m     [31m×[31m loads a regex rule from JSON object and detects payload[39m[32m 4[2mms[22m[39m
+[31m     [31m×[31m loads a starts_with rule from JSON object and detects payload[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m throws a clear error when required fields are missing[39m[32m 3[2mms[22m[39m
+ [31m❯[39m packages/agent/src/middleware/express.test.ts [2m([22m[2m7 tests[22m[2m | [22m[31m7 failed[39m[2m)[22m[32m 29[2mms[22m[39m
+[31m     [31m×[31m passes clean requests[39m[32m 15[2mms[22m[39m
+[31m     [31m×[31m detects SQL injection in query params[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m detects XSS in body[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m blocks in enforce mode[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m monitors (does not block) in monitor mode[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m detects surfaces for query, body, and header[39m[32m 2[2mms[22m[39m
+[31m     [31m×[31m loads config from invariant.config.json[39m[32m 2[2mms[22m[39m
+ [31m❯[39m packages/engine/src/evaluators/response-recommender.test.ts [2m([22m[2m9 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[32m 22[2mms[22m[39m
+       [32m✓[39m generates containment + remediation for SQL injection[32m 2[2mms[22m[39m
+       [32m✓[39m recommends credential rotation for credential theft[32m 0[2mms[22m[39m
+       [32m✓[39m generates process audit for command injection[32m 0[2mms[22m[39m
+       [32m✓[39m recommends CSP for XSS[32m 0[2mms[22m[39m
+       [32m✓[39m includes tool investigation for automated attacks[32m 0[2mms[22m[39m
+       [32m✓[39m orders recommendations by urgency then category[32m 0[2mms[22m[39m
+[31m       [31m×[31m response plan populated in UnifiedRuntime output[39m[32m 14[2mms[22m[39m
+[31m       [31m×[31m clean input has null response plan[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m response plan includes effect simulation data when available[39m[32m 2[2mms[22m[39m
+ [31m❯[39m packages/engine/src/unified-runtime.test.ts [2m([22m[2m47 tests[22m[2m | [22m[31m47 failed[39m[2m)[22m[32m 69[2mms[22m[39m
+[31m       [31m×[31m processes clean input with allow decision[39m[32m 14[2mms[22m[39m
+[31m       [31m×[31m detects SQL injection and produces block decision[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m detects XSS and includes MITRE techniques[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m returns highest severity correctly[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m detects multi-step SQLi chain through processSync[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m detects SSRF → cloud metadata chain[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m does not cross-contaminate chains across sources[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m allows clean input[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m blocks high-confidence attacks[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m includes contributors in decision[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m elevates threat level with repeated attacks[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m enriches SQLi detections with CVEs[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m derives credential_extraction for path traversal to sensitive files[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m classifies plain encoding[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m handles URL-encoded input[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m processes clean input in under 5ms[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m processes attack input in under 10ms[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m reports correct engine stats[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m process() returns same analysis as processSync()[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m process() seals evidence when configured[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m detects supply chain pivot: deser → cmd → SSRF[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m detects HTTP desync auth bypass[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m has 20 chain definitions registered[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m polyglot payload populates polyglot analysis and escalates decision[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m polyglot_attack behavior is derived for multi-domain payload[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m multi-layer encoded attack populates encodingEvasion on analysis[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m SQL injection triggers effect simulation with proof[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m UNION SELECT triggers credential theft simulation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m command injection triggers CMD effect simulation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m high-impact effect forces alert[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m XSS triggers effect simulation[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m path traversal triggers effect simulation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m SSRF triggers effect simulation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m clean input has null effect simulation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m SQLMap-like payload fingerprints as automated tool[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m basic OR 1=1 fingerprints as script kiddie[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m clean input has null adversary fingerprint[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m SQL injection in email field detected via shape validation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m SQL injection in integer field has high deviation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m valid email passes shape validation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m no paramName means null shape validation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m unknown param name means null shape validation[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m block decision includes proof summary for SQL injection[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m block decision carries structured proofSummary[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m proofs appear on individual matches in analysis[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m XSS proof flows through unified runtime[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m path traversal proof flows through unified runtime[39m[32m 1[2mms[22m[39m
+ [32m✓[39m packages/engine/src/codebase-scanner.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 194[2mms[22m[39m
+
+[2m Test Files [22m [1m[31m19 failed[39m[22m[2m | [22m[1m[32m24 passed[39m[22m[90m (43)[39m
+[2m      Tests [22m [1m[31m79 failed[39m[22m[2m | [22m[1m[32m519 passed[39m[22m[90m (598)[39m
+[2m   Start at [22m 00:21:42
+[2m   Duration [22m 883ms[2m (transform 9.78s, setup 0ms, import 8.25s, tests 899ms, environment 3ms)[22m
+

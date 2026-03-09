@@ -1,0 +1,21 @@
+{
+  "name": "@santh/invariant-action",
+  "version": "1.0.0",
+  "description": "GitHub Action for Invariant Security Scan",
+  "main": "dist/index.js",
+  "private": true,
+  "scripts": {
+    "build": "ncc build src/index.ts -o dist --license licenses.txt",
+    "package": "npm run build"
+  },
+  "dependencies": {
+    "@actions/core": "^1.10.1",
+    "@actions/github": "^6.0.0",
+    "@santh/invariant-engine": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@vercel/ncc": "^0.38.1",
+    "typescript": "^5.0.0"
+  }
+}

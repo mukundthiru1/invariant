@@ -67,6 +67,9 @@ const SQL_KEYWORDS = new Set([
 
 const BOOLEAN_OPS = new Set(['AND', 'OR'])
 
+const MULTI_CHAR_OPERATORS = ['<=', '>=', '<>', '!=', '||', '<<', '>>']
+const SINGLE_CHAR_OPERATORS = new Set(['=', '<', '>', '&', '|', '^', '!', '~'])
+
 /**
  * Tokenize a string into SQL-aware tokens.
  *
@@ -164,24 +167,17 @@ export function sqlTokenize(input: string): SqlToken[] {
             continue
         }
 
-        // Operators: =, <, >, <=, >=, <>, !=
-        if (ch === '=' || ch === '<' || ch === '>' || ch === '!') {
-            const start = i
-            if (bounded[i + 1] === '=') {
-                i += 2
-            } else if (ch === '<' && bounded[i + 1] === '>') {
-                i += 2
-            } else {
-                i++
-            }
-            tokens.push({ type: 'OPERATOR', value: bounded.slice(start, i), position: start })
+        // Operators: =, <, >, <=, >=, <>, !=, <<, >>, |, ||, &, ^, ~
+        const twoChars = bounded.slice(i, i + 2)
+        if (MULTI_CHAR_OPERATORS.includes(twoChars)) {
+            tokens.push({ type: 'OPERATOR', value: twoChars, position: i })
+            i += 2
             continue
         }
 
-        // || as boolean OR
-        if (ch === '|' && bounded[i + 1] === '|') {
-            tokens.push({ type: 'BOOLEAN_OP', value: 'OR', position: i })
-            i += 2
+        if (SINGLE_CHAR_OPERATORS.has(ch)) {
+            tokens.push({ type: 'OPERATOR', value: ch, position: i })
+            i++
             continue
         }
 
@@ -251,15 +247,18 @@ export type ExpressionNode =
     | { kind: 'literal_string'; value: string }
     | { kind: 'literal_bool'; value: boolean }
     | { kind: 'literal_null' }
+    | { kind: 'tautology'; confidence: number }
     | { kind: 'identifier'; name: string }
     | { kind: 'comparison'; left: ExpressionNode; operator: string; right: ExpressionNode }
     | { kind: 'boolean_op'; left: ExpressionNode; operator: 'AND' | 'OR'; right: ExpressionNode }
     | { kind: 'not'; operand: ExpressionNode }
+    | { kind: 'bitwise_not'; operand: ExpressionNode }
     | { kind: 'is_null'; operand: ExpressionNode; negated: boolean }
     | { kind: 'between'; operand: ExpressionNode; low: ExpressionNode; high: ExpressionNode }
     | { kind: 'in_list'; operand: ExpressionNode; values: ExpressionNode[] }
     | { kind: 'like'; operand: ExpressionNode; pattern: ExpressionNode }
     | { kind: 'function_call'; name: string; args: ExpressionNode[] }
+    | { kind: 'case_when'; cases: Array<{ condition: ExpressionNode; thenExpr: ExpressionNode; conditionIsTautology: boolean }>; elseExpr?: ExpressionNode }
     | { kind: 'unknown' }
 
 
@@ -291,6 +290,17 @@ export type ExpressionNode =
 export function extractConditionalExpressions(tokens: SqlToken[]): ExpressionNode[] {
     const expressions: ExpressionNode[] = []
     const meaningful = tokens.filter(t => t.type !== 'WHITESPACE' && t.type !== 'SEPARATOR')
+
+    const isLeadingCaseOrConcat =
+        meaningful[0]?.type === 'KEYWORD' && meaningful[0].value === 'CASE'
+        || meaningful[0]?.type === 'OPERATOR' && meaningful[0].value === '||'
+
+    if (isLeadingCaseOrConcat) {
+        const expr = parseExpression(meaningful, 0)
+        if (expr.node.kind !== 'unknown') {
+            expressions.push(expr.node)
+        }
+    }
 
     for (let i = 0; i < meaningful.length; i++) {
         const token = meaningful[i]
@@ -335,10 +345,36 @@ function parseExpression(tokens: SqlToken[], start: number): ParseResult {
 
     const next = tokens[idx]
 
-    // Comparison operators: =, <, >, <=, >=, <>, !=
+    // Comparison operators: =, <, >, <=, >=, <>, != and bitwise operators.
     if (next.type === 'OPERATOR') {
         idx++
         const right = parsePrimary(tokens, idx)
+
+        // Parse bitwise operation first, then allow trailing comparison:
+        // 1<<0=1, 8>>3=1, 1&1=1.
+        if (BINARY_BITWISE_OPERATORS[next.value]) {
+            const bitwiseNode: ExpressionNode = {
+                kind: 'comparison',
+                left: left.node,
+                operator: next.value,
+                right: right.node,
+            }
+            const trailing = tokens[right.nextIndex]
+            if (trailing?.type === 'OPERATOR' && COMPARISON_EVALUATORS[trailing.value]) {
+                const compareRight = parsePrimary(tokens, right.nextIndex + 1)
+                return {
+                    node: {
+                        kind: 'comparison',
+                        left: bitwiseNode,
+                        operator: trailing.value,
+                        right: compareRight.node,
+                    },
+                    nextIndex: compareRight.nextIndex,
+                }
+            }
+            return { node: bitwiseNode, nextIndex: right.nextIndex }
+        }
+
         return {
             node: { kind: 'comparison', left: left.node, operator: next.value, right: right.node },
             nextIndex: right.nextIndex,
@@ -430,13 +466,125 @@ function parseExpression(tokens: SqlToken[], start: number): ParseResult {
         }
     }
 
-    return left
+        return left
+}
+
+export function parseCaseWhen(tokens: SqlToken[], start: number): ParseResult {
+    if (start >= tokens.length) return { node: { kind: 'unknown' }, nextIndex: start }
+    const startToken = tokens[start]
+    if (startToken.type !== 'KEYWORD' || startToken.value !== 'CASE') {
+        return { node: { kind: 'unknown' }, nextIndex: start }
+    }
+
+    let idx = start + 1
+    const cases: Array<{ condition: ExpressionNode; thenExpr: ExpressionNode; conditionIsTautology: boolean }> = []
+    let elseExpr: ExpressionNode | undefined
+    let sawTautologicalWhen = false
+    const tautologyFallback = (): ParseResult => ({
+        node: { kind: 'tautology', confidence: 0.85 },
+        nextIndex: idx,
+    })
+
+    while (idx < tokens.length) {
+        const token = tokens[idx]
+
+        if (token.type === 'KEYWORD' && token.value === 'WHEN') {
+            const condition = parseExpression(tokens, idx + 1)
+            if (condition.node.kind === 'unknown') {
+                if (sawTautologicalWhen) return tautologyFallback()
+                return { node: { kind: 'unknown' }, nextIndex: idx + 1 }
+            }
+
+            const conditionResult = evaluateExpression(condition.node)
+            const conditionIsTautology = conditionResult.evaluable && Boolean(conditionResult.value)
+            if (conditionIsTautology) {
+                sawTautologicalWhen = true
+                return tautologyFallback()
+            }
+
+            const thenToken = tokens[condition.nextIndex]
+            if (!thenToken || thenToken.type !== 'KEYWORD' || thenToken.value !== 'THEN') {
+                if (conditionIsTautology || sawTautologicalWhen) return tautologyFallback()
+                return { node: { kind: 'unknown' }, nextIndex: condition.nextIndex }
+            }
+
+            const thenExpr = parseExpression(tokens, condition.nextIndex + 1)
+            if (thenExpr.node.kind === 'unknown') {
+                if (conditionIsTautology || sawTautologicalWhen) return tautologyFallback()
+                return { node: { kind: 'unknown' }, nextIndex: condition.nextIndex + 1 }
+            }
+
+            cases.push({
+                condition: condition.node,
+                thenExpr: thenExpr.node,
+                conditionIsTautology,
+            })
+            idx = thenExpr.nextIndex
+            continue
+        }
+
+        if (token.type === 'KEYWORD' && token.value === 'ELSE') {
+            const candidate = parseExpression(tokens, idx + 1)
+            if (candidate.node.kind === 'unknown') {
+                if (sawTautologicalWhen) return tautologyFallback()
+                return { node: { kind: 'unknown' }, nextIndex: idx + 1 }
+            }
+            elseExpr = candidate.node
+            idx = candidate.nextIndex
+            continue
+        }
+
+        if (token.type === 'KEYWORD' && token.value === 'END') {
+            idx++
+            if (cases.length === 0) return { node: { kind: 'unknown' }, nextIndex: idx }
+            return {
+                node: {
+                    kind: 'case_when',
+                    cases,
+                    elseExpr,
+                },
+                nextIndex: idx,
+            }
+        }
+
+        idx++
+    }
+
+    if (sawTautologicalWhen) return tautologyFallback()
+    return { node: { kind: 'unknown' }, nextIndex: start + 1 }
 }
 
 function parsePrimary(tokens: SqlToken[], start: number): ParseResult {
     if (start >= tokens.length) return { node: { kind: 'unknown' }, nextIndex: start }
 
     const token = tokens[start]
+
+    if (token.type === 'OPERATOR' && token.value === '||') {
+        const right = parsePrimary(tokens, start + 1)
+        if (right.node.kind === 'unknown') return { node: { kind: 'unknown' }, nextIndex: right.nextIndex }
+        return {
+            node: {
+                kind: 'comparison',
+                left: { kind: 'literal_string', value: '' },
+                operator: '||',
+                right: right.node,
+            },
+            nextIndex: right.nextIndex,
+        }
+    }
+
+    if (token.type === 'OPERATOR' && token.value === '~') {
+        const operand = parsePrimary(tokens, start + 1)
+        if (operand.node.kind === 'unknown') return { node: { kind: 'unknown' }, nextIndex: operand.nextIndex }
+        return {
+            node: { kind: 'bitwise_not', operand: operand.node },
+            nextIndex: operand.nextIndex,
+        }
+    }
+
+    if (token.type === 'KEYWORD' && token.value === 'CASE') {
+        return parseCaseWhen(tokens, start)
+    }
 
     // NOT prefix
     if (token.type === 'KEYWORD' && token.value === 'NOT') {
@@ -636,8 +784,61 @@ const KNOWN_FUNCTIONS: Record<string, (...args: EvalResult[]) => EvalResult> = {
         }
         return { evaluable: true, value: null }
     },
+    'TRIM': (arg) => {
+        if (!arg?.evaluable) return { evaluable: false }
+        if (typeof arg.value === 'string') {
+            return { evaluable: true, value: arg.value.trim() }
+        }
+        return { evaluable: false }
+    },
+    'LTRIM': (arg) => {
+        if (!arg?.evaluable) return { evaluable: false }
+        if (typeof arg.value === 'string') {
+            return { evaluable: true, value: arg.value.trimStart() }
+        }
+        return { evaluable: false }
+    },
+    'RTRIM': (arg) => {
+        if (!arg?.evaluable) return { evaluable: false }
+        if (typeof arg.value === 'string') {
+            return { evaluable: true, value: arg.value.trimEnd() }
+        }
+        return { evaluable: false }
+    },
     'IFNULL': (...args) => KNOWN_FUNCTIONS['COALESCE'](...args),
     'ISNULL': (...args) => KNOWN_FUNCTIONS['COALESCE'](...args),
+    'NULLIF': (value, compareTo) => {
+        if (!value?.evaluable || !compareTo?.evaluable) return { evaluable: false }
+        if (value.value === compareTo.value) return { evaluable: true, value: null }
+        return value
+    },
+}
+
+const COMPARISON_EVALUATORS: Record<string, (left: unknown, right: unknown) => boolean> = {
+    '=': (left, right) => {
+        if (typeof left === 'number' && typeof right === 'number') return left === right
+        return String(left) === String(right)
+    },
+    '<>': (left, right) => {
+        if (typeof left === 'number' && typeof right === 'number') return left !== right
+        return String(left) !== String(right)
+    },
+    '!=': (left, right) => {
+        if (typeof left === 'number' && typeof right === 'number') return left !== right
+        return String(left) !== String(right)
+    },
+    '<': (left, right) => Number(left) < Number(right),
+    '>': (left, right) => Number(left) > Number(right),
+    '<=': (left, right) => Number(left) <= Number(right),
+    '>=': (left, right) => Number(left) >= Number(right),
+}
+
+const BINARY_BITWISE_OPERATORS: Record<string, (left: number, right: number) => number> = {
+    '&': (left, right) => left & right,
+    '|': (left, right) => left | right,
+    '^': (left, right) => left ^ right,
+    '<<': (left, right) => left << right,
+    '>>': (left, right) => left >> right,
 }
 
 
@@ -667,6 +868,9 @@ export function evaluateExpression(node: ExpressionNode): EvalResult {
         case 'literal_null':
             return { evaluable: true, value: null }
 
+        case 'tautology':
+            return { evaluable: true, value: true }
+
         case 'identifier':
             // Identifiers refer to runtime data — can't evaluate statically
             return { evaluable: false }
@@ -684,30 +888,46 @@ export function evaluateExpression(node: ExpressionNode): EvalResult {
                 return { evaluable: true, value: false }
             }
 
-            switch (node.operator) {
-                case '=':
-                    // Type coercion: compare as numbers if both parseable
-                    if (typeof lv === 'number' && typeof rv === 'number') {
-                        return { evaluable: true, value: lv === rv }
-                    }
-                    return { evaluable: true, value: String(lv) === String(rv) }
-                case '<>':
-                case '!=':
-                    if (typeof lv === 'number' && typeof rv === 'number') {
-                        return { evaluable: true, value: lv !== rv }
-                    }
-                    return { evaluable: true, value: String(lv) !== String(rv) }
-                case '<':
-                    return { evaluable: true, value: Number(lv) < Number(rv) }
-                case '>':
-                    return { evaluable: true, value: Number(lv) > Number(rv) }
-                case '<=':
-                    return { evaluable: true, value: Number(lv) <= Number(rv) }
-                case '>=':
-                    return { evaluable: true, value: Number(lv) >= Number(rv) }
-                default:
-                    return { evaluable: false }
+            if (node.operator === '||') {
+                if (typeof lv !== 'string' || typeof rv !== 'string') return { evaluable: false }
+                return { evaluable: true, value: `${lv}${rv}` }
             }
+
+            const bitwise = BINARY_BITWISE_OPERATORS[node.operator]
+            if (bitwise && typeof lv === 'number' && typeof rv === 'number') {
+                return { evaluable: true, value: bitwise(lv, rv) }
+            }
+
+            const compare = COMPARISON_EVALUATORS[node.operator]
+            if (compare) {
+                return { evaluable: true, value: compare(lv, rv) }
+            }
+
+            return { evaluable: false }
+        }
+
+        case 'bitwise_not': {
+            const operand = evaluateExpression(node.operand)
+            if (!operand.evaluable || typeof operand.value !== 'number') return { evaluable: false }
+            return { evaluable: true, value: ~operand.value }
+        }
+
+        case 'case_when': {
+            for (const branch of node.cases) {
+                if (branch.conditionIsTautology) {
+                    return evaluateExpression(branch.thenExpr)
+                }
+
+                const condition = evaluateExpression(branch.condition)
+                if (!condition.evaluable) continue
+                if (condition.value === true) return evaluateExpression(branch.thenExpr)
+            }
+
+            if (node.elseExpr) {
+                return evaluateExpression(node.elseExpr)
+            }
+
+            return { evaluable: true, value: null }
         }
 
         case 'boolean_op': {
@@ -916,15 +1136,18 @@ function stringifyExpression(node: ExpressionNode): string {
         case 'literal_string': return `'${node.value}'`
         case 'literal_bool': return node.value ? 'TRUE' : 'FALSE'
         case 'literal_null': return 'NULL'
+        case 'tautology': return 'TAUTOLOGY'
         case 'identifier': return node.name
         case 'comparison': return `${stringifyExpression(node.left)} ${node.operator} ${stringifyExpression(node.right)}`
         case 'boolean_op': return `${stringifyExpression(node.left)} ${node.operator} ${stringifyExpression(node.right)}`
+        case 'bitwise_not': return `~${stringifyExpression(node.operand)}`
         case 'not': return `NOT ${stringifyExpression(node.operand)}`
         case 'is_null': return `${stringifyExpression(node.operand)} IS ${node.negated ? 'NOT ' : ''}NULL`
         case 'between': return `${stringifyExpression(node.operand)} BETWEEN ${stringifyExpression(node.low)} AND ${stringifyExpression(node.high)}`
         case 'in_list': return `${stringifyExpression(node.operand)} IN (${node.values.map(stringifyExpression).join(', ')})`
         case 'like': return `${stringifyExpression(node.operand)} LIKE ${stringifyExpression(node.pattern)}`
         case 'function_call': return `${node.name}(${node.args.map(stringifyExpression).join(', ')})`
+        case 'case_when': return `CASE ${node.cases.map(c => `WHEN ${stringifyExpression(c.condition)} THEN ${stringifyExpression(c.thenExpr)}`).join(' ')}${node.elseExpr ? ` ELSE ${stringifyExpression(node.elseExpr)}` : ''} END`
         case 'unknown': return '?'
     }
 }
@@ -938,6 +1161,9 @@ function getExpressionPosition(node: ExpressionNode): number {
         case 'between': return getExpressionPosition(node.operand)
         case 'in_list': return getExpressionPosition(node.operand)
         case 'like': return getExpressionPosition(node.operand)
+        case 'case_when': return node.cases[0]?.condition ? getExpressionPosition(node.cases[0].condition) : 0
+        case 'bitwise_not': return getExpressionPosition(node.operand)
+        case 'tautology': return 0
         default: return 0
     }
 }

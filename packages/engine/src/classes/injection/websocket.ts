@@ -24,6 +24,7 @@ export const ws_injection: InvariantClassModule = {
     knownPayloads: [
         '{"event":"chat","message":"\' OR 1=1--"}',
         '{"type":"update","bio":"<script>alert(1)</script>"}',
+        '{"event":"search","query":"UNION SELECT username,password FROM users"}',
     ],
 
     knownBenign: [
@@ -65,11 +66,13 @@ export const ws_hijack: InvariantClassModule = {
     knownPayloads: [
         'GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://evil.example\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n',
         'GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://evil.example\r\n',
+        'GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: http://evil.example\r\nSec-WebSocket-Protocol: chat,<script>alert(1)</script>\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n',
     ],
 
     knownBenign: [
         'GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://app.example.com\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n',
         'GET /chat HTTP/1.1\r\nHost: app.example.com\r\nConnection: keep-alive\r\n',
+        'GET /socket HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nOrigin: https://app.example.com\r\n',
     ],
 
     detect: (input: string): boolean => {
@@ -81,7 +84,7 @@ export const ws_hijack: InvariantClassModule = {
         const missingKey = !/(?:^|\n)\s*sec-websocket-key\s*:/i.test(d)
         const injectedProtocol = /(?:^|\n)\s*sec-websocket-protocol\s*:.*(?:<script|union\s+select|\$\(|;\s*(?:drop|curl|bash))/i.test(d)
 
-        return suspiciousOrigin || missingKey || injectedProtocol
+        return suspiciousOrigin || injectedProtocol || (missingKey && suspiciousOrigin)
     },
 
     detectL2: l2WsHijack,

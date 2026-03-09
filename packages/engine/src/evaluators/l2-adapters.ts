@@ -94,7 +94,9 @@ export function l2CmdSeparator(input: string): DetectionLevelResult | null {
 export function l2CmdSubstitution(input: string): DetectionLevelResult | null {
     try {
         const relevant = detectCmdInjection(input).filter(d =>
-            d.type === 'substitution' || d.type === 'variable_expansion'
+            d.type === 'substitution' || (
+                d.type === 'variable_expansion' && !/^\$\d+$/.test(d.command)
+            )
         )
         if (relevant.length === 0) return null
         const match = relevant.reduce((a, b) => a.confidence > b.confidence ? a : b)

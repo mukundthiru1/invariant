@@ -35,6 +35,7 @@ import { detectEncodingEvasion } from './evaluators/canonical-normalizer.js'
 import { analyzePolyglot, type PolyglotDetection } from './evaluators/polyglot-detector.js'
 import { classifyIntent } from './evaluators/intent-classifier.js'
 import { constructProof } from './proof-constructor.js'
+import { InvariantError } from './invariant-error.js'
 
 import type {
     InvariantClass,
@@ -63,7 +64,7 @@ export { deepDecode }
 //
 // Injected by the edge sensor after decrypting a rule bundle.
 // The engine uses these to apply EPSS-weighted block thresholds.
-// The static SEVERITY_THRESHOLDS (below) remain as fallback — callers
+// The static SEVERITY_BLOCK_THRESHOLDS (below) remain as fallback — callers
 // that don't inject overrides get identical behavior to previous versions.
 
 export interface EngineThresholdOverride {
@@ -130,10 +131,10 @@ const CLASS_PREFIX_TO_CONTEXT_DOMAIN: Record<string, string> = {
     cmd: 'shell',
     ssrf: 'url', redirect: 'url',
     path: 'path',
-    ssti: 'template',
+    ssti: 'template', template: 'template',
     xxe: 'xml',
     deser: 'deser',
-    auth: 'auth', jwt: 'auth',
+    auth: 'auth', jwt: 'auth', credential: 'auth',
     nosql: 'nosql',
     proto: 'proto',
     log: 'log4j',
@@ -157,6 +158,93 @@ const CONTEXT_RELEVANCE: Record<string, { primary: Set<string>; secondary: Set<s
     graphql:  { primary: new Set(['graphql']),  secondary: new Set(['sql', 'nosql']) },
     url:      { primary: new Set(['url']),      secondary: new Set(['path', 'http']) },
 }
+
+
+export interface EngineErrorLogEntry {
+    timestamp: number
+    source: string
+    error: string
+}
+
+function sanitizeConf(v: number): number {
+    if (!isFinite(v) || isNaN(v)) return 0
+    return Math.max(0, Math.min(1, v))
+}
+
+export function sanitizeConfidence(value: number, fallback: number = 0.5): number {
+    if (!Number.isFinite(value) || Number.isNaN(value)) return sanitizeConf(fallback)
+    return sanitizeConf(value)
+}
+
+export const MAX_INPUT_LENGTH = 1_000_000
+const NULL_BYTE_RE = /\u0000/g
+
+function sanitizeInputBoundary(input: unknown): string | null {
+    if (typeof input !== 'string') return null
+    let sanitized = input
+    if (sanitized.includes('\u0000')) sanitized = sanitized.replace(NULL_BYTE_RE, '')
+    if (sanitized.length > MAX_INPUT_LENGTH) sanitized = sanitized.slice(0, MAX_INPUT_LENGTH)
+    return sanitized
+}
+
+function sanitizeStaticRuleIds(staticRuleIds: unknown): string[] {
+    if (!Array.isArray(staticRuleIds)) return []
+    return staticRuleIds.filter((ruleId): ruleId is string => typeof ruleId === 'string')
+}
+
+function sanitizeEnvironment(environment: unknown): string | undefined {
+    if (typeof environment !== 'string') return undefined
+    const trimmed = environment.trim()
+    return trimmed.length > 0 ? trimmed : undefined
+}
+
+function createEmptyDeepDetectionResult(): DeepDetectionResult {
+    return {
+        matches: [],
+        novelByL2: 0,
+        novelByL3: 0,
+        convergent: 0,
+        processingTimeUs: 0,
+        contexts: [],
+        encodingDepth: 0,
+        encodingEvasion: false,
+    }
+}
+
+function createEmptyAnalysisResult(processingTimeUs: number): AnalysisResult {
+    return {
+        matches: [],
+        compositions: [],
+        correlations: [],
+        recommendation: { block: false, confidence: 0, reason: 'invalid_input', threshold: 0 },
+        novelByL2: 0,
+        novelByL3: 0,
+        convergent: 0,
+        processingTimeUs,
+        contexts: [],
+        cveEnrichment: {
+            totalLinkedCves: 0,
+            activelyExploitedClasses: [],
+            highestEpss: 0,
+        },
+        encodingEvasion: false,
+    }
+}
+
+const SEVERITY_BLOCK_THRESHOLDS: Record<string, number> = {
+    critical: 0.45, // deser, rce-class attacks — block early
+    high: 0.65, // sqli, xss, ssrf
+    medium: 0.80, // path traversal, redirect
+    low: 0.92, // info-class signals
+}
+const COMPLETE_COMPOSITION_THRESHOLD = 0.90
+const DEFAULT_BLOCK_THRESHOLD = 0.75
+const COMPLETE_SKIP_PRIORITY_FLOOR = 0.05
+const DEFAULT_CLASS_PRIORITY_MULTIPLIER = 1.0
+const MAX_CONCURRENT = 10
+
+const AUTH_PATH_HINTS = ['/login', '/signin', '/auth', '/session', '/token', '/oauth']
+const TEMPLATE_PATH_HINTS = ['/template', '/render', '/preview', '/email', '/view']
 
 
 // ── Data-Driven Algebraic Composition Rules ─────────────────────
@@ -285,6 +373,56 @@ export class InvariantEngine {
     readonly knowledgeGraph: ExploitKnowledgeGraph
     private readonly thresholdOverrides: Map<InvariantClass, number>
     private readonly classPriorities: Map<InvariantClass, number>
+    private readonly errorLog: EngineErrorLogEntry[] = []
+
+    private applyConfig(config: unknown): void {
+        if (!config || typeof config !== 'object') return
+
+        const now = Date.now()
+        const candidate = config as {
+            thresholdOverrides?: unknown
+            classPriorities?: unknown
+        }
+
+        if (Array.isArray(candidate.thresholdOverrides)) {
+            for (const override of candidate.thresholdOverrides) {
+                if (!override || typeof override !== 'object') continue
+                const o = override as {
+                    invariantClass?: unknown
+                    adjustedThreshold?: unknown
+                    validUntil?: unknown
+                }
+                if (typeof o.invariantClass !== 'string') continue
+                if (typeof o.adjustedThreshold !== 'number' || !Number.isFinite(o.adjustedThreshold)) continue
+                if (typeof o.validUntil !== 'number' || !Number.isFinite(o.validUntil) || o.validUntil <= now) continue
+                this.thresholdOverrides.set(o.invariantClass as InvariantClass, sanitizeConf(o.adjustedThreshold))
+            }
+        }
+
+        if (candidate.classPriorities instanceof Map) {
+            for (const [cls, priority] of candidate.classPriorities) {
+                if (typeof cls !== 'string') continue
+                if (typeof priority !== 'number' || !Number.isFinite(priority)) continue
+                this.classPriorities.set(cls as InvariantClass, priority)
+            }
+        }
+    }
+
+    private recordError(source: string, error: unknown): void {
+        const errorString = error instanceof Error
+            ? `${error.name}: ${error.message}`
+            : String(error)
+
+        this.errorLog.push({
+            timestamp: Date.now(),
+            source,
+            error: errorString,
+        })
+
+        if (this.errorLog.length > 100) {
+            this.errorLog.shift()
+        }
+    }
 
     /**
      * Create an InvariantEngine.
@@ -299,18 +437,13 @@ export class InvariantEngine {
         this.registry.registerAll(ALL_CLASS_MODULES)
         this.knowledgeGraph = new ExploitKnowledgeGraph()
 
-        // Build effective threshold override map (skip expired entries)
         this.thresholdOverrides = new Map()
-        if (config?.thresholdOverrides) {
-            const now = Date.now()
-            for (const override of config.thresholdOverrides) {
-                if (override.validUntil > now) {
-                    this.thresholdOverrides.set(override.invariantClass, override.adjustedThreshold)
-                }
-            }
-        }
+        this.classPriorities = new Map()
+        this.applyConfig(config)
+    }
 
-        this.classPriorities = config?.classPriorities ?? new Map()
+    getErrorLog(): readonly EngineErrorLogEntry[] {
+        return this.errorLog
     }
 
     /**
@@ -320,20 +453,8 @@ export class InvariantEngine {
      */
     updateConfig(config: EngineConfig): void {
         this.thresholdOverrides.clear()
-        if (config.thresholdOverrides) {
-            const now = Date.now()
-            for (const override of config.thresholdOverrides) {
-                if (override.validUntil > now) {
-                    this.thresholdOverrides.set(override.invariantClass, override.adjustedThreshold)
-                }
-            }
-        }
-        if (config.classPriorities) {
-            this.classPriorities.clear()
-            for (const [cls, priority] of config.classPriorities) {
-                this.classPriorities.set(cls, priority)
-            }
-        }
+        this.classPriorities.clear()
+        this.applyConfig(config)
     }
 
     /**
@@ -341,35 +462,76 @@ export class InvariantEngine {
      * Fast path, backward compatible.
      */
     detect(input: string, staticRuleIds: string[], environment?: string): InvariantMatch[] {
-        const matches: InvariantMatch[] = []
+        const safeInput = sanitizeInputBoundary(input)
+        if (safeInput === null) return []
+        const safeStaticRuleIds = sanitizeStaticRuleIds(staticRuleIds)
+        const safeEnvironment = sanitizeEnvironment(environment)
 
-        for (const module of this.registry.all()) {
-            try {
-                if (module.detect(input)) {
-                    const isNovel = staticRuleIds.length === 0
-                    const confidence = this.registry.computeConfidence(
-                        module.id,
-                        input,
-                        environment,
-                        !isNovel,
-                    )
+        return this.registry.runInConfidenceScope((scope) => {
+            const matches: InvariantMatch[] = []
 
-                    matches.push({
-                        class: module.id,
-                        confidence,
-                        category: module.category,
-                        severity: module.severity,
-                        isNovelVariant: isNovel,
-                        description: module.description,
-                        detectionLevels: { l1: true, l2: false, convergent: false },
+            for (const module of this.registry.all()) {
+                try {
+                    if (module.detect(safeInput)) {
+                        const isNovel = safeStaticRuleIds.length === 0
+                        const confidence = sanitizeConf(this.registry.computeConfidence(
+                            module.id,
+                            safeInput,
+                            safeEnvironment,
+                            !isNovel,
+                            scope,
+                        ))
+
+                        matches.push({
+                            class: module.id,
+                            confidence,
+                            category: module.category,
+                            severity: module.severity,
+                            isNovelVariant: isNovel,
+                            description: module.description,
+                            detectionLevels: { l1: true, l2: false, convergent: false },
+                        })
+                    }
+                } catch (error) {
+                    this.recordError(`detect:${module.id}`, error)
+                }
+            }
+
+            return matches
+        })
+    }
+
+    async detectBatch(inputs: string[], staticRuleIds: string[] = [], environment?: string): Promise<InvariantMatch[][]> {
+        if (!Array.isArray(inputs)) {
+            throw new InvariantError('detectBatch inputs must be an array of strings', {
+                code: 'INVALID_BATCH_INPUT',
+                phase: 'l1',
+            })
+        }
+
+        const results: InvariantMatch[][] = new Array(inputs.length)
+        const workerCount = Math.min(MAX_CONCURRENT, inputs.length)
+        let cursor = 0
+
+        const runWorker = async (): Promise<void> => {
+            while (true) {
+                const index = cursor++
+                if (index >= inputs.length) return
+
+                const batchInput = inputs[index]
+                if (typeof batchInput !== 'string') {
+                    throw new InvariantError(`detectBatch input at index ${index} must be a string`, {
+                        code: 'INVALID_BATCH_ITEM',
+                        phase: 'l1',
                     })
                 }
-            } catch {
-                // Never let a detection failure break the engine
+
+                results[index] = this.detect(batchInput, staticRuleIds, environment)
             }
         }
 
-        return matches
+        await Promise.all(Array.from({ length: workerCount }, () => runWorker()))
+        return results
     }
 
     /**
@@ -382,11 +544,17 @@ export class InvariantEngine {
      * The additional latency is typically <1ms for L2 evaluators.
      */
     detectDeep(input: string, staticRuleIds: string[], environment?: string): DeepDetectionResult {
-        const start = performance.now()
-        const matchMap = new Map<InvariantClass, InvariantMatch>()
-        let novelByL2 = 0
-        let novelByL3 = 0
-        let convergent = 0
+        const safeInput = sanitizeInputBoundary(input)
+        if (safeInput === null) return createEmptyDeepDetectionResult()
+        const safeStaticRuleIds = sanitizeStaticRuleIds(staticRuleIds)
+        const safeEnvironment = sanitizeEnvironment(environment)
+
+        return this.registry.runInConfidenceScope((scope) => {
+            const start = performance.now()
+            const matchMap = new Map<InvariantClass, InvariantMatch>()
+            let novelByL2 = 0
+            let novelByL3 = 0
+            let convergent = 0
 
         for (const module of this.registry.all()) {
             let l1Detected = false
@@ -396,25 +564,30 @@ export class InvariantEngine {
 
             // ── Level 1: Regex fast-path ──
             try {
-                l1Detected = module.detect(input)
+                l1Detected = module.detect(safeInput)
                 if (l1Detected) {
-                    l1Confidence = this.registry.computeConfidence(
+                    l1Confidence = sanitizeConf(this.registry.computeConfidence(
                         module.id,
-                        input,
-                        environment,
-                        staticRuleIds.length > 0,
-                    )
+                        safeInput,
+                        safeEnvironment,
+                        safeStaticRuleIds.length > 0,
+                        scope,
+                    ))
                 }
-            } catch { /* never break */ }
+            } catch (error) {
+                this.recordError(`detectDeep.l1:${module.id}`, error)
+            }
 
             // ── Level 2: Structural evaluator ──
             if (module.detectL2) {
                 try {
-                    l2Result = module.detectL2(input)
+                    l2Result = module.detectL2(safeInput)
                     if (l2Result?.detected) {
                         l2Detected = true
                     }
-                } catch { /* never break */ }
+                } catch (error) {
+                    this.recordError(`detectDeep.l2:${module.id}`, error)
+                }
             }
 
             // ── Merge (L2-Primary Confidence Model) ──
@@ -430,15 +603,16 @@ export class InvariantEngine {
             // signature-based systems: confidence tracks mathematical certainty.
             if (!l1Detected && !l2Detected) continue
 
-            const isNovel = staticRuleIds.length === 0
+            const isNovel = safeStaticRuleIds.length === 0
 
             if (l1Detected && l2Detected) {
                 // CONVERGENT: both agree → strongest confidence signal.
                 // The regex caught the pattern AND the structural evaluator
                 // verified the mathematical property holds. Near-certain.
                 convergent++
-                const boostedConfidence = Math.min(0.99,
-                    Math.max(l1Confidence, l2Result!.confidence) + 0.05)
+                const boostedConfidence = sanitizeConf(
+                    Math.max(sanitizeConf(l1Confidence), sanitizeConf(l2Result!.confidence)) + 0.05,
+                )
                 const convergentMatch: InvariantMatch = {
                     class: module.id,
                     confidence: boostedConfidence,
@@ -449,7 +623,7 @@ export class InvariantEngine {
                     detectionLevels: { l1: true, l2: true, convergent: true },
                     l2Evidence: l2Result!.explanation,
                 }
-                const convergentProof = constructProof(module, input, l2Result)
+                const convergentProof = constructProof(module, safeInput, l2Result)
                 if (convergentProof) convergentMatch.proof = convergentProof
                 matchMap.set(module.id, convergentMatch)
             } else if (l2Detected && !l1Detected) {
@@ -460,7 +634,7 @@ export class InvariantEngine {
                 novelByL2++
                 const novelMatch: InvariantMatch = {
                     class: module.id,
-                    confidence: l2Result!.confidence,
+                    confidence: sanitizeConf(l2Result!.confidence),
                     category: module.category,
                     severity: module.severity,
                     isNovelVariant: true,
@@ -468,7 +642,7 @@ export class InvariantEngine {
                     detectionLevels: { l1: false, l2: true, convergent: false },
                     l2Evidence: l2Result!.explanation,
                 }
-                const novelProof = constructProof(module, input, l2Result)
+                const novelProof = constructProof(module, safeInput, l2Result)
                 if (novelProof) novelMatch.proof = novelProof
                 matchMap.set(module.id, novelMatch)
             } else {
@@ -484,11 +658,11 @@ export class InvariantEngine {
                 // while regex-only noise gets attenuated to ~0.70.
                 const hasL2 = !!module.detectL2
                 const attenuatedConfidence = hasL2
-                    ? l1Confidence * 0.82
+                    ? sanitizeConf(l1Confidence * 0.82)
                     : l1Confidence
                 const l1Match: InvariantMatch = {
                     class: module.id,
-                    confidence: attenuatedConfidence,
+                    confidence: sanitizeConf(attenuatedConfidence),
                     category: module.category,
                     severity: module.severity,
                     isNovelVariant: isNovel,
@@ -496,7 +670,7 @@ export class InvariantEngine {
                     detectionLevels: { l1: true, l2: false, convergent: false },
                 }
                 // L1-only still gets structural proof (no L2 semantic step)
-                const l1Proof = constructProof(module, input, null)
+                const l1Proof = constructProof(module, safeInput, null)
                 if (l1Proof) l1Match.proof = l1Proof
                 matchMap.set(module.id, l1Match)
             }
@@ -509,14 +683,14 @@ export class InvariantEngine {
         // that neither regex nor evaluator caught.
         let decomposition: DecompositionResult | null = null
         try {
-            decomposition = decomposeInput(input)
+            decomposition = decomposeInput(safeInput)
             for (const prop of decomposition.properties) {
                 if (!matchMap.has(prop.invariantClass)) {
                     // L3-only detection: structural decomposition found a property
                     novelByL3++
-                    matchMap.set(prop.invariantClass, {
-                        class: prop.invariantClass,
-                        confidence: prop.confidence,
+                        matchMap.set(prop.invariantClass, {
+                            class: prop.invariantClass,
+                        confidence: sanitizeConf(prop.confidence),
                         category: this.registry.get(prop.invariantClass)?.category ?? 'unknown',
                         severity: this.registry.get(prop.invariantClass)?.severity ?? 'medium',
                         isNovelVariant: true, // ALWAYS novel if L3-only
@@ -527,7 +701,9 @@ export class InvariantEngine {
                     })
                 }
             }
-        } catch { /* never break the pipeline */ }
+        } catch (error) {
+            this.recordError('detectDeep.decompose', error)
+        }
 
         // ── Step 3a: Proof-Based Confidence Augmentation ──
         // A complete PropertyProof (all 3 algebraic phases: escape + payload + repair)
@@ -536,10 +712,11 @@ export class InvariantEngine {
         // elevate the detection. This prevents complete proofs from being attenuated
         // below their structural certainty by L1-only attenuation or context weighting.
         for (const [cls, match] of matchMap) {
-            if (match.proof?.isComplete && match.proof.proofConfidence > match.confidence) {
+            const currentConfidence = sanitizeConf(match.confidence)
+            if (match.proof?.isComplete && sanitizeConf(match.proof.proofConfidence) > currentConfidence) {
                 matchMap.set(cls, {
                     ...match,
-                    confidence: Math.min(0.99, match.proof.proofConfidence),
+                    confidence: sanitizeConf(match.proof.proofConfidence),
                 })
             }
         }
@@ -549,29 +726,32 @@ export class InvariantEngine {
         // boost detections matching that context and attenuate others.
         // The invariant: if you KNOW the input goes into a SQL query,
         // SQL detection confidence is near-certain while XSS is background noise.
-        if (environment && matchMap.size > 0) {
-            const contextBoost = CONTEXT_RELEVANCE[environment]
+        if (safeEnvironment && matchMap.size > 0) {
+            const contextBoost = CONTEXT_RELEVANCE[safeEnvironment]
             if (contextBoost) {
                 for (const [cls, match] of matchMap) {
                     const prefix = cls.split('_')[0]
                     const domain = CLASS_PREFIX_TO_CONTEXT_DOMAIN[prefix]
                     if (domain && contextBoost.primary.has(domain)) {
                         // Primary context match — boost
+                        const safeConfidence = sanitizeConf(match.confidence)
                         matchMap.set(cls, {
                             ...match,
-                            confidence: Math.min(0.99, match.confidence + 0.10),
+                            confidence: sanitizeConf(safeConfidence + 0.10),
                         })
                     } else if (domain && contextBoost.secondary.has(domain)) {
                         // Related context — mild boost
+                        const safeConfidence = sanitizeConf(match.confidence)
                         matchMap.set(cls, {
                             ...match,
-                            confidence: Math.min(0.99, match.confidence + 0.04),
+                            confidence: sanitizeConf(safeConfidence + 0.04),
                         })
                     } else if (domain) {
                         // Unrelated context — attenuate (don't remove; polyglots are real)
+                        const safeConfidence = sanitizeConf(match.confidence)
                         matchMap.set(cls, {
                             ...match,
-                            confidence: match.confidence * 0.85,
+                            confidence: sanitizeConf(safeConfidence * 0.85),
                         })
                     }
                 }
@@ -582,25 +762,25 @@ export class InvariantEngine {
         // Apply cross-cutting entropy/structural anomaly signal.
         // This adjusts confidence based on universal statistical properties
         // of the input — works for ALL attack classes simultaneously.
-        const anomalyMultiplier = anomalyConfidenceMultiplier(input)
+        const anomalyMultiplier = sanitizeConf(anomalyConfidenceMultiplier(safeInput))
         let anomalyProfile: AnomalyProfile | undefined
         let encodingEvasion = false
 
-        if (matchMap.size > 0 || input.length > 20) {
-            anomalyProfile = computeAnomalyProfile(input)
+        if (matchMap.size > 0 || safeInput.length > 20) {
+            anomalyProfile = computeAnomalyProfile(safeInput)
 
             // Apply anomaly multiplier to all detections
             if (anomalyMultiplier !== 1.0) {
                 for (const [cls, match] of matchMap) {
                     matchMap.set(cls, {
                         ...match,
-                        confidence: Math.min(0.99, match.confidence * anomalyMultiplier),
+                        confidence: sanitizeConf(sanitizeConf(match.confidence) * anomalyMultiplier),
                     })
                 }
             }
 
             // Check for encoding evasion
-            const evasion = detectEncodingEvasion(input)
+            const evasion = detectEncodingEvasion(safeInput)
             encodingEvasion = evasion.isEvasion
         }
 
@@ -617,41 +797,73 @@ export class InvariantEngine {
                 for (const [cls, match] of matchMap) {
                     matchMap.set(cls, {
                         ...match,
-                        confidence: Math.min(0.99, match.confidence + polyglot.confidenceBoost),
+                        confidence: sanitizeConf(
+                            sanitizeConf(match.confidence) + sanitizeConf(polyglot.confidenceBoost),
+                        ),
                     })
                 }
             }
         }
 
-        return {
-            matches: Array.from(matchMap.values()),
-            novelByL2,
-            novelByL3,
-            convergent,
-            processingTimeUs: (performance.now() - start) * 1000,
-            contexts: decomposition?.contexts?.map(c => String(c)) ?? [],
-            encodingDepth: decomposition?.encoding?.encodingDepth ?? 0,
-            anomalyProfile,
-            encodingEvasion,
-            polyglot,
-        }
+            return {
+                matches: Array.from(matchMap.values()),
+                novelByL2,
+                novelByL3,
+                convergent,
+                processingTimeUs: (performance.now() - start) * 1000,
+                contexts: decomposition?.contexts?.map(c => String(c)) ?? [],
+                encodingDepth: decomposition?.encoding?.encodingDepth ?? 0,
+                anomalyProfile,
+                encodingEvasion,
+                polyglot,
+            }
+        })
     }
 
     analyze(request: AnalysisRequest): AnalysisResult {
         const start = performance.now()
+        if (!request || typeof request !== 'object') {
+            return createEmptyAnalysisResult((performance.now() - start) * 1000)
+        }
+
+        const safeInput = sanitizeInputBoundary((request as { input?: unknown }).input)
+        if (safeInput === null) {
+            return createEmptyAnalysisResult((performance.now() - start) * 1000)
+        }
+
+        const safeKnownContext = typeof request.knownContext === 'string' ? request.knownContext : undefined
+        const safeSourceReputation = (
+            typeof request.sourceReputation === 'number' && Number.isFinite(request.sourceReputation)
+        ) ? request.sourceReputation : undefined
+        const safeRequestMeta = request.requestMeta && typeof request.requestMeta === 'object'
+            ? {
+                method: typeof request.requestMeta.method === 'string' ? request.requestMeta.method : undefined,
+                path: typeof request.requestMeta.path === 'string' ? request.requestMeta.path : undefined,
+                contentType: typeof request.requestMeta.contentType === 'string' ? request.requestMeta.contentType : undefined,
+            }
+            : undefined
+        const safeRequest: AnalysisRequest = {
+            input: safeInput,
+            knownContext: safeKnownContext,
+            sourceReputation: safeSourceReputation,
+            requestMeta: safeRequestMeta,
+        }
 
         // Step 1: Run full deep detection
-        const deep = this.detectDeep(request.input, [], request.knownContext as string | undefined)
+        const deep = this.detectDeep(safeInput, [], safeKnownContext as string | undefined)
 
         // Step 2: Apply source reputation prior — boost confidence if source is known hostile
         let matches = deep.matches
-        if (request.sourceReputation && request.sourceReputation > 0.6) {
-            const boost = (request.sourceReputation - 0.6) * 0.4  // 0–0.16 boost
+        if (safeSourceReputation && safeSourceReputation > 0.6) {
+            const boost = sanitizeConf((safeSourceReputation - 0.6) * 0.4)
             matches = matches.map(m => ({
                 ...m,
-                confidence: Math.min(0.99, m.confidence + boost),
+                confidence: sanitizeConf(m.confidence + boost),
             }))
         }
+
+        // Step 2b: Contextual risk scoring from request metadata
+        matches = this.applyContextualRiskScoring(matches, safeRequest)
 
         // Step 3: Compute inter-class correlations
         const correlations = this.registry.computeCorrelations(matches)
@@ -662,14 +874,19 @@ export class InvariantEngine {
             if (maxCorrelation.compoundConfidence > 0) {
                 matches = matches.map(m =>
                     maxCorrelation.classes.includes(m.class)
-                        ? { ...m, confidence: Math.min(0.99, Math.max(m.confidence, maxCorrelation.compoundConfidence)) }
+                        ? {
+                            ...m,
+                            confidence: sanitizeConf(
+                                Math.max(sanitizeConf(m.confidence), sanitizeConf(maxCorrelation.compoundConfidence)),
+                            ),
+                        }
                         : m
                 )
             }
         }
 
         // Step 5: Detect algebraic compositions
-        const compositions = this.detectCompositions(matches, request.knownContext)
+        const compositions = this.detectCompositions(matches, safeKnownContext)
 
         // Step 6: Compute block recommendation with per-severity thresholds
         const recommendation = this.computeBlockRecommendation(matches, compositions)
@@ -691,8 +908,8 @@ export class InvariantEngine {
                     }
                     // Boost confidence for actively exploited CVEs
                     const boostedConfidence = enrichment.activelyExploited
-                        ? Math.min(0.99, m.confidence + 0.05)
-                        : m.confidence
+                        ? sanitizeConf(m.confidence + 0.05)
+                        : sanitizeConf(m.confidence)
                     return {
                         ...m,
                         confidence: boostedConfidence,
@@ -706,11 +923,13 @@ export class InvariantEngine {
                 }
                 return m
             })
-        } catch { /* knowledge graph is optional */ }
+        } catch (error) {
+            this.recordError('analyze.kg', error)
+        }
 
         // Step 8: Intent classification — what would the attack DO if it succeeded?
         const intent = matches.length > 0
-            ? classifyIntent(matches.map(m => m.class), request.input, request.requestMeta?.path)
+            ? classifyIntent(matches.map(m => m.class), safeInput, safeRequestMeta?.path)
             : undefined
 
         return {
@@ -733,6 +952,51 @@ export class InvariantEngine {
             encodingEvasion: deep.encodingEvasion,
             intent,
         }
+    }
+
+    private applyContextualRiskScoring(matches: InvariantMatch[], request: AnalysisRequest): InvariantMatch[] {
+        if (matches.length === 0) return matches
+
+        const path = (request.requestMeta?.path ?? '').toLowerCase()
+        const method = (request.requestMeta?.method ?? '').toUpperCase()
+        const contentType = (request.requestMeta?.contentType ?? '').toLowerCase()
+        const knownContext = String(request.knownContext ?? '').toLowerCase()
+
+        return matches.map(match => {
+            let confidence = sanitizeConf(match.confidence)
+
+            if (match.class === 'credential_stuffing') {
+                if (AUTH_PATH_HINTS.some(p => path.includes(p))) {
+                    confidence = sanitizeConf(confidence + 0.08)
+                }
+                if (method === 'POST') {
+                    confidence = sanitizeConf(confidence + 0.04)
+                }
+                if (contentType.includes('application/json') || contentType.includes('application/x-www-form-urlencoded')) {
+                    confidence = sanitizeConf(confidence + 0.03)
+                }
+                if (!AUTH_PATH_HINTS.some(p => path.includes(p)) && method === 'GET') {
+                    confidence = sanitizeConf(confidence * 0.90)
+                }
+            }
+
+            if (match.class === 'template_injection_generic') {
+                if (knownContext === 'template' || knownContext === 'html') {
+                    confidence = sanitizeConf(confidence + 0.07)
+                }
+                if (TEMPLATE_PATH_HINTS.some(p => path.includes(p))) {
+                    confidence = sanitizeConf(confidence + 0.05)
+                }
+                if (contentType.includes('text/html') || contentType.includes('application/xhtml+xml')) {
+                    confidence = sanitizeConf(confidence + 0.03)
+                }
+                if (!TEMPLATE_PATH_HINTS.some(p => path.includes(p)) && contentType.startsWith('image/')) {
+                    confidence = sanitizeConf(confidence * 0.92)
+                }
+            }
+
+            return { ...match, confidence: sanitizeConf(confidence) }
+        })
     }
 
     /**
@@ -771,25 +1035,15 @@ export class InvariantEngine {
             return { block: false, confidence: 0, reason: 'no_detections', threshold: 0 }
         }
 
-        // Per-severity static thresholds — fallback when no EPSS override is present.
-        // EPSS-weighted overrides are injected by the edge sensor after decrypting
-        // the rule bundle (see EngineConfig). Callers with no config get these values
-        // unchanged — full backwards compatibility.
-        const SEVERITY_THRESHOLDS: Record<string, number> = {
-            critical: 0.45,  // deser, rce-class attacks — block early
-            high: 0.65,  // sqli, xss, ssrf
-            medium: 0.80,  // path traversal, redirect
-            low: 0.92,  // info-class signals
-        }
-
         // Check compositions first — a structurally complete injection always blocks,
         // regardless of thresholds. A complete SQL injection is a complete SQL injection.
-        const completeComposition = compositions.find(c => c.isComplete && c.confidence >= 0.90)
+        const completeComposition = compositions.find(c => c.isComplete && c.confidence >= COMPLETE_COMPOSITION_THRESHOLD)
         if (completeComposition) {
             return {
-                block: true, confidence: completeComposition.confidence,
+                block: true,
+                confidence: sanitizeConf(completeComposition.confidence),
                 reason: `complete_injection_structure:${completeComposition.payload}`,
-                threshold: 0.90,
+                threshold: COMPLETE_COMPOSITION_THRESHOLD,
             }
         }
 
@@ -805,19 +1059,19 @@ export class InvariantEngine {
         //    If effectiveConfidence drops below 0.05 the match is not actionable.
         //
         // 2. EPSS-WEIGHTED THRESHOLD OVERRIDE (from dispatched bundle)
-        //    threshold = min(override, SEVERITY_THRESHOLDS[severity])
+        //    threshold = min(override, SEVERITY_BLOCK_THRESHOLDS[severity])
         //    We take the MIN so EPSS can only lower the threshold (tighten detection)
         //    and never accidentally raise it above the severity floor — a dispatched
         //    bundle must not be able to soften blocking of critical-severity classes.
         for (const match of matches) {
-            const priorityMultiplier = this.classPriorities.get(match.class as InvariantClass) ?? 1.0
+            const priorityMultiplier = this.classPriorities.get(match.class as InvariantClass) ?? DEFAULT_CLASS_PRIORITY_MULTIPLIER
             // A zero multiplier means the tech stack cannot be affected by this class —
             // skip without penalizing the overall confidence picture.
-            if (priorityMultiplier < 0.05) continue
+            if (priorityMultiplier < COMPLETE_SKIP_PRIORITY_FLOOR) continue
 
-            const effectiveConfidence = Math.min(match.confidence * priorityMultiplier, 1.0)
+            const effectiveConfidence = sanitizeConf(match.confidence * priorityMultiplier)
 
-            const severityFloor = SEVERITY_THRESHOLDS[match.severity] ?? 0.75
+            const severityFloor = SEVERITY_BLOCK_THRESHOLDS[match.severity] ?? DEFAULT_BLOCK_THRESHOLD
             const epssOverride = this.thresholdOverrides.get(match.class as InvariantClass)
             // EPSS can only tighten (lower) the threshold, never relax it.
             const threshold = epssOverride !== undefined
@@ -839,11 +1093,11 @@ export class InvariantEngine {
         }
 
         // No match exceeded its threshold. Report advisory state.
-        const maxConfidence = matches.length > 0 ? Math.max(...matches.map(m => m.confidence)) : 0
+        const maxConfidence = matches.length > 0 ? Math.max(...matches.map(m => sanitizeConf(m.confidence))) : 0
         return {
-            block: false, confidence: maxConfidence,
+            block: false, confidence: sanitizeConf(maxConfidence),
             reason: 'below_severity_thresholds',
-            threshold: SEVERITY_THRESHOLDS[this.highestSeverity(matches)] ?? 0.75,
+            threshold: SEVERITY_BLOCK_THRESHOLDS[this.highestSeverity(matches)] ?? DEFAULT_BLOCK_THRESHOLD,
         }
     }
 
@@ -851,6 +1105,7 @@ export class InvariantEngine {
      * Check headers specifically for auth bypass invariants.
      */
     detectHeaderInvariants(headers: Headers): InvariantMatch[] {
+        if (!(headers instanceof Headers)) return []
         const matches: InvariantMatch[] = []
 
         const forwardHeaders = [
@@ -900,10 +1155,12 @@ export class InvariantEngine {
     }
 
     shouldBlock(matches: InvariantMatch[]): boolean {
+        if (!Array.isArray(matches)) return false
         return this.computeBlockRecommendation(matches, []).block
     }
 
     highestSeverity(matches: InvariantMatch[]): 'critical' | 'high' | 'medium' | 'low' | 'info' {
+        if (!Array.isArray(matches)) return 'info'
         const order = ['info', 'low', 'medium', 'high', 'critical'] as const
         let max = 0
         for (const m of matches) {
@@ -914,9 +1171,12 @@ export class InvariantEngine {
     }
 
     generateVariants(cls: InvariantClass, count: number): string[] {
+        if (typeof cls !== 'string') return []
+        if (typeof count !== 'number' || !Number.isFinite(count)) return []
+        const safeCount = Math.max(0, Math.floor(count))
         const module = this.registry.get(cls)
         if (!module) return []
-        return module.generateVariants(count)
+        return module.generateVariants(safeCount)
     }
 
     get classCount(): number {

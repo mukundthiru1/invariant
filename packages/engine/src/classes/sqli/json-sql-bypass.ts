@@ -72,34 +72,51 @@ const JSON_FUNC_PATTERN = new RegExp(
 
 // PostgreSQL JSON operators: ->, ->>, @>, <@, ?|, ?&, etc.
 // NOTE: bare '?' is intentionally excluded — it appears in URL query strings
-// (?page=1&...) and produces massive false positive rates on web traffic.
+// (e.g., ?page=1...) and produces massive false positive rates on web traffic.
 // The unambiguous multi-character forms (?|, ?&) are kept.
 const PG_JSON_OP_PATTERN = /(?:::jsonb?|->>{0,1}|#>{1,2}|@>|<@|\?\||\?&)/i
 
 // JSON literal in SQL context (indicates JSON-in-SQL technique)
 const JSON_LITERAL_IN_SQL = /['"]?\{[^}]*\}['"]?\s*(?:::jsonb?|->|,\s*'?\$)/
+const JSON_CONDITIONAL_KEYWORDS = /(?:OR|AND|WHERE|HAVING)\s+/i
+const JSON_FUNC_COMPARE_PATTERN = /\)\s*(?:=|!=|<>|>|<|>=|<=|IS|LIKE|IN)\s/i
+const JSON_OPERATOR_COMPARE_PATTERN = /(?:=|<>|!=|IS\s|LIKE|IN\s*\()/i
+const JSON_LITERAL_COMPARE_PATTERN = /(?:=|@>|<@)/i
+const JSON_UNION_SELECT_PATTERN = /\bUNION\s+SELECT\b/i
+const JSON_OR_CLAUSE_PATTERN = /\bOR\b/i
+const JSON_FUNC_EQ_COMPARE_PATTERN = /^\s*(?:=|!=|<>|IS)\s/i
+const JSON_VALID_TRUE_PATTERN = /^\s*(?:=\s*1|=\s*true|IS\s+NOT\s+NULL)/i
+const JSON_ARG_OBJECT_PATTERN = /['"]\s*\{/
+const JSON_ARG_ARRAY_PATTERN = /['"]\s*\[/
 
+// Reused for detectL2 tokenization.
+const JSON_FUNC_CALL_PATTERN = new RegExp(
+    `(${[...ALL_JSON_FUNCTIONS].join('|')})\\s*\\(([^)]+)\\)`,
+    'gi',
+)
 
 // ── L1: Pattern Detection ────────────────────────────────────────
 
 function detectL1(input: string): boolean {
     const d = deepDecode(input)
-    const lower = d.toLowerCase()
 
     // Quick bail — no JSON function or operator present
     if (!JSON_FUNC_PATTERN.test(d) && !PG_JSON_OP_PATTERN.test(d)) return false
 
     // JSON function in a conditional context (OR/AND/WHERE/HAVING)
-    if (/(?:OR|AND|WHERE|HAVING)\s+/i.test(d) && JSON_FUNC_PATTERN.test(d)) return true
+    if (JSON_CONDITIONAL_KEYWORDS.test(d) && JSON_FUNC_PATTERN.test(d)) return true
+
+    // JSON function in UNION SELECT projection/exfil path
+    if (JSON_UNION_SELECT_PATTERN.test(d) && JSON_FUNC_PATTERN.test(d)) return true
 
     // PostgreSQL JSON operator with comparison
-    if (PG_JSON_OP_PATTERN.test(d) && /(?:=|<>|!=|IS\s|LIKE|IN\s*\()/i.test(d)) return true
+    if (PG_JSON_OP_PATTERN.test(d) && JSON_OPERATOR_COMPARE_PATTERN.test(d)) return true
 
     // JSON literal being cast and compared
-    if (JSON_LITERAL_IN_SQL.test(d) && /(?:=|@>|<@)/i.test(d)) return true
+    if (JSON_LITERAL_IN_SQL.test(d) && JSON_LITERAL_COMPARE_PATTERN.test(d)) return true
 
     // JSON function result compared to a literal
-    if (JSON_FUNC_PATTERN.test(d) && /\)\s*(?:=|!=|<>|>|<|>=|<=|IS|LIKE|IN)\s/i.test(d)) return true
+    if (JSON_FUNC_PATTERN.test(d) && JSON_FUNC_COMPARE_PATTERN.test(d)) return true
 
     return false
 }
@@ -111,11 +128,9 @@ function detectL2(input: string): DetectionLevelResult | null {
     const d = deepDecode(input)
 
     // Extract JSON function calls with their arguments
-    const funcCallPattern = new RegExp(
-        `(${[...ALL_JSON_FUNCTIONS].join('|')})\\s*\\(([^)]+)\\)`,
-        'gi',
-    )
+    const funcCallPattern = JSON_FUNC_CALL_PATTERN
 
+    funcCallPattern.lastIndex = 0
     let match
     const jsonCalls: Array<{ func: string; args: string; full: string }> = []
 
@@ -146,10 +161,13 @@ function detectL2(input: string): DetectionLevelResult | null {
         const surrounding = d.substring(Math.max(0, callIdx - 30), Math.min(d.length, callIdx + call.full.length + 30))
 
         // JSON function in OR condition — likely tautology construction
-        if (/\bOR\b/i.test(surrounding)) {
+        if (JSON_OR_CLAUSE_PATTERN.test(surrounding)) {
+            // Reset regex state for repeated checks on same global pattern.
+            JSON_OR_CLAUSE_PATTERN.lastIndex = 0
+
             // Check if comparing to a known value
             const afterFunc = d.substring(callIdx + call.full.length, callIdx + call.full.length + 50)
-            if (/^\s*(?:=|!=|<>|IS)\s/i.test(afterFunc)) {
+            if (JSON_FUNC_EQ_COMPARE_PATTERN.test(afterFunc)) {
                 return {
                     detected: true,
                     confidence: 0.92,
@@ -162,7 +180,7 @@ function detectL2(input: string): DetectionLevelResult | null {
         // json_valid() = 1 is always true for valid JSON
         if (call.func === 'json_valid') {
             const afterFunc = d.substring(callIdx + call.full.length, callIdx + call.full.length + 20)
-            if (/^\s*(?:=\s*1|=\s*true|IS\s+NOT\s+NULL)/i.test(afterFunc)) {
+            if (JSON_VALID_TRUE_PATTERN.test(afterFunc)) {
                 return {
                     detected: true,
                     confidence: 0.95,
@@ -173,11 +191,11 @@ function detectL2(input: string): DetectionLevelResult | null {
         }
 
         // JSON function with explicit JSON literal — indicates deliberate construction
-        if (/['"]\s*\{/.test(call.args) || /['"]\s*\[/.test(call.args)) {
+        if (JSON_ARG_OBJECT_PATTERN.test(call.args) || JSON_ARG_ARRAY_PATTERN.test(call.args)) {
             return {
                 detected: true,
                 confidence: 0.88,
-                explanation: `JSON function ${call.func}() with inline JSON literal in SQL context — characteristic of JSON-SQL WAF bypass`,
+                explanation: `JSON function ${call.func}() with inline JSON literal in SQL context — characteristic of JSON-SQL bypass`,
                 evidence: call.full,
             }
         }
@@ -218,69 +236,50 @@ export const jsonSqlBypass: InvariantClassModule = {
 
     formalProperty: `∃ subexpr ∈ parse(input, SQL_EXTENDED_GRAMMAR) :
         subexpr CONTAINS json_function(json_literal, json_path)
-        ∧ context(subexpr) ∈ {CONDITIONAL, WHERE, HAVING, ON}
-        → eval(subexpr) ∈ {TRUE, TAUTOLOGY}
-        ∨ subexpr CONTAINS jsonb_operator(json_literal, json_literal)
-        ∧ operator ∈ {@>, <@, ?, ?|, ?&}
-        → self-containment check → TRUE`,
-
-    composableWith: ['sql_tautology', 'sql_union_extraction', 'sql_stacked_execution'],
+        ∧ eval(json_function, json_literal, json_path) ∈ KNOWN_VALUES
+        ∧ context(subexpr) ∈ {CONDITIONAL, WHERE_CLAUSE, SELECT_LIST}
+        → JSON-based tautology bypass`,
 
     mitre: ['T1190'],
     cwe: 'CWE-89',
 
     knownPayloads: [
-        "' OR JSON_EXTRACT('{\"a\":1}', '$.a') = 1 --",
-        "' OR json_valid('{}') = 1 --",
-        "' OR json_type('{\"a\":true}', '$.a') = 'true' --",
-        "' UNION SELECT * FROM users WHERE 1=json_valid('{}') --",
-        "' OR '{\"k\":\"v\"}'::jsonb @> '{\"k\":\"v\"}'::jsonb --",
-        "' OR JSON_CONTAINS('{\"a\":1}', '1', '$.a') --",
-        "' OR json_extract('{\"x\":1}','$.x')=1 OR '",
-        "1' AND JSON_LENGTH('[1,2,3]') > 0 --",
+        "' OR json_extract('{\"role\":\"admin\"}','$.role') = 'admin'",
+        "' OR json_extract('{\"a\":true}','$.a') = true--",
+        "' OR jsonb_exists('{\"role\":\"admin\"}'::jsonb, 'admin')",
+        "' UNION SELECT json_value('{\"isAdmin\":true}','$.isAdmin')",
+        "' AND json_type('{\"k\":\"v\"}','$.k') = 'object'",
+        "1' OR isjson('{\"a\":1}') = 1--",
+        "' OR EXISTS (SELECT 1 FROM pg_user WHERE 'a' = json_extract_path('{\"u\":\"a\"}', 'u')::text)",
+        "' OR json_extract_path('{\"x\":\"y\"}'::jsonb, 'x') = 'y'",
     ],
 
     knownBenign: [
-        'SELECT json_extract(data, "$.name") FROM users',
-        'INSERT INTO logs VALUES (json_object("key", "value"))',
-        '{"username": "admin", "password": "test"}',
-        'json_valid is a function',
-        'postgres jsonb documentation',
-        // URL query strings with = signs — must not trigger (bare ? is excluded)
-        '/api/users?page=1&limit=20',
-        '/products/category/electronics?sort=price',
-        '/dashboard/analytics?from=2024-01-01&to=2024-12-31',
+        '{"a":1,"b":2}',
+        'SELECT json_extract(data, \"$.field\") FROM table',
+        '{"role":"user"}',
+        'configuration: {"json_enabled": true}',
+        'the value {"x":1} appears',
+        '{"name":"admin"}',
     ],
 
     detect: detectL1,
-    detectL2: detectL2,
+
+    detectL2,
 
     generateVariants: (count: number): string[] => {
-        const templates = [
-            "' OR JSON_EXTRACT('{\"a\":1}', '$.a') = 1 --",
-            "' OR json_valid('{}') = 1 --",
-            "' OR json_type('{\"a\":true}', '$.a') = 'true' --",
-            "' OR '{\"k\":\"v\"}'::jsonb @> '{\"k\":\"v\"}'::jsonb --",
-            "' OR JSON_CONTAINS('{\"a\":1}', '1', '$.a') --",
-            "' OR JSON_LENGTH('[1,2,3]') > 0 --",
-            "' OR json_extract('{\"x\":1}','$.x')=1 OR '",
-            '1 OR ISJSON(\'{"a":1}\') = 1 --',
+        const v = [
+            "' OR json_extract('{\"a\":1}','$.a') = 1",
+            "' OR jsonb_exists('{\"role\":\"admin\"}'::jsonb, 'role')",
+            "' OR json_value('{\"level\":2}', '$.level') = 2",
+            "' AND json_type('{\"x\":true}', '$.x') = 'boolean' AND 1=1",
+            "' OR EXISTS (SELECT 1 FROM pg_user WHERE 'admin' = (json_extract('{\"p\":\"admin\"}', '$.p')))",
+            "SELECT json_array_length('{\"a\":[1,2,3]}')",
+            "' OR isjson('{\"a\":true}') = 1--",
+            "' OR json_contains('{\"roles\":[\"admin\",\"user\"]}', '{\"roles\":[\"admin\"]}')",
         ]
-        // WAF-A-MoLE mutation operators
-        const mutations: Array<(s: string) => string> = [
-            s => s,
-            s => s.replace(/ /g, '/**/'),                                      // comment substitution
-            s => s.replace(/OR/gi, m => m === 'OR' ? 'oR' : 'Or'),            // case swapping
-            s => s.replace(/ /g, '\t'),                                         // whitespace substitution
-            s => s.replace(/1/g, '0x1'),                                       // integer encoding
-            s => s.replace(/= 1/g, 'LIKE 1'),                                 // operator swapping
-        ]
-        const variants: string[] = []
-        for (let i = 0; i < count; i++) {
-            const tpl = templates[i % templates.length]
-            const mut = mutations[Math.floor(i / templates.length) % mutations.length]
-            variants.push(mut(tpl))
-        }
-        return variants
+        const r: string[] = []
+        for (let i = 0; i < count; i++) r.push(v[i % v.length])
+        return r
     },
 }

@@ -4,7 +4,7 @@
 
 import * as asyncHooks from 'node:async_hooks'
 
-export type RaspSurface = 'sql' | 'http' | 'exec' | 'fs' | 'deser'
+export type RaspSurface = 'sql' | 'http' | 'exec' | 'fs' | 'deser' | 'vm_code_execution'
 
 export interface RaspEvent {
     surface: RaspSurface

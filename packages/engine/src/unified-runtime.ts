@@ -173,6 +173,22 @@ export interface DefenseDecision {
     }
 }
 
+export interface UnifiedRuntimeErrorLogEntry {
+    timestamp: number
+    source: string
+    error: string
+}
+
+export class UnifiedRuntimeError extends Error {
+    readonly code: string
+
+    constructor(code: string, message: string) {
+        super(message)
+        this.name = 'UnifiedRuntimeError'
+        this.code = code
+    }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════
 // DATA-DRIVEN ROUTING TABLES
@@ -274,6 +290,8 @@ const CLASS_BEHAVIORS: readonly ClassBehaviorRule[] = [
     { classes: ['log_jndi_lookup'], behaviors: ['outbound_connection', 'class_loading'] },
     // JWT / auth bypass
     { classes: ['jwt_kid_injection', 'jwt_jwk_embedding', 'jwt_confusion', 'auth_none_algorithm'], behaviors: ['auth_bypass', 'token_forgery'] },
+    // Credential stuffing / auth automation
+    { classes: ['credential_stuffing'], behaviors: ['auth_bypass', 'brute_force'] },
     // Cache manipulation
     { classes: ['cache_poisoning', 'cache_deception'], behaviors: ['cache_manipulation'] },
     // Authorization bypass
@@ -326,13 +344,13 @@ const CONTENT_BEHAVIORS: readonly ContentBehaviorRule[] = [
     },
     // SSTI class traversal
     {
-        classes: ['ssti_jinja_twig', 'ssti_el_expression'],
+        classes: ['ssti_jinja_twig', 'ssti_el_expression', 'template_injection_generic'],
         patterns: ['__class__', '__mro__', '__subclasses__', '__globals__'],
         behaviors: ['class_traversal'],
     },
     // SSTI code execution
     {
-        classes: ['ssti_jinja_twig', 'ssti_el_expression'],
+        classes: ['ssti_jinja_twig', 'ssti_el_expression', 'template_injection_generic'],
         patterns: ['.exec(', 'popen(', 'getruntime(', 'processbuilder(', 'runtime.exec('],
         behaviors: ['code_execution'],
     },
@@ -368,6 +386,7 @@ export class UnifiedRuntime {
     readonly verifier: ExploitVerifier
     readonly mitre: MitreMapper
     private sealer: EvidenceSealer | null = null
+    private readonly errorLog: UnifiedRuntimeErrorLogEntry[] = []
 
     constructor(options?: {
         sensorId?: string
@@ -384,6 +403,16 @@ export class UnifiedRuntime {
         if (options?.sensorId && options?.signingKey) {
             this.sealer = new EvidenceSealer(options.sensorId, options.signingKey)
         }
+    }
+
+    getErrorLog(): readonly UnifiedRuntimeErrorLogEntry[] {
+        return this.errorLog
+    }
+
+    private recordError(source: string, error: unknown): void {
+        const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+        this.errorLog.push({ timestamp: Date.now(), source, error: message })
+        if (this.errorLog.length > 100) this.errorLog.shift()
     }
 
     /**
@@ -403,41 +432,47 @@ export class UnifiedRuntime {
      * Verification is async and NOT on the hot path.
      */
     async process(request: UnifiedRequest): Promise<UnifiedResponse> {
-        const pipelineStart = performance.now()
-        const core = this.runCorePipeline(request)
-        const timestamp = request.timestamp ?? Date.now()
+        try {
+            const pipelineStart = performance.now()
+            const core = this.runCorePipeline(request)
+            const timestamp = request.timestamp ?? Date.now()
 
-        // ── Evidence Sealing (async, non-blocking) ──
-        let sealedEvidence: SealedBatch | null = null
-        if (this.sealer && core.analysis.matches.length > 0) {
-            try {
-                const evidencePayload = core.analysis.matches.map(m => ({
-                    timestamp: new Date(timestamp).toISOString(),
-                    class: m.class,
-                    confidence: m.confidence,
-                    severity: m.severity,
-                    sourceHash: request.sourceHash,
-                    path: request.request.path,
-                    method: request.request.method,
-                    l2Evidence: m.l2Evidence ?? null,
-                    chainContext: core.chainMatches.length > 0
-                        ? core.chainMatches[0].chainId : null,
-                    decision: core.decision.action,
-                }))
-                sealedEvidence = await this.sealer.seal(evidencePayload)
-            } catch {
-                // Evidence sealing failure MUST NOT block the pipeline
+            // ── Evidence Sealing (async, non-blocking) ──
+            let sealedEvidence: SealedBatch | null = null
+            if (this.sealer && core.analysis.matches.length > 0) {
+                try {
+                    const evidencePayload = core.analysis.matches.map(m => ({
+                        timestamp: new Date(timestamp).toISOString(),
+                        class: m.class,
+                        confidence: m.confidence,
+                        severity: m.severity,
+                        sourceHash: request.sourceHash,
+                        path: request.request.path,
+                        method: request.request.method,
+                        l2Evidence: m.l2Evidence ?? null,
+                        chainContext: core.chainMatches.length > 0
+                            ? core.chainMatches[0].chainId : null,
+                        decision: core.decision.action,
+                    }))
+                    sealedEvidence = await this.sealer.seal(evidencePayload)
+                } catch (error) {
+                    // Evidence sealing failure MUST NOT block the pipeline
+                    this.recordError('process.seal', error)
+                }
             }
-        }
 
-        // Verification is intentionally NOT wired here because it requires
-        // a fetch function and origin URL from the caller.
+            // Verification is intentionally NOT wired here because it requires
+            // a fetch function and origin URL from the caller.
 
-        return {
-            ...core,
-            sealedEvidence,
-            verification: null,
-            totalProcessingTimeUs: (performance.now() - pipelineStart) * 1000,
+            return {
+                ...core,
+                sealedEvidence,
+                verification: null,
+                totalProcessingTimeUs: (performance.now() - pipelineStart) * 1000,
+            }
+        } catch (error) {
+            this.recordError('process.boundary', error)
+            throw new UnifiedRuntimeError('UNIFIED_RUNTIME_PROCESS_FAILED', 'Unified runtime processing failed')
         }
     }
 
@@ -447,14 +482,19 @@ export class UnifiedRuntime {
      * No evidence sealing, no verification.
      */
     processSync(request: UnifiedRequest): Omit<UnifiedResponse, 'sealedEvidence' | 'verification'> & { sealedEvidence: null; verification: null } {
-        const pipelineStart = performance.now()
-        const core = this.runCorePipeline(request)
+        try {
+            const pipelineStart = performance.now()
+            const core = this.runCorePipeline(request)
 
-        return {
-            ...core,
-            sealedEvidence: null,
-            verification: null,
-            totalProcessingTimeUs: (performance.now() - pipelineStart) * 1000,
+            return {
+                ...core,
+                sealedEvidence: null,
+                verification: null,
+                totalProcessingTimeUs: (performance.now() - pipelineStart) * 1000,
+            }
+        } catch (error) {
+            this.recordError('processSync.boundary', error)
+            throw new UnifiedRuntimeError('UNIFIED_RUNTIME_PROCESS_SYNC_FAILED', 'Unified runtime processing failed')
         }
     }
 
@@ -567,7 +607,9 @@ export class UnifiedRuntime {
                 if (bestRoute) {
                     effectSimulation = bestRoute.simulate(request.input, topProof)
                 }
-            } catch { /* effect simulation is best-effort */ }
+            } catch (error) {
+                this.recordError('runCorePipeline.effectSimulation', error)
+            }
         }
 
         // ── Step 6b: Adversary Fingerprinting ──
@@ -578,7 +620,9 @@ export class UnifiedRuntime {
                     request.input,
                     allMatches.map(m => m.class),
                 )
-            } catch { /* fingerprinting is best-effort */ }
+            } catch (error) {
+                this.recordError('runCorePipeline.fingerprinting', error)
+            }
         }
 
         // ── Step 6c: Input Shape Validation ──
@@ -586,7 +630,9 @@ export class UnifiedRuntime {
         if (request.paramName) {
             try {
                 shapeValidation = autoValidateShape(request.input, request.paramName)
-            } catch { /* shape validation is best-effort */ }
+            } catch (error) {
+                this.recordError('runCorePipeline.shapeValidation', error)
+            }
         }
 
         // ── Step 7: Unified Defense Decision ──
@@ -652,7 +698,9 @@ export class UnifiedRuntime {
                         sourceHash: request.sourceHash,
                     },
                 )
-            } catch { /* response plan is best-effort */ }
+            } catch (error) {
+                this.recordError('runCorePipeline.responsePlan', error)
+            }
         }
 
         return {

@@ -17,9 +17,13 @@ export const crlfHeaderInjection: InvariantClassModule = {
 
     knownPayloads: [
         '%0d%0aSet-Cookie: admin=true',
+        '%0D%0ALocation: http://evil.com',
+        '%r%nX-Frame-Options: DENY',
         '%0d%0aLocation: http://evil.com',
         'value%0d%0a%0d%0a<script>alert(1)</script>',
         '\\r\\nHTTP/1.1 200 OK\\r\\nContent-Type: text/html',
+        '{"name":"x\\r\\nSet-Cookie: admin=true"}',
+        '<user>ok\\nLocation: https://evil.example</user>',
     ],
 
     knownBenign: [
@@ -31,10 +35,13 @@ export const crlfHeaderInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        if (/%0[dD]%0[aA]/i.test(input)) return true
-        if (/\r\n/.test(d) && /(?:Set-Cookie|Location|Content-Type|HTTP\/)/i.test(d)) return true
-        // Literal escaped CRLF in string values (\\r\\n or \r\n as text, single or double backslash)
-        if (/(?:\\{1,2}r\\{1,2}n)/i.test(input) && /(?:Set-Cookie|Location|Content-Type|HTTP\/)/i.test(input)) return true
+        const headerInjectTarget = /(?:^|[\r\n])\s*(?:Set-Cookie|Location|X-Frame-Options|Content-Type|Content-Length|Transfer-Encoding)\s*:/i
+        if (/%0[dD]%0[aA]|%r%n/i.test(input) && /(?:Set-Cookie|Location|X-Frame-Options|Content-Type|HTTP\/)/i.test(input)) return true
+        if (/%0[dD]%0[aA]%0[dD]%0[aA]/i.test(input)) return true
+        if (/(?:\r\n|\n)/.test(d) && (headerInjectTarget.test(d) || /(?:\r\n|\n)\s*HTTP\/1\.[01]\s+\d{3}\b/i.test(d))) return true
+        // Literal escaped newline sequences in JSON/XML input (\\r\\n, \\n, or \n as raw text)
+        if (/(?:\\{1,2}r\\{1,2}n|\\{1,2}n)/i.test(input) &&
+            /(?:Set-Cookie|Location|X-Frame-Options|Content-Type|HTTP\/1\.[01])/i.test(input)) return true
         return false
     },
     detectL2: l2CRLFHeader,
@@ -60,6 +67,7 @@ export const crlfLogInjection: InvariantClassModule = {
         'input%0a[ALERT] ADMIN_ACCESS_GRANTED',
         'test\r\n[ALERT] Security bypass detected',
         'input%0a[2024-01-01] ADMIN_ACCESS_GRANTED',
+        'username\\n[ADMIN] elevated privileges granted',
     ],
 
     knownBenign: [
@@ -71,9 +79,9 @@ export const crlfLogInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        const hasNewline = /%0[aAdD]/i.test(input) || /[\r\n]/.test(d)
+        const hasNewline = /%0[aAdD]|%r%n/i.test(input) || /[\r\n]/.test(d) || /\\{1,2}n|\\{1,2}r\\{1,2}n/.test(input)
         if (!hasNewline) return false
-        return /\[(?:INFO|WARN|ERROR|DEBUG|ALERT|CRITICAL|NOTICE)\]/i.test(d) ||
+        return /\[(?:ADMIN|INFO|WARN|ERROR|DEBUG|ALERT|CRITICAL|NOTICE)\]/i.test(d) ||
             /\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}/i.test(d) ||
             // Date-only timestamps in brackets: [2024-01-01]
             /\[\d{4}-\d{2}-\d{2}\]/i.test(d) ||

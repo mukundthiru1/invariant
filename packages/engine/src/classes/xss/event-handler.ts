@@ -5,6 +5,8 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectXssVectors } from '../../evaluators/xss-context-evaluator.js'
 
+const EVENT_HANDLER_PATTERN = /\bon(?:error|load|click|mouseover|mouseout|mousedown|mouseup|focus|blur|change|submit|reset|select|abort|unload|resize|scroll|keydown|keypress|keyup|dblclick|drag|drop|input|invalid|toggle|animationend|transitionend|begin|end|copy|cut|paste|search|wheel|contextmenu|auxclick|pointerdown|pointerup|beforeinput|beforeunload|pageshow|pagehide|hashchange|storage|offline|online)\s*=\s*[^\s>]/i
+
 export const xssEventHandler: InvariantClassModule = {
     id: 'xss_event_handler',
     description: 'Inject event handler attributes (onerror, onload, etc.) to execute JavaScript',
@@ -20,6 +22,19 @@ export const xssEventHandler: InvariantClassModule = {
         "' onmouseover='alert(1)",
         '" onfocus="alert(1)" autofocus="',
         '" onload="alert(1)',
+        '" onpointerdown="alert(1)',
+        '" onpointerup="alert(1)',
+        '" onbegin="alert(1)',
+        '" ontransitionend="alert(1)',
+        '" onend="alert(1)',
+        '" onbeforeinput="alert(1)',
+        '" onbeforeunload="alert(1)',
+        '" onpageshow="alert(1)',
+        '" onpagehide="alert(1)',
+        '" onhashchange="alert(1)',
+        '" onstorage="alert(1)',
+        '" onoffline="alert(1)',
+        '" ononline="alert(1)',
     ],
 
     knownBenign: [
@@ -31,23 +46,21 @@ export const xssEventHandler: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /\bon(?:error|load|click|mouseover|mouseout|mousedown|mouseup|focus|blur|change|submit|reset|select|abort|unload|resize|scroll|keydown|keypress|keyup|dblclick|drag|drop|input|invalid|toggle|animationend|copy|cut|paste|search|wheel|contextmenu|auxclick)\s*=\s*[^\s>]/i.test(d)
+        return EVENT_HANDLER_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const vectors = detectXssVectors(d)
-            const match = vectors.find(v => v.type === 'event_handler')
-            if (match) {
-                return {
-                    detected: true,
-                    confidence: match.confidence,
-                    explanation: `HTML analysis: ${match.detail}`,
-                    evidence: match.element,
-                }
+        const vectors = detectXssVectors(d)
+        const match = vectors.find(v => v.type === 'event_handler')
+        if (match) {
+            return {
+                detected: true,
+                confidence: match.confidence,
+                explanation: `HTML analysis: ${match.detail}`,
+                evidence: match.element,
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 

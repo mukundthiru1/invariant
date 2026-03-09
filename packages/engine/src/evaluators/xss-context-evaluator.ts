@@ -62,7 +62,7 @@ const SCRIPT_CAPABLE_TAGS = new Set([
     'audio', 'source', 'body', 'input', 'select', 'textarea',
     'button', 'details', 'marquee', 'isindex', 'form', 'math',
     'base', 'link', 'style', 'meta', 'applet', 'bgsound',
-    'layer', 'ilayer', 'xml', 'xss', 'image',
+    'layer', 'ilayer', 'xml', 'xss', 'image', 'a', 'template',
 ])
 
 /**
@@ -85,8 +85,12 @@ const DANGEROUS_SCHEMES = [
 const URI_ATTRIBUTES = new Set([
     'href', 'src', 'action', 'formaction', 'data', 'background',
     'poster', 'codebase', 'cite', 'icon', 'manifest', 'dynsrc',
-    'lowsrc', 'srcdoc',
+    'lowsrc', 'srcdoc', 'to', 'xlink:href',
 ])
+
+const DOM_CLOBBERING_TAGS = new Set(['form', 'img', 'input', 'textarea', 'select', 'button'])
+const DOM_CLOBBERING_ID_VALUES = new Set(['__proto__', 'prototype', 'constructor'])
+const DOM_CLOBBERING_NAME_VALUES = new Set(['domain', 'polluted', 'constructor', 'prototype', '__proto__'])
 
 
 // ── HTML Fragment Tokenizer ──────────────────────────────────────
@@ -276,6 +280,105 @@ export function extractHtmlElements(tokens: HtmlToken[]): ParsedHtmlElement[] {
     return elements
 }
 
+function isDomClobberingAttribute(element: ParsedHtmlElement, name: string, value: string): boolean {
+    if (value.trim().length === 0) return false
+    if (!DOM_CLOBBERING_TAGS.has(element.tagName)) return false
+
+    const attrName = name.toLowerCase()
+    const attrValue = value.trim().toLowerCase()
+
+    if (attrName === 'id') {
+        return DOM_CLOBBERING_ID_VALUES.has(attrValue)
+    }
+
+    if (attrName === 'name') {
+        return DOM_CLOBBERING_NAME_VALUES.has(attrValue)
+    }
+
+    return false
+}
+
+function extractNestedMarkupElements(value: string): ParsedHtmlElement[] {
+    if (!value.includes('<') || !value.includes('>') || !value.includes('</')) {
+        return []
+    }
+
+    return extractHtmlElements(htmlTokenize(value))
+}
+
+function detectElementThreats(elem: ParsedHtmlElement): XssDetection[] {
+    const detections: XssDetection[] = []
+
+    // Check 1: Script-capable tag injection
+    if (SCRIPT_CAPABLE_TAGS.has(elem.tagName)) {
+        if (elem.tagName === 'script') {
+            detections.push({
+                type: 'tag_injection',
+                element: `<${elem.tagName}>`,
+                detail: 'Direct script tag injection — arbitrary JavaScript execution',
+                position: elem.position,
+                confidence: 0.95,
+            })
+        } else {
+            const hasDangerousAttr = Object.entries(elem.attributes).some(([name, value]) => {
+                return EVENT_HANDLER_PATTERN.test(name) ||
+                    (URI_ATTRIBUTES.has(name) && hasDangerousScheme(value))
+            })
+
+            if (hasDangerousAttr) {
+                detections.push({
+                    type: 'tag_injection',
+                    element: `<${elem.tagName}>`,
+                    detail: `Script-capable tag with dangerous attributes`,
+                    position: elem.position,
+                    confidence: 0.9,
+                })
+            }
+        }
+    }
+
+    // Check 2: Event handler attributes (works on ANY tag)
+    for (const [name, value] of Object.entries(elem.attributes)) {
+        if (EVENT_HANDLER_PATTERN.test(name) && value.length > 0) {
+            detections.push({
+                type: 'event_handler',
+                element: `<${elem.tagName} ${name}=...>`,
+                detail: `Event handler ${name}="${value.slice(0, 50)}"`,
+                position: elem.position,
+                confidence: 0.9,
+            })
+        }
+    }
+
+    // Check 3: Dangerous URI schemes in link/src attributes
+    for (const [name, value] of Object.entries(elem.attributes)) {
+        if (URI_ATTRIBUTES.has(name) && hasDangerousScheme(value)) {
+            detections.push({
+                type: 'protocol_handler',
+                element: `<${elem.tagName} ${name}=...>`,
+                detail: `Dangerous URI scheme: ${value.slice(0, 50)}`,
+                position: elem.position,
+                confidence: 0.88,
+            })
+        }
+    }
+
+    // Check 4: DOM clobbering via id/name collisions
+    for (const [name, value] of Object.entries(elem.attributes)) {
+        if (isDomClobberingAttribute(elem, name, value)) {
+            detections.push({
+                type: 'template_expression',
+                element: `<${elem.tagName} ${name}=...>`,
+                detail: `DOM clobbering sink: ${name}="${value.slice(0, 50)}"`,
+                position: elem.position,
+                confidence: 0.84,
+            })
+        }
+    }
+
+    return detections
+}
+
 
 // ── XSS Detection Results ────────────────────────────────────────
 
@@ -303,69 +406,15 @@ export interface XssDetection {
  * STRUCTURE of the injected HTML, not specific character patterns.
  */
 export function detectXssVectors(input: string): XssDetection[] {
+    const topLevel = extractHtmlElements(htmlTokenize(input))
+    const nested = topLevel.flatMap(elem =>
+        Object.values(elem.attributes).flatMap(extractNestedMarkupElements),
+    )
+    const elements = [...topLevel, ...nested]
     const detections: XssDetection[] = []
-    const tokens = htmlTokenize(input)
-    const elements = extractHtmlElements(tokens)
 
     for (const elem of elements) {
-        // Check 1: Script-capable tag injection
-        if (SCRIPT_CAPABLE_TAGS.has(elem.tagName)) {
-            if (elem.tagName === 'script') {
-                detections.push({
-                    type: 'tag_injection',
-                    element: `<${elem.tagName}>`,
-                    detail: 'Direct script tag injection — arbitrary JavaScript execution',
-                    position: elem.position,
-                    confidence: 0.95,
-                })
-                continue
-            }
-
-            // For other tags, check if they have dangerous attributes
-            const hasDangerousAttr = Object.entries(elem.attributes).some(([name, value]) => {
-                return EVENT_HANDLER_PATTERN.test(name) ||
-                    (URI_ATTRIBUTES.has(name) && hasDangerousScheme(value))
-            })
-
-            if (hasDangerousAttr) {
-                detections.push({
-                    type: 'tag_injection',
-                    element: `<${elem.tagName}>`,
-                    detail: `Script-capable tag with dangerous attributes`,
-                    position: elem.position,
-                    confidence: 0.9,
-                })
-            }
-        }
-
-        // Check 2: Event handler attributes (works on ANY tag)
-        for (const [name, value] of Object.entries(elem.attributes)) {
-            if (EVENT_HANDLER_PATTERN.test(name)) {
-                // Verify the value looks like code, not just empty
-                if (value.length > 0) {
-                    detections.push({
-                        type: 'event_handler',
-                        element: `<${elem.tagName} ${name}=...>`,
-                        detail: `Event handler ${name}="${value.slice(0, 50)}"`,
-                        position: elem.position,
-                        confidence: 0.9,
-                    })
-                }
-            }
-        }
-
-        // Check 3: Dangerous URI schemes in link/src attributes
-        for (const [name, value] of Object.entries(elem.attributes)) {
-            if (URI_ATTRIBUTES.has(name) && hasDangerousScheme(value)) {
-                detections.push({
-                    type: 'protocol_handler',
-                    element: `<${elem.tagName} ${name}=...>`,
-                    detail: `Dangerous URI scheme: ${value.slice(0, 50)}`,
-                    position: elem.position,
-                    confidence: 0.88,
-                })
-            }
-        }
+        detections.push(...detectElementThreats(elem))
     }
 
     return detections

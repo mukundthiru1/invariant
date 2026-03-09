@@ -18,6 +18,7 @@ export const pathDotdotEscape: InvariantClassModule = {
 
     knownPayloads: [
         '../../../etc/passwd',
+        'file:///../../../etc/passwd',
         '..\\..\\..\\windows\\win.ini',
         '....//....//....//etc/passwd',
         '..%2F..%2F..%2Fetc%2Fpasswd',
@@ -39,14 +40,22 @@ export const pathDotdotEscape: InvariantClassModule = {
     detectL2: l2PathDotdot,
     generateVariants: (count: number): string[] => {
         const targets = ['/etc/passwd', '/etc/shadow', '/proc/self/environ', '/windows/win.ini']
-        const prefixes = [
+        const seedPrefixes = [
             '../../../', '..\\..\\..\\', '....//....//....//..../',
             '..%2F..%2F..%2F', '..%252F..%252F..%252F',
             '%2e%2e%2f%2e%2e%2f%2e%2e%2f', '..%c0%af..%c0%af..%c0%af', '..%5c..%5c..%5c',
         ]
+        const mutationPrefixes = [
+            '%252e%252e%252f%252e%252e%252f%252e%252e%252f',
+            '..%ef%bc%8f..%ef%bc%8f..%ef%bc%8f',
+            '..\\..\\..\\',
+            '..%2f..%2f..%2f',
+            '..%252f..%252f..%252f',
+        ]
+        const prefixes = [...seedPrefixes, ...mutationPrefixes]
         const v: string[] = []
         for (let i = 0; i < count; i++) v.push(prefixes[i % prefixes.length] + targets[i % targets.length])
-        return v
+        return v.filter(candidate => pathDotdotEscape.detect(candidate))
     },
 }
 
@@ -76,10 +85,18 @@ export const pathNullTerminate: InvariantClassModule = {
     detect: (input: string): boolean => /%00|\\x00|\\0|\0/.test(input),
     detectL2: l2PathNull,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             '../../../etc/passwd%00.jpg', '..\\..\\..\\etc\\passwd%00.png',
             'shell.php%00.gif', '/etc/passwd\\x00.html',
         ]
+        const mutated = [
+            '../etc/passwd%00.jpg',
+            '..%2f..%2f..%2fetc%2fpasswd%00.png',
+            '..%252f..%252fetc%252fpasswd%2500.jpg',
+            '..%c0%af..%c0%afetc/passwd%00.gif',
+            '..%ef%bc%8f..%ef%bc%8fetc%ef%bc%8fpasswd%00.jpg',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => pathNullTerminate.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r
@@ -127,10 +144,18 @@ export const pathEncodingBypass: InvariantClassModule = {
     },
     detectL2: l2PathEncoding,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             '%252e%252e%252fetc%252fpasswd', '..%c0%af..%c0%afetc/passwd',
             '..%e0%80%ae/etc/passwd', '%25252e%25252e%25252f',
         ]
+        const mutated = [
+            '%252e%252e%252f%252e%252e%252fetc%252fpasswd',
+            '..%c0%af..%c0%af..%c0%afetc%2fpasswd',
+            '..%ef%bc%8f..%ef%bc%8fetc%ef%bc%8fpasswd',
+            '%252e%252e%252fetc%252fpasswd%2500.jpg',
+            '..%5c..%5c..%5cwindows%5cwin.ini',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => pathEncodingBypass.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r
@@ -154,6 +179,8 @@ export const pathNormalizationBypass: InvariantClassModule = {
         '/admin;/secret',
         '/admin;jsessionid=x/secret',
         '/api/v1/admin\\secret',
+        '..\\..\\windows\\win.ini:streamname',
+        '..\\..\\..\\secret.txt::$DATA',
     ],
 
     knownBenign: [
@@ -176,15 +203,28 @@ export const pathNormalizationBypass: InvariantClassModule = {
         if (/\/[^\/]+;[^\/]*\//.test(d)) return true
         // Backslash as path separator targeting sensitive paths (IIS/Windows normalization on Unix)
         if (/^\/.*\\.*\w/.test(d) && /\/(?:admin|config|internal|secret|private|\.env|\.git)[\\/]/i.test(d)) return true
+        // NTFS alternate data streams (ADS), often used to bypass extension/path controls on Windows.
+        if (/(?:^|[\\/])\.\.[\\/][^:\r\n]*:[a-z0-9_$.-]+/i.test(d)) return true
+        if (/::\$(?:DATA|INDEX_ALLOCATION|BITMAP)\b/i.test(d)) return true
+        // Double-slash normalization bypass (e.g. //etc//passwd)
+        if (/^\/\/|(?<!:)\/\/{1,}(?:[a-z])/i.test(d)) return true
         return false
     },
     detectL2: l2PathNormalization,
     generateVariants: (count: number): string[] => {
-        const v = [
+        const seeds = [
             '/admin/.', '/admin../', '/admin%20/',
             '/admin;jsessionid=x/secret', '/admin\\secret',
             '/ADMIN/./secret', '/api/v1/admin%09/secret',
         ]
+        const mutated = [
+            '/admin/.%2f',
+            '/admin\\..\\secret',
+            '/admin;%6a%73%65%73%73%69%6f%6e%69%64=x/secret',
+            '/api/v1/admin%09/secret%00.jpg',
+            '/admin//secret',
+        ]
+        const v = [...seeds, ...mutated].filter(candidate => pathNormalizationBypass.detect(candidate))
         const r: string[] = []
         for (let i = 0; i < count; i++) r.push(v[i % v.length])
         return r

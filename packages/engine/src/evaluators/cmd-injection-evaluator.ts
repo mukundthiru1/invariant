@@ -106,6 +106,8 @@ const shellTokenizer = new ShellTokenizer()
  */
 export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     const detections: CmdInjectionDetection[] = []
+    const rawInput = input
+    input = input.replace(/\x00|\u0000/g, '').replace(/\r\n|\r/g, '\n')
 
     // Multi-layer decode (handle URL encoding bypass)
     let decoded = input
@@ -134,7 +136,10 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     detectVariableExpansionViolations(meaningful, decoded, detections)
 
     // Strategy 4: Quote fragmentation (w'h'o'a'm'i)
-    detectQuoteFragmentation(allTokens as any, decoded, detections)
+    // Normalize control chars first so null bytes / CRLF cannot split fragments.
+    const normalizedForQuotes = normalizeForQuoteFragmentation(decoded)
+    const quoteTokens = (shellTokenizer.tokenize(normalizedForQuotes) as any).tokens as any[]
+    detectQuoteFragmentation(quoteTokens as any, normalizedForQuotes, detections)
 
     // Strategy 5: Glob-in-path analysis (/???/??t)
     detectGlobPaths(allTokens as any, decoded, detections)
@@ -148,7 +153,19 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     // Strategy 8: Sensitive file references (boost)
     detectSensitiveFileAccess(decoded, detections)
 
+    // Strategy 9: Environment mutation via variable assignment
+    detectEnvironmentMutation(decoded, detections)
+
+    // Strategy 10: Null-byte command truncation/bypass attempts
+    detectNullByteBypass(rawInput, detections)
+
     return detections
+}
+
+function normalizeForQuoteFragmentation(input: string): string {
+    return input
+        .replace(/\\x00/gi, '')
+        .replace(/%00/gi, '')
 }
 
 
@@ -344,14 +361,14 @@ function detectQuoteFragmentation(
                 hasQuotedSegment = true
             }
 
-            // Need at least 4 fragments with at least one quoted to be suspicious
-            if (fragCount >= 4 && hasQuotedSegment) {
+            // 3+ short fragments with quoting is sufficient for shell concat bypass.
+            if (fragCount >= 3 && hasQuotedSegment) {
                 // Reconstruct the word
                 const reconstructed = textTokens.slice(start, j + 1)
                     .map(t => t.type === 'WORD' ? t.value : t.value.slice(1, -1))
                     .join('')
 
-                let confidence = 0.75
+                let confidence = fragCount >= 4 ? 0.75 : 0.72
                 if (KNOWN_DANGEROUS_COMMANDS.has(reconstructed.toLowerCase())) {
                     confidence = 0.92
                 }
@@ -597,6 +614,59 @@ function detectSensitiveFileAccess(
             best.detail += ` [targets: ${file}]`
         }
     }
+}
+
+// ── Strategy 9: Environment Mutation ────────────────────────────
+//
+// Invariant: user input should not mutate shell execution environment
+// (PATH/IFS/LD_PRELOAD/etc). These assignments alter downstream command
+// resolution and are a command-injection primitive.
+
+function detectEnvironmentMutation(
+    rawInput: string,
+    detections: CmdInjectionDetection[],
+): void {
+    const envAssign = rawInput.match(/(?:^|[;|&\n\r]\s*|(?:^|\s)export\s+)(PATH|IFS|LD_PRELOAD|LD_LIBRARY_PATH|PYTHONPATH|NODE_OPTIONS|BASH_ENV)\s*=\s*([^\s;|&]+)/i)
+    if (!envAssign) return
+
+    const variable = envAssign[1].toUpperCase()
+    const value = envAssign[2]
+    let confidence = 0.78
+    if (['PATH', 'IFS', 'LD_PRELOAD', 'LD_LIBRARY_PATH'].includes(variable)) confidence = 0.88
+
+    detections.push({
+        type: 'structural',
+        separator: 'env-assign',
+        command: `${variable}=${value}`,
+        detail: `Shell environment mutation: ${variable} assignment can alter command execution`,
+        position: envAssign.index ?? 0,
+        confidence,
+    })
+}
+
+// ── Strategy 10: Null Byte Bypass ───────────────────────────────
+//
+// Invariant: command input should not carry null-byte terminators.
+// Presence of \\x00/%00/NUL in shell-like context is a strong bypass signal.
+
+function detectNullByteBypass(
+    rawInput: string,
+    detections: CmdInjectionDetection[],
+): void {
+    const nullMatch = rawInput.match(/(?:\\x00|%00|\0)/)
+    if (!nullMatch) return
+
+    const hasShellContext = /[;&|`$()<>]/.test(rawInput) || /\b(?:bash|sh|cmd|powershell|whoami|id|cat|ls|curl|wget)\b/i.test(rawInput)
+    if (!hasShellContext) return
+
+    detections.push({
+        type: 'structural',
+        separator: 'null-byte',
+        command: '(nul)',
+        detail: 'Null-byte present in shell context — possible parser-truncation bypass',
+        position: nullMatch.index ?? 0,
+        confidence: 0.89,
+    })
 }
 
 

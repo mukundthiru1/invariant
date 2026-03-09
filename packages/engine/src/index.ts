@@ -23,6 +23,7 @@
 // ── Core Engine ──────────────────────────────────────────────────
 export {
     InvariantEngine,
+    MAX_INPUT_LENGTH,
     type InvariantClass,
     type InvariantDefinition,
     type InvariantMatch,
@@ -78,6 +79,7 @@ export {
     type CalibrationConfig,
     deepDecode,
 } from './classes/index.js'
+export { CAPABILITY_INDEX, getCapabilityMarkdown } from './capability-index.js'
 
 export {
     PluginRegistry,

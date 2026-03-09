@@ -11,6 +11,7 @@ export interface WebSocketViolation {
     direction: 'inbound' | 'outbound'
     invariantClass: string
     action: DefenseAction
+    confidence: number
     timestamp: string
 }
 
@@ -92,7 +93,13 @@ function recordViolation(
     }
     if (config.onViolation) {
         try {
-            config.onViolation({ direction, invariantClass: violations[0].id, action, timestamp: now })
+            config.onViolation({
+                direction,
+                invariantClass: violations[0].id,
+                action,
+                confidence: action === 'blocked' ? 0.95 : 0.8,
+                timestamp: now,
+            })
         } catch {
             // Never break host app.
         }

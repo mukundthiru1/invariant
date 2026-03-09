@@ -19,7 +19,7 @@ import { mkdirSync, existsSync } from 'node:fs'
 // ── Types ────────────────────────────────────────────────────────
 
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info'
-export type FindingStatus = 'open' | 'acknowledged' | 'resolved' | 'false_positive' | 'risk_accepted'
+export type FindingStatus = 'open' | 'acknowledged' | 'resolved' | 'false_positive' | 'risk_accepted' | 'suppressed'
 export type DefenseAction = 'blocked' | 'sanitized' | 'rewritten' | 'normalized' | 'monitored' | 'challenged' | 'passed'
 export type DefenseMode = 'observe' | 'sanitize' | 'defend' | 'lockdown'
 
@@ -49,7 +49,9 @@ export interface Signal {
     action: DefenseAction
     path: string
     method: string
+    source_ip?: string | null
     source_hash: string | null
+    user_agent?: string | null
     invariant_classes: string
     is_novel: boolean
     timestamp: string
@@ -182,7 +184,18 @@ export class InvariantDB {
         this.db.pragma('synchronous = NORMAL')
         this.db.pragma('foreign_keys = ON')
         this.db.exec(SCHEMA)
-        try { this.db.exec('ALTER TABLE signals ADD COLUMN uploaded_at TEXT') } catch {}
+        try {
+            this.db.exec('ALTER TABLE signals ADD COLUMN uploaded_at TEXT')
+        } catch (error) {
+            const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+            if (/duplicate column name:\s*uploaded_at/i.test(message)) {
+                return
+            }
+            console.warn('[invariant] database migration skipped', {
+                migration: 'signals.uploaded_at',
+                error: message,
+            })
+        }
     }
 
     // ── Findings ─────────────────────────────────────────────────
@@ -279,11 +292,13 @@ export class InvariantDB {
 
     insertSignal(signal: Omit<Signal, 'id'>): number {
         const stmt = this.db.prepare(`
-            INSERT INTO signals (type, subtype, severity, action, path, method, source_hash, invariant_classes, is_novel, timestamp, uploaded_at)
-            VALUES (@type, @subtype, @severity, @action, @path, @method, @source_hash, @invariant_classes, @is_novel, @timestamp, @uploaded_at)
+            INSERT INTO signals (type, subtype, severity, action, path, method, source_ip, source_hash, user_agent, invariant_classes, is_novel, timestamp, uploaded_at)
+            VALUES (@type, @subtype, @severity, @action, @path, @method, @source_ip, @source_hash, @user_agent, @invariant_classes, @is_novel, @timestamp, @uploaded_at)
         `)
         const result = stmt.run({
             ...signal,
+            source_ip: signal.source_ip ?? null,
+            user_agent: signal.user_agent ?? null,
             is_novel: signal.is_novel ? 1 : 0,
             uploaded_at: signal.uploaded_at ?? null,
         })
@@ -367,6 +382,17 @@ export class InvariantDB {
             monitored: row.monitored ?? 0,
             novel: row.novel ?? 0,
         }
+    }
+
+    getTopSourceIps(limit = 10): Array<{ source_ip: string; count: number }> {
+        return this.db.prepare(`
+            SELECT source_ip, COUNT(*) as count
+            FROM signals
+            WHERE source_ip IS NOT NULL AND source_ip != ''
+            GROUP BY source_ip
+            ORDER BY count DESC, source_ip ASC
+            LIMIT ?
+        `).all(limit) as Array<{ source_ip: string; count: number }>
     }
 
     // ── Assets ───────────────────────────────────────────────────

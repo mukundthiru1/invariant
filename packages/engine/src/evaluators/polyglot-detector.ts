@@ -73,6 +73,7 @@ const CLASS_TO_DOMAIN: Record<string, string> = {
     // SSTI domain
     ssti_jinja_twig: 'ssti',
     ssti_el_expression: 'ssti',
+    template_injection_generic: 'ssti',
 
     // XXE domain
     xxe_entity_expansion: 'xxe',
@@ -85,6 +86,7 @@ const CLASS_TO_DOMAIN: Record<string, string> = {
     // Auth domain
     auth_none_algorithm: 'auth',
     auth_header_spoof: 'auth',
+    credential_stuffing: 'auth',
     jwt_kid_injection: 'auth',
     jwt_jwk_embedding: 'auth',
     jwt_confusion: 'auth',

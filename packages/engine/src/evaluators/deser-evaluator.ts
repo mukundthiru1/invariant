@@ -1,26 +1,20 @@
 /**
  * Deserialization Evaluator — Level 2 Invariant Detection
  *
- * The invariant property for deserialization attacks is:
- *   ∃ signature ∈ input :
- *     signature MATCHES serialization_format_magic_bytes
- *     ∧ ∃ gadget ∈ parse(input, FORMAT_GRAMMAR) :
- *       gadget.class ∈ KNOWN_GADGET_CHAINS
- *     → attacker exploits unsafe deserialization for RCE
- *
- * This module analyzes serialized data formats structurally:
- *   - Java: magic bytes (aced0005 / rO0ABX), class name extraction
- *   - PHP: serialize() format parsing, magic method chain analysis
- *   - Python: pickle opcode analysis, __reduce__ detection
- *
- * Covers:
- *   - deser_java_gadget:   Java serialized object with gadget chain
- *   - deser_php_object:    PHP serialized object with magic methods
- *   - deser_python_pickle: Python pickle with code execution
+ * Structural detection strategy:
+ *   1) Deep-decode input and extract base64 candidates.
+ *   2) Decode candidate bytes and check serialization magic headers.
+ *   3) Tokenize decoded material and look for gadget-chain indicators.
+ *   4) Return class-mapped detections with proof evidence.
  */
 
+import type { DetectionLevelResult } from '../classes/types.js'
+import { deepDecode } from '../classes/encoding.js'
 
-// ── Result Type ──────────────────────────────────────────────────
+
+// ── Result Types ────────────────────────────────────────────────
+
+type ProofEvidence = NonNullable<DetectionLevelResult['structuredEvidence']>
 
 export interface DeserDetection {
     type: 'java_gadget' | 'php_object' | 'python_pickle'
@@ -28,242 +22,190 @@ export interface DeserDetection {
     format: string
     gadgetChain: string | null
     confidence: number
+    proofEvidence?: ProofEvidence
+}
+
+interface Artifact {
+    source: string
+    text: string
+    bytes: Uint8Array
+}
+
+interface GadgetHit {
+    family: 'java' | 'php' | 'python' | 'dotnet' | 'ruby' | 'yaml' | 'json' | 'xml' | 'node' | 'messagepack'
+    label: string
+    match: string
 }
 
 
-// ── Java Deserialization ─────────────────────────────────────────
-//
-// Java serialized objects start with:
-//   - Hex: aced 0005 (magic + version)
-//   - Base64: rO0ABX (first 4 bytes base64 encoded)
-//
-// Known gadget chains (ysoserial):
-//   - CommonsCollections 1-7
-//   - CommonsBeanutils
-//   - Spring1, Spring2
-//   - Hibernate1
-//   - JRMPClient/JRMPListener
-//   - Wicket1
-//   - FileUpload1
-//   - C3P0
-//   - JBossInterceptors
+// ── Core Helpers ────────────────────────────────────────────────
 
-const JAVA_GADGET_CLASSES = new Set([
-    'org.apache.commons.collections.Transformer',
-    'org.apache.commons.collections.functors.ChainedTransformer',
-    'org.apache.commons.collections.functors.ConstantTransformer',
-    'org.apache.commons.collections.functors.InvokerTransformer',
-    'org.apache.commons.collections4.functors.InvokerTransformer',
-    'org.apache.commons.beanutils.BeanComparator',
-    'org.springframework.beans.factory.ObjectFactory',
-    'com.sun.org.apache.xalan.internal.xsltc.trax.TemplatesImpl',
-    'java.lang.Runtime',
-    'java.lang.ProcessBuilder',
-    'javax.management.BadAttributeValueExpException',
-    'java.util.PriorityQueue',
-    'sun.reflect.annotation.AnnotationInvocationHandler',
-    'org.hibernate.property.BasicPropertyAccessor',
-    'com.mchange.v2.c3p0.impl.PoolBackedDataSourceBase',
-    'org.jboss.interceptor.reader.SimpleInterceptorMetadata',
-])
+function toBytes(text: string): Uint8Array {
+    return new Uint8Array(Buffer.from(text, 'latin1'))
+}
 
-const JAVA_GADGET_KEYWORDS = [
-    'ChainedTransformer', 'InvokerTransformer', 'ConstantTransformer',
-    'ProcessBuilder', 'Runtime.getRuntime', 'exec(',
-    'TemplatesImpl', 'BeanComparator', 'JRMPClient',
-    'PriorityQueue', 'AnnotationInvocationHandler',
-    'BadAttributeValueExpException', 'ObjectFactory',
+function hasBytesSequence(buf: Uint8Array, seq: number[]): boolean {
+    if (buf.length < seq.length) return false
+    outer: for (let i = 0; i <= buf.length - seq.length; i++) {
+        for (let j = 0; j < seq.length; j++) {
+            if (buf[i + j] !== seq[j]) continue outer
+        }
+        return true
+    }
+    return false
+}
+
+function extractBase64Candidates(input: string): string[] {
+    const matches = input.match(/[A-Za-z0-9+/=]{16,}/g) ?? []
+    const dedup = new Set<string>()
+
+    const stripped = input.replace(/\s+/g, '')
+    if (/^[A-Za-z0-9+/=]{16,}$/.test(stripped)) matches.push(stripped)
+
+    for (const candidate of matches) {
+        if (candidate.length % 4 !== 0) continue
+        if (!/[A-Za-z]/.test(candidate) || !/\d|\+|\//.test(candidate)) continue
+        dedup.add(candidate)
+        if (dedup.size >= 8) break
+    }
+
+    return [...dedup]
+}
+
+function decodeBase64Artifacts(input: string): Artifact[] {
+    const out: Artifact[] = []
+
+    for (const b64 of extractBase64Candidates(input)) {
+        try {
+            const bytes = new Uint8Array(Buffer.from(b64, 'base64'))
+            if (bytes.length < 4) continue
+            const text = Buffer.from(bytes).toString('latin1')
+            out.push({ source: `base64:${b64.slice(0, 20)}`, text, bytes })
+        } catch {
+            // Ignore non-decodable candidates
+        }
+    }
+
+    return out
+}
+
+function tokenize(input: string): string[] {
+    return input.match(/[@A-Za-z_][@A-Za-z0-9_.$:\\/-]{1,80}/g) ?? []
+}
+
+function mkEvidence(
+    input: string,
+    matchedInput: string,
+    interpretation: string,
+    property: string,
+    operation: ProofEvidence[number]['operation'] = 'payload_inject',
+): ProofEvidence[number] {
+    const offset = matchedInput.length > 0 ? Math.max(0, input.indexOf(matchedInput)) : 0
+    return { operation, matchedInput, interpretation, offset, property }
+}
+
+
+// ── Signatures and Gadgets ──────────────────────────────────────
+
+const JAVA_MAGIC = [0xac, 0xed, 0x00, 0x05]
+const RUBY_MAGIC = [0x04, 0x08]
+
+const JAVA_GADGET_PATTERNS: RegExp[] = [
+    /java\.lang\.Runtime\.getRuntime\(\)\.exec/i,
+    /java\.lang\.ProcessBuilder/i,
+    /(?:ChainedTransformer|InvokerTransformer|ConstantTransformer)/i,
+    /(?:TemplatesImpl|BeanComparator|PriorityQueue|AnnotationInvocationHandler)/i,
+    /org\.apache\.commons\.collections(?:4)?\.functors\./i,
+    /(?:ObjectInputStream\s*\.\s*readObject|readObject\s*\()/i,
 ]
 
-function detectJavaGadget(input: string): DeserDetection[] {
-    const detections: DeserDetection[] = []
+const PYTHON_PICKLE_PATTERNS: RegExp[] = [
+    /(?:^|\n)c(?:os|posix)\nsystem\n/i,
+    /(?:^|\n)c(?:builtins|__builtin__)\n(?:eval|exec|compile)\n/i,
+    /(?:^|\n)csubprocess\n(?:Popen|call|check_output)\n/i,
+    /\x80[\x02-\x05]/,
+    /\\x80\\x0[2-5]/i,
+    /\ntR\./,
+]
 
-    // Check for Java serialization magic bytes
-    const hasHexMagic = /aced\s*0005/i.test(input)
-    const hasBase64Magic = input.includes('rO0ABX')
+const PHP_OBJECT_PATTERNS: RegExp[] = [
+    /\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"\s*:\s*[+-]?\d+\s*:\s*\{/i,
+    /\ba\s*:\s*[+-]?\d+\s*:\s*\{\s*(?:i|s|O|C)\s*:/i,
+    /(?:__wakeup|__destruct|__toString|__invoke)/i,
+]
 
-    if (!hasHexMagic && !hasBase64Magic) return detections
+const DOTNET_PATTERNS: RegExp[] = [
+    /AAEAAAD\/{0,4}/i,
+    /System\.Runtime\.Serialization\.Formatters\.Binary\.BinaryFormatter/i,
+    /\bBinaryFormatter\s*\.\s*Deserialize\s*\(/i,
+]
 
-    // Try to decode Base64 and extract class names
-    let decoded = input
-    if (hasBase64Magic) {
-        try {
-            decoded = atob(input.replace(/\s/g, ''))
-        } catch { /* use original */ }
-    }
+const RUBY_PATTERNS: RegExp[] = [
+    /\\x04\\x08/i,
+    /(?:Gem::SpecFetcher|Gem::Installer|Marshal\.load|marshal_load)/i,
+]
 
-    // Look for known gadget class names
-    let foundGadget: string | null = null
-    for (const kw of JAVA_GADGET_KEYWORDS) {
-        if (decoded.includes(kw) || input.includes(kw)) {
-            foundGadget = kw
-            break
+const YAML_PATTERNS: RegExp[] = [
+    /!!python\/object\/apply\s*:/i,
+    /!!java\.lang\.ProcessBuilder/i,
+    /!!ruby\/object\s*:/i,
+]
+
+const JSON_GADGET_PATTERNS: RegExp[] = [
+    /"(?:@class|@type|_class|className)"\s*:\s*"[^"]+"/i,
+    /"(?:@class|@type|_class|className)"\s*:\s*"(?:java\.|com\.|org\.|javax\.|sun\.)/i,
+]
+
+const XML_DESER_PATTERNS: RegExp[] = [
+    /<java\.beans\.XMLDecoder\b/i,
+    /<void\s+method\s*=\s*"(?:exec|start)"/i,
+    /com\.thoughtworks\.xstream/i,
+    /<object\s+class\s*=\s*"(?:java\.|com\.|org\.)/i,
+]
+
+const NODE_JSON_PROTO_PATTERNS: RegExp[] = [
+    /"__proto__"\s*:/i,
+    /"constructor"\s*:\s*\{\s*"prototype"\s*:/i,
+    /constructor\.prototype/i,
+]
+
+const MESSAGEPACK_PATTERNS: RegExp[] = [
+    /(?:application\/x-msgpack|msgpack(?:-lite)?)/i,
+    /(?:ExtType|__ext__|type\s*:\s*['"]?ext['"]?)/i,
+]
+
+
+function findFirstPattern(patterns: RegExp[], candidates: string[]): string | null {
+    for (const candidate of candidates) {
+        for (const pattern of patterns) {
+            const match = candidate.match(pattern)
+            if (match?.[0]) return match[0]
         }
     }
-
-    detections.push({
-        type: 'java_gadget',
-        detail: `Java serialized object${foundGadget ? ` with gadget: ${foundGadget}` : ' (magic bytes detected)'}`,
-        format: hasBase64Magic ? 'Base64' : 'Hex',
-        gadgetChain: foundGadget,
-        confidence: foundGadget ? 0.96 : 0.82,
-    })
-
-    return detections
-}
-
-
-// ── PHP Deserialization ──────────────────────────────────────────
-//
-// PHP serialize format:
-//   O:4:"User":2:{s:4:"name";s:5:"admin";s:4:"role";s:5:"admin";}
-//   a:2:{i:0;s:3:"foo";i:1;s:3:"bar";}
-//
-// Structure: type:length:"value"
-//   O = object, s = string, a = array, i = integer, b = boolean
-//   N = null, d = double, r = reference, R = pointer reference
-
-interface PHPSerializedValue {
-    type: string           // O, s, a, i, b, N, d
-    className: string | null
-    properties: string[]
-    raw: string
-}
-
-function parsePHPSerialized(input: string): PHPSerializedValue | null {
-    // Match PHP object serialization pattern
-    const objMatch = input.match(/^O:(\d+):"([^"]+)":(\d+):\{(.+)\}\s*$/)
-    if (objMatch) {
-        const className = objMatch[2]
-        // Extract property names from the serialized string
-        const properties: string[] = []
-        const propPattern = /s:\d+:"([^"]+)"/g
-        let match: RegExpExecArray | null
-        while ((match = propPattern.exec(objMatch[4])) !== null) {
-            properties.push(match[1])
-        }
-        return { type: 'O', className, properties, raw: input }
-    }
-
-    // Match PHP array serialization
-    const arrMatch = input.match(/^a:(\d+):\{(.+)\}\s*$/)
-    if (arrMatch) {
-        return { type: 'a', className: null, properties: [], raw: input }
-    }
-
     return null
 }
 
-const PHP_DANGEROUS_CLASSES = new Set([
-    '__destruct', '__wakeup', '__toString', '__call', '__callStatic',
-    '__get', '__set', '__isset', '__unset', '__invoke',
-])
+function collectGadgets(texts: string[], tokens: string[]): GadgetHit[] {
+    const joined = [...texts, tokens.join(' ')]
+    const hits: GadgetHit[] = []
 
-const PHP_GADGET_CLASSES = new Set([
-    'Monolog\\Handler\\SyslogUdpHandler',
-    'Guzzle\\Common\\Event\\EventSubscriberInterface',
-    'Symfony\\Component\\Process\\Process',
-    'Swift_Transport_EsmtpTransport',
-    'Doctrine\\Common\\Cache\\FilesystemCache',
-])
-
-function detectPHPObject(input: string): DeserDetection[] {
-    const detections: DeserDetection[] = []
-
-    // Check for PHP serialized object pattern
-    const hasObjectSig = /O:\d+:"[^"]+":\d+:\{/.test(input)
-    const hasArraySig = /a:\d+:\{/.test(input)
-
-    if (!hasObjectSig && !hasArraySig) return detections
-
-    const parsed = parsePHPSerialized(input)
-
-    if (parsed && parsed.type === 'O' && parsed.className) {
-        // Check for known dangerous properties (magic method indicators)
-        const hasDangerousProp = parsed.properties.some(p =>
-            p === 'cmd' || p === 'command' || p === 'exec' ||
-            p === 'callback' || p === 'function' || p === 'handler'
-        )
-
-        detections.push({
-            type: 'php_object',
-            detail: `PHP serialized object: ${parsed.className}${hasDangerousProp ? ' with dangerous properties' : ''}`,
-            format: 'PHP serialize',
-            gadgetChain: parsed.className,
-            confidence: hasDangerousProp ? 0.94 : 0.82,
-        })
-    } else if (hasObjectSig) {
-        // Partial match — couldn't fully parse but signature is there
-        detections.push({
-            type: 'php_object',
-            detail: 'PHP serialized object signature detected',
-            format: 'PHP serialize',
-            gadgetChain: null,
-            confidence: 0.78,
-        })
+    const add = (family: GadgetHit['family'], label: string, patterns: RegExp[]) => {
+        const match = findFirstPattern(patterns, joined)
+        if (match) hits.push({ family, label, match })
     }
 
-    return detections
-}
+    add('java', 'Java gadget chain', JAVA_GADGET_PATTERNS)
+    add('python', 'Python pickle gadget', PYTHON_PICKLE_PATTERNS)
+    add('php', 'PHP serialized object', PHP_OBJECT_PATTERNS)
+    add('dotnet', '.NET BinaryFormatter gadget', DOTNET_PATTERNS)
+    add('ruby', 'Ruby Marshal gadget', RUBY_PATTERNS)
+    add('yaml', 'YAML object-apply gadget', YAML_PATTERNS)
+    add('json', 'JSON type-hint gadget', JSON_GADGET_PATTERNS)
+    add('xml', 'XMLDecoder/XStream gadget', XML_DESER_PATTERNS)
+    add('node', 'JSON prototype chain mutation', NODE_JSON_PROTO_PATTERNS)
+    add('messagepack', 'MessagePack typed extension gadget', MESSAGEPACK_PATTERNS)
 
-
-// ── Python Pickle ────────────────────────────────────────────────
-//
-// Pickle format uses opcodes. Dangerous ones:
-//   c = GLOBAL (imports module.function)
-//   R = REDUCE (calls function with args)
-//   i = INST (creates instance)
-//   o = OBJ (builds object)
-//
-// Common malicious patterns:
-//   cos\nsystem\n(S'id'\ntR.    → os.system("id")
-//   cbuiltins\neval\n           → builtins.eval(...)
-//   cposix\nsystem\n            → posix.system(...)
-
-const PICKLE_DANGEROUS_IMPORTS = [
-    /c(os|posix)\n(system|popen|exec[lv]?[pe]?)\n/,      // os.system
-    /c(builtins|__builtin__)\n(eval|exec|compile)\n/,     // builtins.eval
-    /csubprocess\n(call|Popen|check_output)\n/,            // subprocess.call
-    /cshutil\n(rmtree|move|copy)\n/,                       // shutil operations
-    /cpickle\nloads\n/,                                     // recursive pickle
-    /cio\nBytesIO\n/,                                       // IO manipulation
-]
-
-const PICKLE_MAGIC_BYTES = [
-    /\x80[\x02-\x05]\x95/,     // Protocol 2-5 frame header
-    /\x80\x04\x95/,             // Protocol 4 (most common)
-    /cos\n/,                     // Protocol 0 GLOBAL opcode
-    /cbuiltins\n/,               // Protocol 0 builtins import
-    /c__builtin__\n/,            // Protocol 0 legacy import
-    /cposix\n/,                  // Protocol 0 posix import
-]
-
-function detectPythonPickle(input: string): DeserDetection[] {
-    const detections: DeserDetection[] = []
-
-    // Check for pickle signatures
-    const hasPickle = PICKLE_MAGIC_BYTES.some(p => p.test(input))
-    if (!hasPickle) return detections
-
-    // Check for dangerous imports
-    let dangerousImport: string | null = null
-    for (const pattern of PICKLE_DANGEROUS_IMPORTS) {
-        const match = input.match(pattern)
-        if (match) {
-            dangerousImport = match[0].replace(/\n/g, '.').replace(/^c/, '').replace(/\.$/, '')
-            break
-        }
-    }
-
-    detections.push({
-        type: 'python_pickle',
-        detail: `Python pickle${dangerousImport ? ` with dangerous import: ${dangerousImport}` : ' (serialization signature detected)'}`,
-        format: 'Python pickle',
-        gadgetChain: dangerousImport,
-        confidence: dangerousImport ? 0.96 : 0.80,
-    })
-
-    return detections
+    return hits
 }
 
 
@@ -271,12 +213,111 @@ function detectPythonPickle(input: string): DeserDetection[] {
 
 export function detectDeserialization(input: string): DeserDetection[] {
     const detections: DeserDetection[] = []
+    if (input.length < 4) return detections
 
-    if (input.length < 5) return detections
+    const normalized = deepDecode(input)
+    const artifacts: Artifact[] = [
+        { source: 'raw', text: normalized, bytes: toBytes(normalized) },
+        ...decodeBase64Artifacts(normalized),
+    ]
 
-    try { detections.push(...detectJavaGadget(input)) } catch { /* safe */ }
-    try { detections.push(...detectPHPObject(input)) } catch { /* safe */ }
-    try { detections.push(...detectPythonPickle(input)) } catch { /* safe */ }
+    const texts = artifacts.map(a => a.text)
+    const tokens = tokenize(texts.join(' '))
+    const gadgetHits = collectGadgets(texts, tokens)
+
+    const hasJavaMagic = artifacts.some(a => hasBytesSequence(a.bytes, JAVA_MAGIC)) ||
+        /rO0AB(?:Q|X|[A-Za-z0-9+/=])|aced\s*0005|\\x?ac\\x?ed\\x?00\\x?05/i.test(normalized)
+
+    const hasPickleMagic = artifacts.some(a => a.bytes.length >= 2 && a.bytes[0] === 0x80 && a.bytes[1] >= 0x02 && a.bytes[1] <= 0x05) ||
+        /\\x80\\x0[2-5]/i.test(normalized)
+
+    const hasRubyMagic = artifacts.some(a => hasBytesSequence(a.bytes, RUBY_MAGIC)) || /\\x04\\x08/i.test(normalized)
+    const hasDotNetMagic = /AAEAAAD\/{0,4}|\/wEAAAAAAAAA/i.test(normalized)
+
+    const javaLikeHit = gadgetHits.find(h => ['java', 'dotnet', 'ruby', 'yaml', 'json', 'xml', 'messagepack'].includes(h.family))
+    if (hasJavaMagic || hasRubyMagic || hasDotNetMagic || javaLikeHit) {
+        const chain = javaLikeHit?.match ?? (hasJavaMagic ? 'aced0005' : hasDotNetMagic ? 'AAEAAAD' : hasRubyMagic ? '\\x04\\x08' : null)
+        const format = hasJavaMagic
+            ? 'Java serialization stream'
+            : hasDotNetMagic
+                ? '.NET BinaryFormatter'
+                : hasRubyMagic
+                    ? 'Ruby Marshal'
+                    : javaLikeHit?.family === 'yaml'
+                        ? 'YAML object tags'
+                        : javaLikeHit?.family === 'xml'
+                            ? 'XML object graph'
+                            : javaLikeHit?.family === 'json'
+                                ? 'JSON type-hints'
+                                : javaLikeHit?.family === 'messagepack'
+                                    ? 'MessagePack typed extension'
+                                    : 'Serialized object graph'
+
+        const confidence = (hasJavaMagic || hasDotNetMagic) && javaLikeHit ? 0.98
+            : hasJavaMagic || hasDotNetMagic || hasRubyMagic ? 0.88
+                : javaLikeHit?.family === 'json' ? 0.84 : 0.9
+
+        detections.push({
+            type: 'java_gadget',
+            detail: `${format}${chain ? ` with gadget indicator: ${chain}` : ' with deserialization indicators'}`,
+            format,
+            gadgetChain: chain,
+            confidence,
+            proofEvidence: [
+                mkEvidence(
+                    normalized,
+                    chain ?? format,
+                    `Detected ${format} deserialization indicator${chain ? ` (${chain})` : ''}`,
+                    'Deserialized object graphs must not allow attacker-controlled gadget invocation',
+                    chain && chain.startsWith('base64:') ? 'encoding_decode' : 'payload_inject',
+                ),
+            ],
+        })
+    }
+
+    const pickleHit = gadgetHits.find(h => h.family === 'python' || h.family === 'yaml')
+    if (hasPickleMagic || pickleHit?.family === 'python' || /!!python\/object\/apply\s*:/i.test(normalized)) {
+        const chain = pickleHit?.match ?? (hasPickleMagic ? '\\x80\\x02..\\x05' : '!!python/object/apply')
+        const isYaml = /!!python\/object\/apply\s*:/i.test(normalized)
+        detections.push({
+            type: 'python_pickle',
+            detail: `${isYaml ? 'YAML Python object apply' : 'Python pickle'}${chain ? ` with gadget indicator: ${chain}` : ''}`,
+            format: isYaml ? 'YAML Python tags' : 'Python pickle',
+            gadgetChain: chain,
+            confidence: (hasPickleMagic && pickleHit) || isYaml ? 0.97 : 0.86,
+            proofEvidence: [
+                mkEvidence(
+                    normalized,
+                    chain,
+                    `Detected Python deserialization opcode/tag sequence (${chain})`,
+                    'Python object deserialization must not execute imported callables from untrusted input',
+                ),
+            ],
+        })
+    }
+
+    const phpHit = gadgetHits.find(h => h.family === 'php' || h.family === 'node')
+    if (phpHit || /\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i.test(normalized)) {
+        const chain = phpHit?.match ?? normalized.match(/\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i)?.[0] ?? null
+        const isNodeProto = phpHit?.family === 'node'
+        detections.push({
+            type: 'php_object',
+            detail: `${isNodeProto ? 'JSON prototype mutation chain' : 'PHP serialized object'}${chain ? ` with gadget indicator: ${chain}` : ''}`,
+            format: isNodeProto ? 'JSON object graph' : 'PHP serialize',
+            gadgetChain: chain,
+            confidence: isNodeProto ? 0.87 : 0.93,
+            proofEvidence: [
+                mkEvidence(
+                    normalized,
+                    chain ?? 'serialized object',
+                    `Detected ${isNodeProto ? 'prototype chain mutation via JSON keys' : 'PHP object serialization gadget markers'}`,
+                    isNodeProto
+                        ? 'Object graph deserialization must not permit constructor/prototype path mutation'
+                        : 'PHP unserialize() must not instantiate attacker-controlled object graphs',
+                ),
+            ],
+        })
+    }
 
     return detections
 }

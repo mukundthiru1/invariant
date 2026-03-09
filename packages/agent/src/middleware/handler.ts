@@ -20,6 +20,10 @@ interface DetectionEvent {
 
 type NextLikeHandler = (request: Request) => Response | Promise<Response>
 
+function formatError(error: unknown): string {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+}
+
 async function loadConfig(configPath?: string, verbose = false): Promise<InvariantConfig> {
     if (typeof process === 'undefined' || typeof process.cwd !== 'function') {
         return DEFAULT_CONFIG
@@ -242,7 +246,13 @@ export function createInvariantHandler(options: HandlerOptions = {}) {
                             const hashArray = Array.from(new Uint8Array(hashBuffer))
                             sourceHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('')
                         }
-                    } catch {}
+                    } catch (error) {
+                        if (options.verbose) {
+                            console.warn('[invariant] telemetry source hash generation failed', {
+                                error: formatError(error),
+                            })
+                        }
+                    }
 
                     const payload = {
                         timestamp: new Date().toISOString(),
@@ -270,8 +280,13 @@ export function createInvariantHandler(options: HandlerOptions = {}) {
                             body: JSON.stringify(payload),
                             signal: abortController.signal as any
                         })
-                    } catch {
-                        // Fail silently
+                    } catch (error) {
+                        if (options.verbose) {
+                            console.warn('[invariant] telemetry upload failed', {
+                                ingestUrl,
+                                error: formatError(error),
+                            })
+                        }
                     } finally {
                         clearTimeout(timeout)
                     }

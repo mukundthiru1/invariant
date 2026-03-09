@@ -1,0 +1,33 @@
+name: INVARIANT PR Security Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+  security-events: write
+
+jobs:
+  invariant-scan:
+    name: Invariant Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run INVARIANT Security Scan
+        uses: ./packages/github-action
+        with:
+          mode: defend
+          fail-on: critical
+          path: .
+          extensions: .ts,.js,.tsx,.jsx
+          exclude: node_modules,.git,dist,build
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

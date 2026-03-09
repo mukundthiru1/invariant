@@ -43,13 +43,14 @@ import { SSRF_CLASSES } from './ssrf/index.js'
 import { DESER_CLASSES } from './deser/index.js'
 import { AUTH_CLASSES } from './auth/index.js'
 import { INJECTION_CLASSES } from './injection/index.js'
+import { HYGIENE_CLASSES } from './hygiene/index.js'
 
 import type { InvariantClassModule } from './types.js'
 
 /**
  * All registered invariant class modules.
  *
- * v5 research integration: 59 classes total (was 46)
+ * v5 research integration + auth hardening coverage.
  *   +json_sql_bypass           (Claroty Team82 JSON-SQL WAF bypass)
  *   +http_smuggle_chunk_ext    (Kettle 2025 — chunk extension exploits)
  *   +http_smuggle_zero_cl      (Kettle 2025 — 0.CL desync)
@@ -59,15 +60,16 @@ import type { InvariantClassModule } from './types.js'
  *   +ws_hijack                 (WebSocket upgrade hijacking / CSWSH)
  */
 export const ALL_CLASS_MODULES: InvariantClassModule[] = [
-    ...SQL_CLASSES,        // 8 (+json_sql_bypass)
-    ...XSS_CLASSES,        // 5
-    ...PATH_CLASSES,       // 4
-    ...CMD_CLASSES,        // 3
-    ...SSRF_CLASSES,       // 3
-    ...DESER_CLASSES,      // 3
-    ...AUTH_CLASSES,        // 5 (+jwt_kid_injection, +jwt_jwk_embedding, +jwt_confusion)
-    ...INJECTION_CLASSES,  // 35 (+cache_poisoning, +cache_deception, +bola_idor, +api_mass_enum)
-]                          // Total: 66
+    ...SQL_CLASSES,
+    ...XSS_CLASSES,
+    ...PATH_CLASSES,
+    ...CMD_CLASSES,
+    ...SSRF_CLASSES,
+    ...DESER_CLASSES,
+    ...AUTH_CLASSES,
+    ...INJECTION_CLASSES,
+    ...HYGIENE_CLASSES,
+]
 
 // Re-export category barrels for selective imports
 export { SQL_CLASSES } from './sqli/index.js'
@@ -78,3 +80,4 @@ export { SSRF_CLASSES } from './ssrf/index.js'
 export { DESER_CLASSES } from './deser/index.js'
 export { AUTH_CLASSES } from './auth/index.js'
 export { INJECTION_CLASSES } from './injection/index.js'
+export { HYGIENE_CLASSES } from './hygiene/index.js'

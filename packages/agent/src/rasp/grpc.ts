@@ -11,6 +11,7 @@ export interface GrpcViolation {
     method: string
     invariantClass: string
     action: DefenseAction
+    confidence: number
     timestamp: string
 }
 
@@ -75,7 +76,13 @@ function recordViolation(
     }
     if (config.onViolation) {
         try {
-            config.onViolation({ method, invariantClass: violations[0].id, action, timestamp: now })
+            config.onViolation({
+                method,
+                invariantClass: violations[0].id,
+                action,
+                confidence: action === 'blocked' ? 0.95 : 0.8,
+                timestamp: now,
+            })
         } catch {
             // Never break app.
         }

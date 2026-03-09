@@ -25,6 +25,7 @@ export interface FsViolation {
     resolvedPath: string
     invariantClass: string
     action: DefenseAction
+    confidence: number
     timestamp: string
 }
 
@@ -184,7 +185,14 @@ export function wrapFsOperation<T extends (...args: unknown[]) => unknown>(
 
         if (config.onViolation) {
             try {
-                config.onViolation({ path: filePath, resolvedPath, invariantClass: violations[0].id, action, timestamp: now })
+                config.onViolation({
+                    path: filePath,
+                    resolvedPath,
+                    invariantClass: violations[0].id,
+                    action,
+                    confidence: 0.9,
+                    timestamp: now,
+                })
             } catch { /* Never break the app */ }
         }
 

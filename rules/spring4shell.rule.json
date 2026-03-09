@@ -1,0 +1,18 @@
+{
+  "id": "org/spring4shell",
+  "name": "Spring4Shell CVE-2022-22965",
+  "description": "Detects Spring4Shell classloader manipulation",
+  "severity": "critical",
+  "class": "cve_spring4shell",
+  "confidence": 0.99,
+  "patterns": [
+    {
+      "type": "contains_any",
+      "value": [
+        "class.module.classLoader",
+        "class.classLoader.resources"
+      ]
+    }
+  ],
+  "cves": ["CVE-2022-22965"]
+}

@@ -23,6 +23,7 @@ export interface HttpViolation {
     url: string
     invariantClass: string
     action: DefenseAction
+    confidence: number
     timestamp: string
 }
 
@@ -113,7 +114,13 @@ export function wrapFetch(
 
         if (config.onViolation) {
             try {
-                config.onViolation({ url, invariantClass: violations[0].id, action, timestamp: now })
+                config.onViolation({
+                    url,
+                    invariantClass: violations[0].id,
+                    action,
+                    confidence: action === 'blocked' ? 0.95 : 0.85,
+                    timestamp: now,
+                })
             } catch { /* Never break */ }
         }
 

@@ -12,6 +12,7 @@ import {
     DESER_CLASSES,
     AUTH_CLASSES,
     INJECTION_CLASSES,
+    HYGIENE_CLASSES,
 } from './classes/index.js'
 import { HtmlTokenizer, analyzeHtmlForXss } from './tokenizers/html-tokenizer.js'
 import { ShellTokenizer, analyzeShellForInjection } from './tokenizers/shell-tokenizer.js'
@@ -44,7 +45,7 @@ describe('InvariantRegistry', () => {
     it('filters by category', () => {
         const registry = new InvariantRegistry()
         registry.registerAll(ALL_CLASS_MODULES)
-        expect(registry.getByCategory('sqli').length).toBe(8)
+        expect(registry.getByCategory('sqli').length).toBe(13)
     })
 
     it('filters by severity', () => {
@@ -66,22 +67,23 @@ describe('InvariantRegistry', () => {
         registry.registerAll(ALL_CLASS_MODULES)
         const stats = registry.stats()
         expect(stats.totalClasses).toBe(ALL_CLASS_MODULES.length)
-        expect(stats.byCategory['sqli']).toBe(8)
+        expect(stats.byCategory['sqli']).toBe(13)
     })
 })
 
 
 // 2. Class Module Counts
 describe('Class Module Counts', () => {
-    it('SQL: 8', () => expect(SQL_CLASSES.length).toBe(8))
+    it('SQL: 13', () => expect(SQL_CLASSES.length).toBe(13))
     it('XSS: 5', () => expect(XSS_CLASSES.length).toBe(5))
     it('CMDi: 3', () => expect(CMD_CLASSES.length).toBe(3))
     it('Path: 4', () => expect(PATH_CLASSES.length).toBe(4))
     it('SSRF: 3', () => expect(SSRF_CLASSES.length).toBe(3))
     it('Deser: 3', () => expect(DESER_CLASSES.length).toBe(3))
-    it('Auth: 5', () => expect(AUTH_CLASSES.length).toBe(5))
-    it('Injection: 35', () => expect(INJECTION_CLASSES.length).toBe(35))
-    it('Total: 66', () => expect(ALL_CLASS_MODULES.length).toBe(66))
+    it('Auth: 21', () => expect(AUTH_CLASSES.length).toBe(21))
+    it('Injection: 100', () => expect(INJECTION_CLASSES.length).toBe(100))
+    it('Hygiene: 26', () => expect(HYGIENE_CLASSES.length).toBe(26))
+    it('Total: 178', () => expect(ALL_CLASS_MODULES.length).toBe(178))
 })
 
 
@@ -373,9 +375,9 @@ describe('v3: L2 Evaluator Wiring', () => {
         })
     }
 
-    it('SQL classes total with L2: 8', () => {
+    it('SQL classes total with L2: 13', () => {
         const sqlWithL2 = SQL_CLASSES.filter(c => c.detectL2)
-        expect(sqlWithL2.length).toBe(8)
+        expect(sqlWithL2.length).toBe(13)
     })
 
     it('XSS classes total with L2: 5', () => {

@@ -24,6 +24,19 @@ import type {
     InvariantMatch,
     InterClassCorrelation,
 } from './types.js'
+import { InvariantError } from '../invariant-error.js'
+
+
+export function sanitizeConfidence(value: number, fallback: number = 0.5): number {
+    if (!Number.isFinite(value)) {
+        if (value === Number.POSITIVE_INFINITY) {
+            return 0.99
+        }
+        return sanitizeConfidence(fallback)
+    }
+
+    return Math.max(0, Math.min(0.99, value))
+}
 
 
 // ── Correlation Rules (data-driven inter-class pattern table) ─────
@@ -164,11 +177,25 @@ const CORRELATION_RULES: readonly CorrelationRule[] = [
 
 // ── Registry Errors ───────────────────────────────────────────────
 
-export class RegistryError extends Error {
-    constructor(message: string) {
-        super(`[InvariantRegistry] ${message}`)
+export class RegistryError extends InvariantError {
+    constructor(message: string, classId?: InvariantClass) {
+        super(`[InvariantRegistry] ${message}`, {
+            code: 'REGISTRY_ERROR',
+            classId,
+            phase: 'registry',
+        })
         this.name = 'RegistryError'
     }
+}
+
+function hashInput(input: string): number {
+    // FNV-1a 32-bit hash: fast, deterministic request-scope cache key.
+    let hash = 0x811c9dc5
+    for (let i = 0; i < input.length; i++) {
+        hash ^= input.charCodeAt(i)
+        hash = Math.imul(hash, 0x01000193)
+    }
+    return hash >>> 0
 }
 
 
@@ -179,6 +206,17 @@ export class InvariantRegistry {
     private readonly byCategory: Map<AttackCategory, InvariantClassModule[]> = new Map()
     private readonly bySeverity: Map<Severity, InvariantClassModule[]> = new Map()
     private readonly calibrationOverrides: Map<InvariantClass, Partial<CalibrationConfig>> = new Map()
+    private readonly confidenceScopes: WeakMap<object, Map<string, number>> = new WeakMap()
+
+    runInConfidenceScope<T>(fn: (scope: object) => T): T {
+        const scope = {}
+        this.confidenceScopes.set(scope, new Map())
+        try {
+            return fn(scope)
+        } finally {
+            this.confidenceScopes.delete(scope)
+        }
+    }
 
     /**
      * Register a class module.
@@ -330,20 +368,29 @@ export class InvariantRegistry {
         input: string,
         environment?: string,
         hasStaticMatch?: boolean,
+        scope?: object,
     ): number {
+        const cache = scope ? this.confidenceScopes.get(scope) : undefined
+        const cacheKey = cache
+            ? `${classId}:${hashInput(input)}:${environment ?? ''}:${hasStaticMatch ? '1' : '0'}`
+            : null
+        if (cache && cacheKey && cache.has(cacheKey)) {
+            return cache.get(cacheKey) as number
+        }
+
         const cal = this.getCalibration(classId)
-        let confidence = cal.baseConfidence
+        let confidence = sanitizeConfidence(cal.baseConfidence)
 
         // Apply environment multiplier
         if (environment && cal.environmentMultipliers?.[environment]) {
-            confidence *= cal.environmentMultipliers[environment]
+            confidence = sanitizeConfidence(confidence * cal.environmentMultipliers[environment])
         }
 
         // Reduce confidence for false-positive patterns
         if (cal.falsePositivePatterns) {
             for (const pattern of cal.falsePositivePatterns) {
                 if (pattern.test(input)) {
-                    confidence *= 0.5
+                    confidence = sanitizeConfidence(confidence * 0.5)
                     break
                 }
             }
@@ -351,16 +398,19 @@ export class InvariantRegistry {
 
         // Reduce confidence for short inputs
         if (cal.minInputLength && input.length < cal.minInputLength) {
-            confidence *= 0.7
+            confidence = sanitizeConfidence(confidence * 0.7)
         }
 
         // Boost confidence for convergent detection (static + invariant)
         if (hasStaticMatch) {
-            confidence = Math.min(0.99, confidence + 0.10)
+            confidence = sanitizeConfidence(Math.min(0.99, sanitizeConfidence(confidence + 0.10)))
         }
 
-        // Clamp to [0, 1]
-        return Math.max(0, Math.min(1, confidence))
+        const computed = sanitizeConfidence(confidence)
+        if (cache && cacheKey) {
+            cache.set(cacheKey, computed)
+        }
+        return computed
     }
 
     /**
@@ -374,7 +424,7 @@ export class InvariantRegistry {
      */
     computeCorrelations(matches: InvariantMatch[]): InterClassCorrelation[] {
         const classes = new Set(matches.map(m => m.class))
-        const max = matches.length > 0 ? Math.max(...matches.map(m => m.confidence)) : 0
+        const max = matches.length > 0 ? Math.max(...matches.map(m => sanitizeConfidence(m.confidence))) : 0
 
         const correlations: InterClassCorrelation[] = []
         const firedGroups = new Set<string>()
@@ -395,12 +445,12 @@ export class InvariantRegistry {
             ) as InvariantClass[]
 
             const confidence = rule.confidence.type === 'fixed'
-                ? rule.confidence.value
-                : max + rule.confidence.delta
+                ? sanitizeConfidence(rule.confidence.value)
+                : sanitizeConfidence(max + rule.confidence.delta)
 
             correlations.push({
                 classes: outputClasses,
-                compoundConfidence: Math.min(0.99, confidence),
+                compoundConfidence: sanitizeConfidence(confidence),
                 reason: rule.reason,
             })
 
@@ -411,7 +461,7 @@ export class InvariantRegistry {
         if (classes.size >= 3 && matches.some(m => m.isNovelVariant)) {
             correlations.push({
                 classes: Array.from(classes),
-                compoundConfidence: Math.min(0.99, max + 0.08),
+                compoundConfidence: sanitizeConfidence(max + 0.08),
                 reason: 'Novel variant + 3+ classes',
             })
         }

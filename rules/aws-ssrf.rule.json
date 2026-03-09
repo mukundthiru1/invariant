@@ -1,0 +1,18 @@
+{
+  "id": "org/aws-ssrf",
+  "name": "AWS Metadata SSRF",
+  "description": "Detects attempts to access AWS metadata service",
+  "severity": "critical",
+  "class": "cve_aws_ssrf",
+  "confidence": 0.99,
+  "patterns": [
+    {
+      "type": "contains_any",
+      "value": [
+        "169.254.169.254",
+        "169.254.170.2",
+        "fd00:ec2::254"
+      ]
+    }
+  ]
+}

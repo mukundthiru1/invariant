@@ -3,23 +3,13 @@
  *
  * Wraps SQL database drivers (mysql2, pg, better-sqlite3, mysql)
  * to detect invariant violations at runtime.
- *
- * Defense modes per detection:
- *   - SANITIZE: auto-parameterize concatenated queries
- *   - BLOCK: kill operation on clear exploitation
- *   - PASSTHROUGH + ALERT: log ambiguous cases for review
- *
- * The math:
- *   Given input I in query Q:
- *   If removing I changes the AST structure of Q (not just leaf values),
- *   then I is an injection.
- *
- * For now: regex-based detection with the proven invariant engine.
- * Future: true SQL parser for AST comparison (the complete solution).
  */
 
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
 import { recordRaspEvent } from './request-session.js'
+import { InvariantEngine } from '../../../engine/src/invariant-engine.js'
+
+const engine = new InvariantEngine()
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -33,64 +23,87 @@ export interface SqlViolation {
     query: string
     invariantClass: string
     action: DefenseAction
+    confidence: number
     severity: Severity
     location: string
     timestamp: string
 }
 
-// ── SQL Invariant Checks ─────────────────────────────────────────
+// ── Pattern Tracking ─────────────────────────────────────────────
 
-// These are the mathematical properties — not signatures.
-// A query violates an invariant if user-influenced data changes SQL structure.
+const patternCache = new Map<string, { count: number, start: number }>()
+const PATTERN_WINDOW_MS = 60_000
+const PATTERN_LIMIT = 100
 
-const SQL_INVARIANTS = [
-    {
-        id: 'sql_tautology',
-        // Tautology: expression that is always true, used to bypass WHERE
-        test: (sql: string) => /\bOR\b\s+\d+\s*=\s*\d+|\bOR\b\s*['"][^'"]*['"]\s*=\s*['"][^'"]*['"]/i.test(sql),
-        severity: 'high' as Severity,
-    },
-    {
-        id: 'sql_union_injection',
-        // UNION: merges a second query's results — data extraction
-        test: (sql: string) => /\bUNION\b\s+(?:ALL\s+)?\bSELECT\b/i.test(sql),
-        severity: 'critical' as Severity,
-    },
-    {
-        id: 'sql_stacked',
-        // Stacked queries: terminates original, runs arbitrary SQL
-        test: (sql: string) => /;\s*(?:DROP|DELETE|INSERT|UPDATE|ALTER|CREATE|EXEC|TRUNCATE|GRANT)\b/i.test(sql),
-        severity: 'critical' as Severity,
-    },
-    {
-        id: 'sql_time_blind',
-        test: (sql: string) => /\b(?:SLEEP|WAITFOR\s+DELAY|BENCHMARK|PG_SLEEP|DBMS_PIPE)\b/i.test(sql),
-        severity: 'high' as Severity,
-    },
-    {
-        id: 'sql_comment_truncation',
-        test: (sql: string) => /(?:--|#|\/\*)\s*$/m.test(sql) && /\b(?:OR|AND|WHERE|SELECT)\b/i.test(sql),
-        severity: 'medium' as Severity,
-    },
-    {
-        id: 'sql_error_oracle',
-        test: (sql: string) => /\b(?:EXTRACTVALUE|UPDATEXML|EXP\s*\(\s*~|POLYGON)\b/i.test(sql),
-        severity: 'high' as Severity,
-    },
-]
+function logSqlRaspError(context: string, error: unknown): void {
+    const message = error instanceof Error ? `${error.name}: ${error.message}` : String(error)
+    console.warn('[invariant] SQL RASP internal error', {
+        context,
+        error: message,
+    })
+}
 
-function checkQueryInvariants(sql: string): Array<{ id: string; severity: Severity }> {
-    const violations: Array<{ id: string; severity: Severity }> = []
-    for (const inv of SQL_INVARIANTS) {
+function abstractQuery(sql: string): string {
+    return sql.replace(/['"][^'"]*['"]/g, '?').replace(/\b\d+\b/g, '?').replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function trackQueryPattern(sql: string, config: SqlRaspConfig): void {
+    const pattern = abstractQuery(sql)
+    const now = Date.now()
+    
+    let state = patternCache.get(pattern)
+    if (!state) {
+        state = { count: 1, start: now }
+        patternCache.set(pattern, state)
+        return
+    }
+    
+    if (now - state.start > PATTERN_WINDOW_MS) {
+        state.count = 1
+        state.start = now
+        return
+    }
+    
+    state.count++
+    if (state.count === PATTERN_LIMIT) {
+        const msg = `[INVARIANT] SCANNING DETECTED: Query pattern executed ${PATTERN_LIMIT}x/minute: ${pattern.slice(0, 100)}`
+        console.warn(msg)
         try {
-            if (inv.test(sql)) {
-                violations.push({ id: inv.id, severity: inv.severity })
-            }
-        } catch {
-            // Never let invariant check failure break the query
+            config.db.insertSignal({
+                type: 'behavioral_anomaly',
+                subtype: 'sql_scanning',
+                severity: 'high',
+                action: 'monitored',
+                path: 'sql_pattern_tracker',
+                method: 'QUERY',
+                source_hash: null,
+                invariant_classes: JSON.stringify(['sql_scanning']),
+                is_novel: false,
+                timestamp: new Date().toISOString()
+            })
+        } catch (error) {
+            logSqlRaspError('trackQueryPattern.insertSignal', error)
         }
     }
-    return violations
+}
+
+// ── Parameterized Check ──────────────────────────────────────────
+
+function checkNonParameterized(sql: string, args: unknown[]): void {
+    const hasParams = args.length > 1 && (Array.isArray(args[1]) || (args[1] != null && typeof args[1] === 'object'))
+    const hasInlineData = /=\s*['"][^'"]*['"]|=\s*\d+/.test(sql) || /\b(?:IN|VALUES)\s*\([^)]+['"]/.test(sql)
+    const hasPlaceholders = /\$\d+|\?|:[a-zA-Z_]+/.test(sql)
+    
+    if (hasInlineData && !hasPlaceholders && !hasParams) {
+        console.warn(`[INVARIANT] WARNING: Non-parameterized query detected. Consider using prepared statements: ${sql.slice(0, 100)}`)
+    }
+}
+
+// ── SQL Invariant Checks ─────────────────────────────────────────
+
+function checkQueryInvariants(sql: string): Array<{ id: string; severity: Severity }> {
+    const matches = engine.detectDeep(sql, [], 'sql').matches
+    return matches.map(m => ({ id: m.class, severity: m.severity as Severity }))
 }
 
 function resolveAction(violations: Array<{ severity: Severity }>, mode: SqlRaspConfig['mode']): DefenseAction {
@@ -101,7 +114,6 @@ function resolveAction(violations: Array<{ severity: Severity }>, mode: SqlRaspC
 
     switch (mode) {
         case 'sanitize':
-            // Sanitize mode: only block critical, monitor high
             return hasCritical ? 'blocked' : 'monitored'
         case 'defend':
             return (hasCritical || hasHigh) ? 'blocked' : 'monitored'
@@ -114,17 +126,6 @@ function resolveAction(violations: Array<{ severity: Severity }>, mode: SqlRaspC
 
 // ── Module Wrapper ───────────────────────────────────────────────
 
-/**
- * Wrap a SQL driver module's query function with invariant checks.
- *
- * Works with:
- *   - pg: client.query(sql, params?)
- *   - mysql2: connection.query(sql, params?)
- *   - better-sqlite3: db.prepare(sql)
- *
- * The wrapper intercepts the SQL string, runs invariant checks,
- * and applies the appropriate defense action.
- */
 export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
     originalFn: T,
     config: SqlRaspConfig,
@@ -133,6 +134,9 @@ export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
     const wrapped = function (this: unknown, ...args: unknown[]): unknown {
         const sql = typeof args[0] === 'string' ? args[0] : ''
         if (!sql) return originalFn.apply(this, args)
+
+        checkNonParameterized(sql, args)
+        trackQueryPattern(sql, config)
 
         const violations = checkQueryInvariants(sql)
         if (violations.length === 0) return originalFn.apply(this, args)
@@ -149,17 +153,20 @@ export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
                 query: sql.length > 500 ? sql.slice(0, 500) + '...' : sql,
                 invariantClass: v.id,
                 action,
+                confidence: action === 'blocked' ? 0.95 : 0.85,
                 severity: v.severity,
                 location: `${driverName}.query()`,
                 timestamp: now,
             }
 
-            // Emit callback
             if (config.onViolation) {
-                try { config.onViolation(violation) } catch { /* never break the app */ }
+                try {
+                    config.onViolation(violation)
+                } catch (error) {
+                    logSqlRaspError('wrapSqlQuery.onViolation', error)
+                }
             }
 
-            // Store signal
             try {
                 config.db.insertSignal({
                     type: 'sql_invariant_violation',
@@ -173,11 +180,10 @@ export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
                     is_novel: false,
                     timestamp: now,
                 })
-            } catch {
-                // DB failure must never break the application
+            } catch (error) {
+                logSqlRaspError('wrapSqlQuery.insertSignal', error)
             }
 
-            // Store finding (deduplicated by type + location)
             try {
                 config.db.insertFinding({
                     type: 'runtime_invariant_violation',
@@ -195,31 +201,21 @@ export function wrapSqlQuery<T extends (...args: unknown[]) => unknown>(
                     last_seen: now,
                     rasp_active: action === 'blocked',
                 })
-            } catch {
-                // Never break the app
+            } catch (error) {
+                logSqlRaspError('wrapSqlQuery.insertFinding', error)
             }
         }
 
-        // Execute defense action
         if (action === 'blocked') {
             throw new Error(`[INVARIANT] Query blocked — ${violations.map(v => v.id).join(', ')} detected. Use parameterized queries.`)
         }
 
-        // Monitored / sanitized — let it through
         return originalFn.apply(this, args)
     }
 
     return wrapped as unknown as T
 }
 
-/**
- * Auto-wrap a loaded SQL module. Call this from the module interposer.
- *
- * Example:
- *   const pg = require('pg')
- *   wrapPgModule(pg, config)
- *   // All subsequent pg.Client.query() calls are now defended
- */
 export function wrapPgModule(pg: Record<string, unknown>, config: SqlRaspConfig): void {
     const Client = pg.Client as { prototype: Record<string, unknown> } | undefined
     if (Client?.prototype?.query) {
@@ -247,6 +243,17 @@ export function wrapMysqlModule(mysql: Record<string, unknown>, config: SqlRaspC
             Connection.prototype.query as (...args: unknown[]) => unknown,
             config,
             'mysql2',
+        )
+    }
+}
+
+export function wrapBetterSqlite3Module(bs3: Record<string, unknown>, config: SqlRaspConfig): void {
+    const Database = bs3.Database as { prototype: Record<string, unknown> } | undefined
+    if (Database?.prototype?.prepare) {
+        Database.prototype.prepare = wrapSqlQuery(
+            Database.prototype.prepare as (...args: unknown[]) => unknown,
+            config,
+            'better-sqlite3',
         )
     }
 }

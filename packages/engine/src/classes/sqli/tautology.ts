@@ -16,7 +16,19 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectTautologies } from '../../evaluators/sql-expression-evaluator.js'
 
-const TAUTOLOGY_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*(?:\(?['"`]?\w*['"`]?\)?\s*(?:=|LIKE|IS)\s*\(?['"`]?\w*['"`]?\)?|\d+\s*[><= ]+\s*\d+|TRUE|NOT\s+FALSE|NOT\s+0|1\b)/i
+const TAUTOLOGY_PATTERN = /(?:^|['"`()\s])\s*(?:OR|\|\|)\s*(?:\(?['"`]?\w*['"`]?\)?\s*(?:=|LIKE|IS)\s*\(?['"`]?\w*['"`]?\)?|\d+\s*[><= ]+\s*\d+|TRUE|NOT\s+FALSE|NOT\s+0|1\b)/i
+const TAUTOLOGY_BETWEEN_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*(?:0x[0-9a-f]+|\d+)\s+BETWEEN\s+(?:0x[0-9a-f]+|\d+)\s+AND\s+(?:0x[0-9a-f]+|\d+)/i
+const TAUTOLOGY_IF_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*IF\s*\(\s*(?:1|0x1|TRUE)\s*,\s*(?:1|TRUE)\s*,\s*(?:0|FALSE)\s*\)/i
+const TAUTOLOGY_ANDAND_PATTERN = /['"`()\s]\s*&&\s*(?:\d+\s*=\s*\d+|0x[0-9a-f]+\s*=\s*0x[0-9a-f]+|TRUE|NOT\s+FALSE|['"]([^'"]*)['"]\s*=\s*['"]\1['"])/i
+const TAUTOLOGY_JSONB_EQUAL_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*'[^']*'\s*::\s*jsonb\s*=\s*'[^']*'\s*::\s*jsonb/i
+const TAUTOLOGY_JSON_VALID_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*JSON_VALID\s*\(\s*['"]\[\]['"]\s*\)(?:\s*=\s*(?:1|TRUE))?/i
+const TAUTOLOGY_MEMBER_OF_PATTERN = /['"`()\s]\s*(?:OR|\|\|)\s*['"][^'"]+['"]\s+MEMBER\s+OF\s*\(\s*['"]\[[^\]]+\]['"]\s*\)/i
+const TAUTOLOGY_QUOTED_EQUAL_PATTERN = /['"]([^'"]*)['"]\s*=\s*['"]\1['"]/
+const TAUTOLOGY_HEX_EQUAL_PATTERN = /0x[0-9a-fA-F]+\s*=\s*0x[0-9a-fA-F]+/
+const TAUTOLOGY_COMMENT_OPEN_CLOSE_PATTERN = /\/\*!\d*\s*([\s\S]*?)\*\//g
+const TAUTOLOGY_BLOCK_COMMENT_PATTERN = /\/\*[\s\S]*?\*\//g
+const TAUTOLOGY_LINE_COMMENT_PATTERN = /--[^\n]*/g
+const TAUTOLOGY_WHITESPACE_PATTERN = /\s+/g
 
 export const sqlTautology: InvariantClassModule = {
     id: 'sql_tautology',
@@ -55,6 +67,12 @@ export const sqlTautology: InvariantClassModule = {
         '" OR ""="',
         "' OR 1 LIKE 1--",
         "' OR NOT FALSE--",
+        "' OR 0x1 BETWEEN 0x0 AND 0x2--",
+        "' OR IF(1,1,0)--",
+        "' && 1=1--",
+        `' OR 'a'::jsonb = '"a"'::jsonb--`,
+        "' OR JSON_VALID('[]')--",
+        `' OR 'a' MEMBER OF('["a"]')--`,
     ],
 
     knownBenign: [
@@ -68,7 +86,25 @@ export const sqlTautology: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return TAUTOLOGY_PATTERN.test(d)
+        // BYP-001: SQL comment injection bypass — strip comments before matching.
+        // MySQL conditional comments (/*!50000OR*/) must be unwrapped first to
+        // preserve the injected keyword before generic block comment removal.
+        const stripSqlComments = (sql: string) => sql
+            .replace(TAUTOLOGY_COMMENT_OPEN_CLOSE_PATTERN, (_, inner) => ' ' + inner + ' ')
+            .replace(TAUTOLOGY_BLOCK_COMMENT_PATTERN, ' ')
+            .replace(TAUTOLOGY_LINE_COMMENT_PATTERN, ' ')
+            .replace(TAUTOLOGY_WHITESPACE_PATTERN, ' ').trim()
+        const stripped = stripSqlComments(d)
+        const match1 = TAUTOLOGY_PATTERN.test(d) || TAUTOLOGY_PATTERN.test(stripped)
+        const match2 = TAUTOLOGY_QUOTED_EQUAL_PATTERN.test(d) || TAUTOLOGY_QUOTED_EQUAL_PATTERN.test(stripped)
+        const match3 = TAUTOLOGY_HEX_EQUAL_PATTERN.test(d)
+        const match4 = TAUTOLOGY_BETWEEN_PATTERN.test(d) || TAUTOLOGY_BETWEEN_PATTERN.test(stripped)
+        const match5 = TAUTOLOGY_IF_PATTERN.test(d) || TAUTOLOGY_IF_PATTERN.test(stripped)
+        const match6 = TAUTOLOGY_ANDAND_PATTERN.test(d) || TAUTOLOGY_ANDAND_PATTERN.test(stripped)
+        const match7 = TAUTOLOGY_JSONB_EQUAL_PATTERN.test(d) || TAUTOLOGY_JSONB_EQUAL_PATTERN.test(stripped)
+        const match8 = TAUTOLOGY_JSON_VALID_PATTERN.test(d) || TAUTOLOGY_JSON_VALID_PATTERN.test(stripped)
+        const match9 = TAUTOLOGY_MEMBER_OF_PATTERN.test(d) || TAUTOLOGY_MEMBER_OF_PATTERN.test(stripped)
+        return match1 || match2 || match3 || match4 || match5 || match6 || match7 || match8 || match9
     },
 
     /**
@@ -84,17 +120,15 @@ export const sqlTautology: InvariantClassModule = {
      */
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        try {
-            const tautologies = detectTautologies(d)
-            if (tautologies.length > 0) {
-                return {
-                    detected: true,
-                    confidence: 0.92,
-                    explanation: `Expression evaluator: tautological expression ${tautologies[0].expression} evaluates to ${tautologies[0].value}`,
-                    evidence: tautologies.map(t => t.expression).join(', '),
-                }
+        const tautologies = detectTautologies(d)
+        if (tautologies.length > 0) {
+            return {
+                detected: true,
+                confidence: 0.92,
+                explanation: `Expression evaluator: tautological expression ${tautologies[0].expression} evaluates to ${tautologies[0].value}`,
+                evidence: tautologies.map(t => t.expression).join(', '),
             }
-        } catch { /* L2 failure must not affect pipeline */ }
+        }
         return null
     },
 
@@ -158,7 +192,7 @@ export const sqlTautology: InvariantClassModule = {
             // 11. Double URL encoding
             s => encodeURIComponent(encodeURIComponent(s)),
             // 12. Line comment variant (MySQL #, MSSQL --, PG --)
-            s => s.replace(/--$/, '#').replace(/--\s*-$/, '#'),
+            s => s.replace(/--\s*-\s*$/, '#'),
         ]
 
         const variants: string[] = []
@@ -170,4 +204,3 @@ export const sqlTautology: InvariantClassModule = {
         return variants
     },
 }
-
