@@ -161,17 +161,19 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     xss_protocol_handler: { invariantClass: 'xss_protocol_handler', techniques: [T1189], rationale: 'javascript: protocol handler executes in page context' },
     xss_template_expression: { invariantClass: 'xss_template_expression', techniques: [T1189, T1059], rationale: 'Template expression injection can escalate to RCE via SSTI' },
     xss_attribute_escape: { invariantClass: 'xss_attribute_escape', techniques: [T1189], rationale: 'Attribute escape breaks out of HTML attribute context' },
+    css_injection: { invariantClass: 'css_injection', techniques: [T1059, T1185], rationale: 'CSS injection exfiltrates data via attribute selectors or executes code via expression()/behavior:' },
 
     // Command Injection (3 classes)
     cmd_separator: { invariantClass: 'cmd_separator', techniques: [T1059, T1059_004], rationale: 'Shell metacharacter injection enables arbitrary command execution' },
     cmd_substitution: { invariantClass: 'cmd_substitution', techniques: [T1059, T1059_004], rationale: 'Subshell substitution $(cmd) executes in host context' },
     cmd_argument_injection: { invariantClass: 'cmd_argument_injection', techniques: [T1059], rationale: 'Argument injection manipulates command-line tool behavior' },
 
-    // Path Traversal (4 classes)
+    // Path Traversal (5 classes)
     path_dotdot_escape: { invariantClass: 'path_dotdot_escape', techniques: [T1083, T1005], rationale: 'Directory traversal reads arbitrary files from the filesystem' },
     path_null_terminate: { invariantClass: 'path_null_terminate', techniques: [T1083], rationale: 'Null byte truncates filename extensions to bypass filters' },
     path_encoding_bypass: { invariantClass: 'path_encoding_bypass', techniques: [T1083], rationale: 'Encoding bypass evades path traversal filters' },
     path_normalization_bypass: { invariantClass: 'path_normalization_bypass', techniques: [T1083], rationale: 'Path normalization differences between parser and filesystem' },
+    path_windows_traversal: { invariantClass: 'path_windows_traversal', techniques: [T1083, T1005], rationale: 'Windows-specific traversal and path injection can expose sensitive local and network files' },
 
     // SSRF (3 classes)
     ssrf_internal_reach: { invariantClass: 'ssrf_internal_reach', techniques: [T1210, T1018], rationale: 'SSRF accesses internal network resources from the application' },
@@ -202,6 +204,8 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     oauth_state_missing: { invariantClass: 'oauth_state_missing', techniques: [T1550_001], rationale: 'Missing or weak OAuth state enables callback CSRF and authorization response injection' },
     oauth_redirect_hijack: { invariantClass: 'oauth_redirect_hijack', techniques: [T1550_001], rationale: 'OAuth redirect_uri open redirects can steal tokens via attacker-controlled callback destinations' },
     oauth_redirect_uri_bypass: { invariantClass: 'oauth_redirect_uri_bypass', techniques: [T1550_001], rationale: 'redirect_uri bypass enables OAuth token theft via attacker-controlled callback destinations' },
+    oauth_redirect_manipulation: { invariantClass: 'oauth_redirect_manipulation', techniques: [T1550_001, T1528], rationale: 'OAuth redirect_uri manipulation bypasses allowlists to redirect authorization codes to attacker servers' },
+    oauth_state_bypass: { invariantClass: 'oauth_state_bypass', techniques: [T1550_001, T1185], rationale: 'Weak or missing OAuth state parameters allow CSRF-based token injection and account takeover' },
     saml_signature_wrapping: { invariantClass: 'saml_signature_wrapping', techniques: [T1550_001], rationale: 'SAML signature wrapping abuses alternate assertions while preserving valid signatures' },
     jwt_algorithm_confusion: { invariantClass: 'jwt_algorithm_confusion', techniques: [T1550, T1550_001], rationale: 'Algorithm confusion downgrades asymmetric JWT validation into symmetric forging paths' },
     mfa_bypass_indicator: { invariantClass: 'mfa_bypass_indicator', techniques: [T1110_001], rationale: 'Weak OTP/TOTP patterns indicate brute-force style MFA bypass attempts' },
@@ -313,6 +317,7 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     llm_prompt_injection: { invariantClass: 'llm_prompt_injection', techniques: [T1190, T1059], rationale: 'Prompt injection overrides LLM system instructions to alter behavior' },
     llm_data_exfiltration: { invariantClass: 'llm_data_exfiltration', techniques: [T1005, T1119], rationale: 'LLM data exfiltration extracts training data or system prompts' },
     llm_jailbreak: { invariantClass: 'llm_jailbreak', techniques: [T1553], rationale: 'LLM jailbreak bypasses safety controls to enable harmful outputs' },
+    llm_indirect_injection: { invariantClass: 'llm_indirect_injection', techniques: [T1190, T1059, T1566_002], rationale: 'Indirect prompt injection embeds adversarial instructions in external content retrieved by an LLM agent' },
 
     // WebSocket (2 classes)
     ws_injection: { invariantClass: 'ws_injection', techniques: [T1190, T1059_007], rationale: 'WebSocket message injection exploits bidirectional channel for code execution' },

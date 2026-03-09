@@ -39,7 +39,7 @@ export const ssrfInternalReach: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:https?:\/\/)?(?:127\.0\.0\.1|localhost|0\.0\.0\.0|10\.\d+\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|\[0:0:0:0:0:0:0:1\]|\[::ffff:127\.0\.0\.1\]|\[::ffff:7f00:1\]|\[::ffff:7f00:0001\]|\[fe80::1(?:%25|%|).*\]|0177\.0\.0\.01|0177\.0\.0\.1)/i.test(d)
+        return /(?:https?:\/\/)?(?:127\.\d+(?:\.\d+)*|localhost|0\.0\.0\.0|10\.\d+(?:\.\d+)*|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+|192\.168\.\d+\.\d+|0x7f|2130706433|017700000001|\[::1?\]|\[0:0:0:0:0:0:0:1\]|\[(?:0000:){7}0001\]|\[::ffff:127\.0\.0\.1\]|\[::ffff:7f00:1\]|\[::ffff:7f00:0001\]|\[::ffff:0:0\]|\[fe80::1(?:%25|%|).*\]|0177\.0\.0\.01|0177\.0\.0\.1|localtest\.me|lvh\.me|yurets\.dev|1u\.ms|\.nip\.io|\.xip\.io|\.sslip\.io)/i.test(d)
     },
     detectL2: l2SsrfInternal,
     generateVariants: (count: number): string[] => {
@@ -148,7 +148,10 @@ export const ssrfProtocolSmuggle: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /(?:file|gopher|dict|ldap|tftp|ftp|jar|netdoc|phar):\/\//i.test(d)
+        const PROTOCOL_RE = /(?:file|gopher|dict|ldap|tftp|ftp|jar|netdoc|phar|expect|data|php|zip):\/\//i
+        // Check both decoded (catches encoded bypasses) and raw (catches data:// URIs that
+        // deepDecode transforms into data:text/html,... stripping the ://)
+        return PROTOCOL_RE.test(d) || PROTOCOL_RE.test(input)
     },
     detectL2: l2SsrfProtocolSmuggle,
     generateVariants: (count: number): string[] => {

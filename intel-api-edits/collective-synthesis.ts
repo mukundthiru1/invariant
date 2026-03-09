@@ -95,6 +95,8 @@ export async function findSynthesisCandidates(db: Database): Promise<SynthesisCa
         HAVING COUNT(c.id) >= 5 
            AND AVG(c.confidence) >= 0.78
            AND MIN(c.observed_at) >= NOW() - INTERVAL '30 days'
+           AND COUNT(DISTINCT DATE_TRUNC('hour', c.observed_at)) >= 2
+           AND COUNT(DISTINCT c.sensor_id) >= 2
         ORDER BY count DESC
         LIMIT 20
     `)
@@ -256,12 +258,13 @@ export function buildRegexFromSignalType(signalType: string, sampleMatchedRules:
     
     for (const rule of sampleMatchedRules) {
         if (typeof rule === 'string') {
-            const parts = rule.split(/[^a-zA-Z0-9]+/).filter(t => t.length > 2)
+            const parts = rule.split(/[^a-zA-Z0-9]+/).filter(t => t.length > 3)
             tokens.push(...parts)
         }
     }
 
-    const uniqueTokens = Array.from(new Set(tokens.map(t => t.toLowerCase())))
+    const benignTokens = new Set(['api', 'users', 'profile', 'data', 'v1', 'v2', 'id', 'user', 'info', 'auth', 'login'])
+    const uniqueTokens = Array.from(new Set(tokens.map(t => t.toLowerCase()))).filter(t => !benignTokens.has(t) && t.length > 3)
 
     if (uniqueTokens.length < 2) {
         return null

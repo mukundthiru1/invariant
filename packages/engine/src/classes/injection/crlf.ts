@@ -5,6 +5,11 @@ import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { l2CRLFHeader, l2CRLFLog } from '../../evaluators/l2-adapters.js'
 
+const CRLF_HEADER_INJECT_TARGET_RE = /(?:^|[\r\n])\s*(?:Set-Cookie|Location|X-Frame-Options|Content-Type|Content-Length|Transfer-Encoding)\s*:/i
+const CRLF_LOG_NEWLINE_SIGNAL_RE = /%0[aAdD]|%r%n/i
+const CRLF_LOG_RAW_NEWLINE_RE = /[\r\n]/
+const CRLF_LOG_ESCAPED_NEWLINE_RE = /\\{1,2}n|\\{1,2}r\\{1,2}n/
+
 export const crlfHeaderInjection: InvariantClassModule = {
     id: 'crlf_header_injection',
     description: 'CRLF injection — \\r\\n sequences that inject HTTP headers or split responses',
@@ -24,6 +29,9 @@ export const crlfHeaderInjection: InvariantClassModule = {
         '\\r\\nHTTP/1.1 200 OK\\r\\nContent-Type: text/html',
         '{"name":"x\\r\\nSet-Cookie: admin=true"}',
         '<user>ok\\nLocation: https://evil.example</user>',
+        'GET / HTTP/1.1\r\nHost: target.com\r\nCookie: session=abc%0d%0aX-Admin: true',
+        'GET / HTTP/1.1\r\nHost: target.com\r\nCookie: session=abc%250d%250aX-Admin: true',
+        'GET / HTTP/1.1\r\nHost: target.com\r\nX-Custom: value%0d%0aContent-Length: 0%0d%0a%0d%0aGET /admin HTTP/1.1',
     ],
 
     knownBenign: [
@@ -35,10 +43,10 @@ export const crlfHeaderInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        const headerInjectTarget = /(?:^|[\r\n])\s*(?:Set-Cookie|Location|X-Frame-Options|Content-Type|Content-Length|Transfer-Encoding)\s*:/i
         if (/%0[dD]%0[aA]|%r%n/i.test(input) && /(?:Set-Cookie|Location|X-Frame-Options|Content-Type|HTTP\/)/i.test(input)) return true
+        if (/(?:%0[dD]%0[aA]|%250[dD]%250[aA]|%r%n|\r\n|\n)/i.test(input) && /(?:Cookie|X-[A-Za-z0-9-]+)\s*:/i.test(input) && /(?:GET|POST|PUT|DELETE|PATCH)\s+\//.test(d)) return true
         if (/%0[dD]%0[aA]%0[dD]%0[aA]/i.test(input)) return true
-        if (/(?:\r\n|\n)/.test(d) && (headerInjectTarget.test(d) || /(?:\r\n|\n)\s*HTTP\/1\.[01]\s+\d{3}\b/i.test(d))) return true
+        if (/(?:\r\n|\n)/.test(d) && (CRLF_HEADER_INJECT_TARGET_RE.test(d) || /(?:\r\n|\n)\s*HTTP\/1\.[01]\s+\d{3}\b/i.test(d))) return true
         // Literal escaped newline sequences in JSON/XML input (\\r\\n, \\n, or \n as raw text)
         if (/(?:\\{1,2}r\\{1,2}n|\\{1,2}n)/i.test(input) &&
             /(?:Set-Cookie|Location|X-Frame-Options|Content-Type|HTTP\/1\.[01])/i.test(input)) return true
@@ -79,7 +87,7 @@ export const crlfLogInjection: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        const hasNewline = /%0[aAdD]|%r%n/i.test(input) || /[\r\n]/.test(d) || /\\{1,2}n|\\{1,2}r\\{1,2}n/.test(input)
+        const hasNewline = CRLF_LOG_NEWLINE_SIGNAL_RE.test(input) || CRLF_LOG_RAW_NEWLINE_RE.test(d) || CRLF_LOG_ESCAPED_NEWLINE_RE.test(input)
         if (!hasNewline) return false
         return /\[(?:ADMIN|INFO|WARN|ERROR|DEBUG|ALERT|CRITICAL|NOTICE)\]/i.test(d) ||
             /\d{4}-\d{2}-\d{2}[\sT]\d{2}:\d{2}/i.test(d) ||

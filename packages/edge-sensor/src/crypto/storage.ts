@@ -2,6 +2,10 @@ import { concat, decode, encode, fromBase64Url, toBase64Url } from '../../../eng
 
 const storageKeyCache = new Map<string, CryptoKey>()
 
+function asBufferSource(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+    return bytes as Uint8Array<ArrayBuffer>
+}
+
 export class StorageDecryptionError extends Error {
     constructor(message: string) {
         super(message)
@@ -15,7 +19,7 @@ export async function importStorageKey(keyB64: string): Promise<CryptoKey> {
 
     const key = await crypto.subtle.importKey(
         'raw',
-        fromBase64Url(keyB64),
+        asBufferSource(fromBase64Url(keyB64)),
         { name: 'AES-GCM' },
         false,
         ['encrypt', 'decrypt'],
@@ -35,9 +39,9 @@ export async function encryptStorageValue(
     const aad = encode(kvKey)
 
     const ciphertext = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
+        { name: 'AES-GCM', iv: asBufferSource(iv), additionalData: asBufferSource(aad) },
         key,
-        encode(plaintext),
+        asBufferSource(encode(plaintext)),
     )
 
     return toBase64Url(concat(iv, new Uint8Array(ciphertext)))
@@ -57,9 +61,9 @@ export async function decryptStorageValue(
 
     try {
         const plaintext = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv, additionalData: aad },
+            { name: 'AES-GCM', iv: asBufferSource(iv), additionalData: asBufferSource(aad) },
             key,
-            ciphertext,
+            asBufferSource(ciphertext),
         )
         return decode(new Uint8Array(plaintext))
     } catch (err) {

@@ -1,10 +1,10 @@
 /**
- * Path Traversal Invariant Classes — All 4
- * (Added path_normalization_bypass)
+ * Path Traversal Invariant Classes — All 5
+ * (Added path_normalization_bypass + path_windows_traversal)
  */
 import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
-import { l2PathDotdot, l2PathNull, l2PathEncoding, l2PathNormalization } from '../../evaluators/l2-adapters.js'
+import { l2PathDotdot, l2PathNull, l2PathEncoding, l2PathNormalization, l2WindowsPathTraversal } from '../../evaluators/l2-adapters.js'
 
 export const pathDotdotEscape: InvariantClassModule = {
     id: 'path_dotdot_escape',
@@ -231,4 +231,64 @@ export const pathNormalizationBypass: InvariantClassModule = {
     },
 }
 
-export const PATH_CLASSES: InvariantClassModule[] = [pathDotdotEscape, pathNullTerminate, pathEncodingBypass, pathNormalizationBypass]
+export const pathWindowsTraversal: InvariantClassModule = {
+    id: 'path_windows_traversal',
+    description: 'Windows-specific traversal and path injection primitives (UNC, drive-letter, ADS, zip slip, null-byte bypass)',
+    category: 'path_traversal',
+    severity: 'high',
+    calibration: { baseConfidence: 0.90, minInputLength: 6 },
+
+    mitre: ['T1083', 'T1005'],
+    cwe: 'CWE-22',
+
+    knownPayloads: [
+        '..\\..\\Windows\\System32',
+        '..\\..\\..\\..\\',
+        '\\\\evil.com\\share',
+        'C:\\Windows\\System32\\cmd.exe',
+        'D:\\secrets',
+        'archive.zip/../../../etc/passwd',
+        'file.txt::DATA',
+        'file.php::',
+        'file.txt%00.php',
+    ],
+
+    knownBenign: [
+        'C:\\Users\\file.txt',
+        'D:\\Projects\\notes.md',
+        'relative\\folder\\file.txt',
+        'https://example.com/downloads/archive.zip',
+    ],
+
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        if (/(?:^|[\s"'`=:(])\\\\[a-z0-9.-]{1,253}\\[^\s\\/:*?"<>|]+/i.test(d)) return true
+        if (/(?:^|[\s"'`=:(])(?:[a-z]:\\)(?:windows\\system32(?:\\|$)|windows\\win\.ini(?:$|\\)|secrets?(?:\\|$)|secret(?:\\|$)|sam(?:\\|$)|config(?:\\|$)|shadow(?:\\|$)|passwd(?:\\|$)|.*\\cmd\.exe\b)/i.test(d)) return true
+        if (/(?:^|[\\/])(?:\.\.\\){2,}(?:windows\\system32|windows\\win\.ini|[^\\\r\n]{0,120})/i.test(d)) return true
+        if (/(?:^|[\\/])(?:[^\\/\r\n]+\.(?:zip|jar|war|apk|tar|tgz|7z|rar))[\\/](?:\.\.[\\/]){2,}[^\r\n]{0,120}/i.test(d)) return true
+        if (/(?:^|[\s"'`=:(])(?:\.\.[\\/]){3,}(?:etc[\\/]passwd|windows[\\/]system32|[^\\/\r\n]{1,120})/i.test(d)) return true
+        if (/\.[a-z0-9]{1,8}(?:%00|\\x00|\0)\.[a-z0-9]{1,8}\b/i.test(d) || /\.[a-z0-9]{1,8}%00\.[a-z0-9]{1,8}\b/i.test(input)) return true
+        if (/(?:^|[\\/])[^\\/\r\n]+::(?:\$?[a-z_]+)?(?:\b|$)/i.test(d)) return true
+        return false
+    },
+    detectL2: (input: string): DetectionLevelResult | null => l2WindowsPathTraversal(input, input),
+    generateVariants: (count: number): string[] => {
+        const seeds = [
+            '..\\..\\Windows\\System32\\drivers\\etc\\hosts',
+            '..\\..\\..\\..\\Windows\\System32\\cmd.exe',
+            '\\\\evil.com\\share\\payload.exe',
+            'C:\\Windows\\System32\\cmd.exe',
+            'D:\\secrets\\backup.txt',
+            'archive.zip/../../../etc/passwd',
+            'package.jar\\..\\..\\..\\windows\\system32\\config\\sam',
+            'file.txt::DATA',
+            'file.php::',
+            'file.txt%00.php',
+        ]
+        const r: string[] = []
+        for (let i = 0; i < count; i++) r.push(seeds[i % seeds.length])
+        return r.filter(candidate => pathWindowsTraversal.detect(candidate))
+    },
+}
+
+export const PATH_CLASSES: InvariantClassModule[] = [pathDotdotEscape, pathNullTerminate, pathEncodingBypass, pathNormalizationBypass, pathWindowsTraversal]

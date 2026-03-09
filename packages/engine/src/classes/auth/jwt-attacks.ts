@@ -1,5 +1,6 @@
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2JwtKidInjection, l2JwtJwkEmbedding } from '../../evaluators/l2-adapters.js'
 
 interface ParsedJwtToken {
     raw: string
@@ -122,7 +123,7 @@ function isWeakSignature(signature: string): boolean {
     if (signature.length < 16) return true
     if (/^(?:invalid|test|debug|none|null)$/i.test(signature)) return true
     if (/^(?:secret|password|admin|123456|qwerty)[A-Za-z0-9_-]*$/i.test(signature)) return true
-    if (/^(?:[A-Za-z0-9_-])\1{7,}$/.test(signature)) return true
+    if (/^([A-Za-z0-9_-])\1{7,}$/.test(signature)) return true
     return false
 }
 
@@ -147,6 +148,8 @@ export const jwtKidInjection: InvariantClassModule = {
         'kid=rotation_key_2026_q1',
         'Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.abc123def456ghi789',
     ],
+
+    detectL2: l2JwtKidInjection,
 
     detect: (input: string): boolean => {
         const decoded = deepDecode(input)
@@ -197,6 +200,8 @@ export const jwtJwkEmbedding: InvariantClassModule = {
         'Authorization: Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJhIn0.zHh5eHh4eXl5eXh4',
     ],
 
+    detectL2: l2JwtJwkEmbedding,
+
     detect: (input: string): boolean => {
         const decoded = deepDecode(input)
 
@@ -206,10 +211,12 @@ export const jwtJwkEmbedding: InvariantClassModule = {
 
             if (header.jwk && typeof header.jwk === 'object') return true
             if (typeof header.jku === 'string' && /^(?:https?:)?\/\//i.test(header.jku)) return true
+            if (typeof header.x5u === 'string' && /^(?:https?:)?\/\//i.test(header.x5u)) return true
         }
 
         if (/"alg"\s*:\s*"(?:RS|ES|PS)\d+"[\s\S]{0,160}"jwk"\s*:\s*\{/i.test(decoded)) return true
         if (/\bjku\s*(?:=|:)\s*['"]?(?:https?:)?\/\//i.test(decoded)) return true
+        if (/\bx5u\s*(?:=|:)\s*['"]?(?:https?:)?\/\//i.test(decoded)) return true
 
         return false
     },

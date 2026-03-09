@@ -8,6 +8,7 @@ const ADMIN_SECOND_ORDER_PATTERN = /\b(?:username|user(?:_?name)?|email|profile)
 const SELECT_CONCAT_PATTERN = /['"]\s*\+\s*\(?\s*SELECT\s+password\s+FROM\s+users\s+WHERE\s+username\s*=\s*'admin'\)?\s*\+\s*['"]?\s*?/i
 const INSERT_CONCAT_PATTERN = /\bINSERT\s+INTO\s+users\s+VALUES\s*\(\s*'victim'\s*,\s*'x'\s*\+\s*char\s*\(\s*0x27\s*\)\s*\+\s*' OR 1=1--'\s*\)/i
 const STORED_QUOTE_CONCAT_PATTERN = /\b(?:username|user(?:_?name)?|email|profile)\b[^'"\n\r;]{0,120}['"][^'"\n\r;]*\+\s*(?:char\s*\(\s*0x27\s*\)|0x27)\s*\+\s*'[^']*OR\s+1=1/i
+const USERNAME_QUOTE_CONCAT_PATTERN = /\b(?:username|user(?:_?name)?)\s*=\s*['"][^'"\n\r;]*['"]\s*\+\s*char\s*\(\s*0x27\s*\)\s*\+\s*['"][^'"\n\r;]*\bOR\s+1=1--['"]?/i
 const LONE_ADMIN_SECOND_ORDER_PATTERN = /\badmin'--/i
 
 export const sqlSecondOrder: InvariantClassModule = {
@@ -40,6 +41,7 @@ export const sqlSecondOrder: InvariantClassModule = {
             || SELECT_CONCAT_PATTERN.test(d)
             || INSERT_CONCAT_PATTERN.test(d)
             || STORED_QUOTE_CONCAT_PATTERN.test(d)
+            || USERNAME_QUOTE_CONCAT_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
@@ -49,6 +51,7 @@ export const sqlSecondOrder: InvariantClassModule = {
             || SELECT_CONCAT_PATTERN.test(d)
             || INSERT_CONCAT_PATTERN.test(d)
             || STORED_QUOTE_CONCAT_PATTERN.test(d)
+            || USERNAME_QUOTE_CONCAT_PATTERN.test(d)
 
         if (!matched) return null
 

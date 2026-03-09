@@ -65,10 +65,17 @@ const MONGO_DANGEROUS_OPERATORS = new Set([
     '$accumulator', // Custom JS in aggregation
 ])
 
+const BSON_EXTENDED_OPERATORS = new Set([
+    '$oid', '$date', '$binary', '$ref', '$timestamp', '$undefined', 
+    '$minKey', '$maxKey', '$numberLong', '$numberDecimal', '$numberInt', 
+    '$numberDouble', '$symbol', '$dbPointer', '$code', '$scope'
+])
+
 const ALL_MONGO_OPERATORS = new Set([
     ...MONGO_QUERY_OPERATORS,
     ...MONGO_UPDATE_OPERATORS,
     ...MONGO_DANGEROUS_OPERATORS,
+    ...BSON_EXTENDED_OPERATORS,
 ])
 
 
@@ -189,6 +196,18 @@ function extractJsonKeys(input: string): Array<{ key: string; value: string; pos
             key: paramMatch[2],
             value: paramMatch[1],
             position: paramMatch.index,
+        })
+    }
+
+    // Strategy 4: Dot notation injection
+    // Handles: username.$ne=admin
+    const dotPattern = /([a-zA-Z_]+)\.(\$[a-zA-Z]+)/g
+    let dotMatch: RegExpExecArray | null
+    while ((dotMatch = dotPattern.exec(input)) !== null) {
+        keys.push({
+            key: dotMatch[2],
+            value: dotMatch[1],
+            position: dotMatch.index,
         })
     }
 

@@ -134,6 +134,7 @@ export const deserPhpObject: InvariantClassModule = {
         'O:4:"User":2:{s:4:"name";s:5:"admin";s:4:"role";s:5:"admin";}',
         'O:11:"Application":1:{s:3:"cmd";s:2:"id";}',
         'O:7:"Example":1:{s:3:"foo";s:3:"bar";}',
+        'O:8:"stdClass":1:{s:3:"cmd";s:6:"id;pwd";}',
         'O:+6:"Malice":1:{s:3:"cmd";s:2:"id";}',
         'O : 6 : "Malice" : 0 : {}',
         'a:2:{i:0;s:4:"test";i:1;O:5:"MyObj":0:{}}',
@@ -185,6 +186,7 @@ export const deserPythonPickle: InvariantClassModule = {
 
     knownPayloads: [
         "cos\nsystem\n(S'id'\ntR.",
+        'cos\nsystem\n(S"id"\ntR.',
         "cbuiltins\neval\n(S'__import__(\"os\").system(\"id\")'\ntR.",
         '\\x80\\x02cposix\\nsystem\\nq\\x00X\\x02\\x00\\x00\\x00idq\\x01\\x85q\\x02Rq\\x03.',
         "csubprocess\nPopen\n(S'id'\ntR.",

@@ -154,6 +154,11 @@ function buildSqlStructuralMatchedInput(input: string, detection: SqlStructuralD
         }
     }
 
+    if (detection.type === 'time_based_blind') {
+        const blindMatch = remaining.match(/^(?:sleep|waitfor\s+delay|pg_sleep|benchmark|dbms_pipe\.receive_message)\s*\(/i)
+        return blindMatch ? blindMatch[0] : detection.detail
+    }
+
     if (detection.type === 'error_oracle') {
         const fn = detection.detail.match(/^Error-based extraction function: ([A-Za-z_][A-Za-z0-9_]* )?\(/)
         if (fn?.[1]) return `${fn[1].trim()}(`
@@ -175,6 +180,7 @@ function buildSqlStructuralEvidence(detection: SqlStructuralDetection, input: st
         union_extraction: 'Injected SQL payloads must not introduce UNION query execution paths',
         stacked_execution: 'SQL statement boundary must remain single-statement unless explicitly intended',
         time_oracle: 'Execution time of SQL evaluation must remain independent of attacker-controlled timing',
+        time_based_blind: 'Execution time of SQL evaluation must remain independent of attacker-controlled timing',
         error_oracle: 'SQL evaluation must not execute attacker-controlled error-reflection functions',
         comment_truncation: 'Injected SQL comments must not truncate application query semantics',
     }
@@ -184,6 +190,7 @@ function buildSqlStructuralEvidence(detection: SqlStructuralDetection, input: st
         union_extraction: 'Input appends UNION SELECT and changes result set scope',
         stacked_execution: 'Input terminates one SQL statement and starts another',
         time_oracle: 'Input reaches a SQL timing function for delay-based logic',
+        time_based_blind: 'Input contains time-delay function call for blind SQLi',
         error_oracle: 'Input reaches an SQL function used to trigger verbose database errors',
         comment_truncation: 'Input injects comment syntax to truncate remaining SQL statement',
     }
@@ -595,12 +602,13 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     nosql_operator_injection: 'sqli', nosql_js_injection: 'sqli',
     // XSS
     xss_tag_injection: 'xss', xss_event_handler: 'xss', xss_protocol_handler: 'xss',
-    xss_template_expression: 'xss', xss_attribute_escape: 'xss',
+    xss_template_expression: 'xss', xss_attribute_escape: 'xss', css_injection: 'xss',
     // CMDi
     cmd_separator: 'cmdi', cmd_substitution: 'cmdi', cmd_argument_injection: 'cmdi',
     // Path traversal
     path_dotdot_escape: 'path_traversal', path_null_terminate: 'path_traversal',
     path_encoding_bypass: 'path_traversal', path_normalization_bypass: 'path_traversal',
+    path_windows_traversal: 'path_traversal',
     // SSRF
     ssrf_internal_reach: 'ssrf', ssrf_cloud_metadata: 'ssrf', ssrf_protocol_smuggle: 'ssrf',
     // Deser
@@ -666,7 +674,9 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     sql_string_termination: 'high',
     ssrf_internal_reach: 'high', ssrf_protocol_smuggle: 'high',
     path_dotdot_escape: 'high', path_encoding_bypass: 'high',
+    path_windows_traversal: 'high',
     xss_tag_injection: 'high', xss_event_handler: 'high', xss_protocol_handler: 'high',
+    css_injection: 'high',
     nosql_operator_injection: 'high', nosql_js_injection: 'high',
     crlf_header_injection: 'high', proto_pollution: 'high',
     deser_php_object: 'high', ldap_filter_injection: 'high',

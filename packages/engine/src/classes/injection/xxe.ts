@@ -3,7 +3,7 @@
  */
 import type { InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
-import { l2XXEEntity, l2XMLInjection } from '../../evaluators/l2-adapters.js'
+import { l2XMLInjection, l2XxeEvaluator } from '../../evaluators/l2-adapters.js'
 
 export const xxeEntityExpansion: InvariantClassModule = {
     id: 'xxe_entity_expansion',
@@ -29,11 +29,13 @@ export const xxeEntityExpansion: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return /<!(?:DOCTYPE|ENTITY)\s+\S+\s+(?:SYSTEM|PUBLIC)\s+["'][^"']*["']/i.test(d)
-            || /<!ENTITY\s+\S+\s+["'](?:file:|http:|ftp:|php:|expect:|data:)/i.test(d)
-            || /<!ENTITY\s+\S+\s+SYSTEM/i.test(d)
+        return /<!(?:DOCTYPE|ENTITY)\s+(?:%\s+)?\S+\s+(?:SYSTEM|PUBLIC)\s+["'][^"']*["']/i.test(d)
+            || /<!ENTITY\s+(?:%\s+)?\S+\s+["'](?:file:|http:|ftp:|php:|expect:|data:)/i.test(d)
+            || /<!ENTITY\s+(?:%\s+)?\S+\s+SYSTEM/i.test(d)
+            // Recursive/billion-laughs entity expansion: entities referencing other entities inside DOCTYPE
+            || /<!DOCTYPE\s+\S+\s*\[(?:[^>]*<!ENTITY[^>]*>){2,}/i.test(d)
     },
-    detectL2: l2XXEEntity,
+    detectL2: l2XxeEvaluator,
     generateVariants: (count: number): string[] => {
         const v = [
             '<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>',

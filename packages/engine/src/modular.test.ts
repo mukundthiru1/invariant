@@ -75,15 +75,15 @@ describe('InvariantRegistry', () => {
 // 2. Class Module Counts
 describe('Class Module Counts', () => {
     it('SQL: 13', () => expect(SQL_CLASSES.length).toBe(13))
-    it('XSS: 5', () => expect(XSS_CLASSES.length).toBe(5))
+    it('XSS: 8', () => expect(XSS_CLASSES.length).toBe(8))
     it('CMDi: 3', () => expect(CMD_CLASSES.length).toBe(3))
-    it('Path: 4', () => expect(PATH_CLASSES.length).toBe(4))
+    it('Path: 5', () => expect(PATH_CLASSES.length).toBe(5))
     it('SSRF: 3', () => expect(SSRF_CLASSES.length).toBe(3))
     it('Deser: 3', () => expect(DESER_CLASSES.length).toBe(3))
-    it('Auth: 21', () => expect(AUTH_CLASSES.length).toBe(21))
-    it('Injection: 100', () => expect(INJECTION_CLASSES.length).toBe(100))
+    it('Auth: 23', () => expect(AUTH_CLASSES.length).toBe(23))
+    it('Injection: 101', () => expect(INJECTION_CLASSES.length).toBe(101))
     it('Hygiene: 26', () => expect(HYGIENE_CLASSES.length).toBe(26))
-    it('Total: 178', () => expect(ALL_CLASS_MODULES.length).toBe(178))
+    it('Total: 185', () => expect(ALL_CLASS_MODULES.length).toBe(185))
 })
 
 
@@ -364,6 +364,9 @@ describe('v3: L2 Evaluator Wiring', () => {
         'xss_protocol_handler',
         'xss_attribute_escape',
         'xss_template_expression',
+        'dom_xss',
+        'angularjs_sandbox_escape',
+        'css_injection',
     ]
 
     for (const classId of classesWithL2) {
@@ -380,9 +383,9 @@ describe('v3: L2 Evaluator Wiring', () => {
         expect(sqlWithL2.length).toBe(13)
     })
 
-    it('XSS classes total with L2: 5', () => {
+    it('XSS classes total with L2: 8', () => {
         const xssWithL2 = XSS_CLASSES.filter(c => c.detectL2)
-        expect(xssWithL2.length).toBe(5)
+        expect(xssWithL2.length).toBe(8)
     })
 
     it('total classes with L2: at least 43', () => {

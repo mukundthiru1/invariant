@@ -22,10 +22,10 @@
  * invariant matching. It is shared across all class modules.
  *
  * SECURITY INVARIANT: The decoder is bounded to prevent DoS.
- * Maximum recursion depth is 6. Maximum input size is 8192 bytes.
+ * Maximum recursion depth is 10. Maximum input size is 8192 bytes.
  */
 
-const MAX_DECODE_DEPTH = 6
+const MAX_DECODE_DEPTH = 10
 const MAX_INPUT_SIZE = 8192
 const NULL_BYTE_RE = /\u0000/g
 

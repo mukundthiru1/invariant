@@ -15,7 +15,7 @@ const COUPON_ABUSE_RE = /(?:\bcoupon=[^&\s]+(?:&|\s|$).{0,120}\bcoupon=[^&\s]+)|
 // like C:\Users\<name>\Documents which are benign in normal requests.
 // Triggers on: server dirs (inetpub, wwwroot, Program Files, Windows, System32, etc.),
 // error message prefixes, environment variable expansions, or drive letters beyond C:\Users\.
-const WINDOWS_PATH_DISCLOSURE_RE = /(?:%(?:SYSTEMROOT|WINDIR|PROGRAMFILES(?:\(X86\))?|APPDATA|PROGRAMDATA)%\\[^\r\n]*|\b[A-Za-z]:\\(?:(?:inetpub|wwwroot|xampp|wamp|lamp|nginx|apache2|Program\s+Files(?:\s*\(x86\))?|Windows|WINDOWS|System32|SysWOW64|ProgramData|AppData\\Roaming\\(?!Microsoft\\Windows\\(?:Recent|Themes|Start Menu))))[^\r\n]*|\berror\s+(?:at|in|on)\b[^\r\n]*\b[A-Za-z]:\\[^\r\n]*)/i
+const WINDOWS_PATH_DISCLOSURE_RE = /(?:%(?:SYSTEMROOT|WINDIR|PROGRAMFILES(?:\(X86\))?|APPDATA|PROGRAMDATA)%\\[^\r\n]*|\b[A-Za-z]:\\(?:(?:inetpub|wwwroot|xampp|wamp|lamp|nginx|apache2|Program\s+Files(?:\s*\(x86\))?|Windows|WINDOWS|System32|SysWOW64|ProgramData|AppData\\Roaming\\(?!Microsoft\\Windows\\(?:Recent|Themes|Start Menu))))[^\r\n]*|\b(?:error|exception)\s+(?:at|in|on)\b[^\r\n]*\b[A-Za-z]:\\[^\r\n]*)/i
 const XXE_PARAMETER_ENTITY_RE = /<!ENTITY\s+%\s+[A-Za-z0-9._-]+\s+SYSTEM\s+["'][^"']+["']\s*>/i
 const FILE_POLYGLOT_RE = /(?:GIF8[79]a[\s\S]{0,200}(?:<script\b|<\?php\b))|(?:%PDF-[\d.]+[\s\S]{0,400}<script\b)/i
 const RATE_LIMIT_BYPASS_HEADER_RE = /(?:^|\n)\s*x-originating-ip\s*:\s*(?:127\.0\.0\.1|::1)\b|(?:^|\n)\s*x-real-ip\s*:\s*(?:127\.0\.0\.1|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[0-1])\.)\d{1,3}(?:\.\d{1,3}){0,2}\b|(?:^|\n)\s*x-forwarded-for\s*:\s*(?:\d{1,3}\.){3}\d{1,3}\s*,\s*(?:\d{1,3}\.){3}\d{1,3}/im

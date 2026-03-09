@@ -2,6 +2,8 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { ALL_CLASS_MODULES } from './classes/index.js'
 import type { Severity } from './classes/types.js'
+import { AstScanner, type AstFinding } from './ast-scanner.js'
+
 
 const DEFAULT_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.vue', '.svelte']
 const DEFAULT_EXCLUDE = ['node_modules', '.git', 'dist', 'build', 'coverage', '.next', '.nuxt']
@@ -27,6 +29,9 @@ export interface ScanFinding {
     snippet: string
     severity: Severity
     suggestion: string
+    confidence?: number
+    source?: string
+    taintPath?: string[]
 }
 
 export interface ScanResult {
@@ -244,10 +249,13 @@ export class CodebaseScanner {
     private readonly extensions: Set<string>
     private readonly exclude: string[]
 
+    private readonly astScanner: AstScanner
+
     constructor(options: { rootDir: string, extensions?: string[], exclude?: string[] }) {
         this.rootDir = resolve(options.rootDir)
         this.extensions = new Set((options.extensions ?? DEFAULT_EXTENSIONS).map((extension) => extension.toLowerCase()))
         this.exclude = options.exclude ?? DEFAULT_EXCLUDE
+        this.astScanner = new AstScanner()
     }
 
     scanFile(filePath: string): ScanFinding[] {
@@ -263,6 +271,26 @@ export class CodebaseScanner {
         const findings: ScanFinding[] = []
         const lines = content.split(/\r?\n/)
         const reportPath = this.toReportPath(absoluteFilePath)
+
+        const lang = this.astScanner.getLanguageForFile(absoluteFilePath)
+        if (lang) {
+            const astFindings = this.astScanner.scanFile(absoluteFilePath, content, lang)
+            for (const af of astFindings) {
+                findings.push({
+                    file: reportPath,
+                    line: af.line,
+                    column: af.column,
+                    category: af.ruleId.split('.')[0] as ScannerCategory,
+                    sink: af.sink,
+                    snippet: lines[af.line - 1]?.trim() ?? '',
+                    severity: af.severity,
+                    suggestion: `AST Taint path detected from source '${af.source}' to sink '${af.sink}'.`,
+                    confidence: af.confidence,
+                    source: af.source,
+                    taintPath: af.taintPath,
+                })
+            }
+        }
 
         for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
             const line = lines[lineIndex]
@@ -404,7 +432,7 @@ function normalizeRuleId(value: string): string {
 
 export function toSarif(result: ScanResult): object {
     const rulesById = new Map<string, { category: ScannerCategory; sink: string; description: string }>()
-    const results = []
+    const results: object[] = []
 
     for (const category of Object.keys(CATEGORY_DESCRIPTIONS) as ScannerCategory[]) {
         rulesById.set(`${category}.default`, {

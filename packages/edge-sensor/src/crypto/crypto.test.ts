@@ -31,24 +31,25 @@ function installNodeX25519RawPrivateImportCompat(): void {
     const originalImportKey = globalThis.crypto.subtle.importKey.bind(globalThis.crypto.subtle)
     vi.spyOn(globalThis.crypto.subtle, 'importKey').mockImplementation(
         (format, keyData, algorithm, extractable, keyUsages) => {
+            const usages = keyUsages as KeyUsage[]
             if (
                 format === 'raw' &&
                 algorithm &&
                 typeof algorithm === 'object' &&
                 'name' in algorithm &&
                 algorithm.name === 'X25519' &&
-                keyUsages.length === 1 &&
-                keyUsages[0] === 'deriveBits' &&
+                usages.length === 1 &&
+                usages[0] === 'deriveBits' &&
                 keyData instanceof Uint8Array &&
                 keyData.length === 32
             ) {
                 const pkcs8 = new Uint8Array(PKCS8_X25519_PREFIX.length + keyData.length)
                 pkcs8.set(PKCS8_X25519_PREFIX, 0)
                 pkcs8.set(keyData, PKCS8_X25519_PREFIX.length)
-                return originalImportKey('pkcs8', pkcs8, { name: 'X25519' }, extractable, keyUsages)
+                return originalImportKey('pkcs8', pkcs8, { name: 'X25519' }, extractable, usages)
             }
 
-            return originalImportKey(format, keyData, algorithm, extractable, keyUsages)
+            return originalImportKey(format, keyData, algorithm, extractable, usages)
         },
     )
 }
@@ -59,6 +60,9 @@ async function generateX25519RawKeyPairB64(): Promise<{ publicKey: string; priva
         true,
         ['deriveBits'],
     )
+    if (!('publicKey' in keypair)) {
+        throw new Error('Expected CryptoKeyPair from generateKey for X25519')
+    }
 
     const publicKeyRaw = new Uint8Array(
         await globalThis.crypto.subtle.exportKey('raw', keypair.publicKey),

@@ -1,0 +1,81 @@
+{
+  "name": "santh-vscode",
+  "displayName": "Santh Security",
+  "description": "Real-time invariant security scanning for code in VS Code.",
+  "version": "0.1.0",
+  "publisher": "santh",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "categories": [
+    "Linters",
+    "Security",
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onLanguage:javascript",
+    "onLanguage:typescript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescriptreact",
+    "onLanguage:python",
+    "onLanguage:go",
+    "onLanguage:java"
+  ],
+  "main": "./dist/extension.js",
+  "browser": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "santh.fixFinding",
+        "title": "Santh: Fix with Santh"
+      }
+    ],
+    "configuration": {
+      "title": "Santh Security",
+      "properties": {
+        "santh.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable Santh diagnostics and inline security analysis."
+        },
+        "santh.severity.threshold": {
+          "type": "string",
+          "enum": [
+            "low",
+            "medium",
+            "high",
+            "critical"
+          ],
+          "default": "medium",
+          "description": "Minimum finding severity shown by Santh."
+        },
+        "santh.scan.onType": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable incremental changed-range scanning while typing."
+        },
+        "santh.autoFix": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Santh quick-fix auto-fixer."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "compile": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@santh/invariant-engine": "file:../../packages/engine"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "@types/vscode": "^1.95.0",
+    "typescript": "^5.7.0",
+    "vscode": "^1.1.37"
+  }
+}

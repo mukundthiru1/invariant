@@ -25,6 +25,9 @@ import { toBase64Url, fromBase64Url } from '../../engine/src/crypto/encoding.js'
 import type { SignalProductCategory } from '../../engine/src/crypto/types.js'
 import type { InvariantConfig } from '../../engine/src/config.js'
 import { installPreCommitHook } from './hooks/pre-commit.js'
+import { runDiffScan } from './commands/diff.js'
+import { runInteractiveFix } from './commands/fix.js'
+import { runPrScan } from './commands/pr.js'
 
 // ── Constants ────────────────────────────────────────────────────
 
@@ -259,9 +262,117 @@ function parseFormatValue(raw: string | undefined): CodeScanOutputFormat {
     return 'human'
 }
 
+type ScanMode = 'default' | 'diff' | 'pr'
+
+interface ScanCommandOptions {
+    mode: ScanMode
+    staged: boolean
+    pr?: number
+    owner?: string
+    repo?: string
+    postComments: boolean
+}
+
+function parseScanCommand(rawArgs: string[]): ScanCommandOptions {
+    let mode: ScanMode = 'default'
+    let staged = false
+    let pr: number | undefined
+    let owner: string | undefined
+    let repo: string | undefined
+    let postComments = true
+
+    for (let index = 0; index < rawArgs.length; index += 1) {
+        const arg = rawArgs[index]
+
+        if (arg === '--diff') {
+            mode = 'diff'
+            continue
+        }
+
+        if (arg === '--pr') {
+            mode = 'pr'
+            const value = rawArgs[index + 1]
+            if (!value) {
+                throw new Error('scan --pr requires a PR number')
+            }
+            pr = Number.parseInt(value, 10)
+            if (Number.isNaN(pr)) {
+                throw new Error(`Invalid PR number: ${value}`)
+            }
+            index += 1
+            continue
+        }
+
+        if (arg === '--owner') {
+            const value = rawArgs[index + 1]
+            if (!value) {
+                throw new Error('scan --owner requires a value')
+            }
+            owner = value
+            index += 1
+            continue
+        }
+
+        if (arg === '--repo') {
+            const value = rawArgs[index + 1]
+            if (!value) {
+                throw new Error('scan --repo requires a value')
+            }
+            repo = value
+            index += 1
+            continue
+        }
+
+        if (arg === '--staged') {
+            staged = true
+            continue
+        }
+
+        if (arg === '--no-comments') {
+            postComments = false
+            continue
+        }
+    }
+
+    return {
+        mode,
+        staged,
+        pr,
+        owner,
+        repo,
+        postComments,
+    }
+}
+
 // ── Commands ─────────────────────────────────────────────────────
 
-async function commandScan(projectDir: string): Promise<void> {
+async function commandScan(projectDir: string, rawArgs: string[]): Promise<number | void> {
+    const config = parseScanCommand(rawArgs)
+
+    if (config.mode === 'diff') {
+        const result = runDiffScan({
+            projectDir,
+            staged: config.staged,
+        })
+        return result.exitCode
+    }
+
+    if (config.mode === 'pr') {
+        if (!config.pr) {
+            console.log('  scan --pr requires a PR number.')
+            return 1
+        }
+
+        const result = await runPrScan({
+            projectDir,
+            pr: config.pr,
+            owner: config.owner,
+            repo: config.repo,
+            postComments: config.postComments,
+        })
+        return result.exitCode
+    }
+
     console.log('  Scanning...\n')
 
     const agent = new InvariantAgent({
@@ -320,44 +431,7 @@ async function commandCodeScan(projectDir: string, rawArgs: string[]): Promise<v
 }
 
 async function commandFix(projectDir: string): Promise<void> {
-    console.log('  Scanning source code for auto-fix candidates...')
-
-    const codebaseScanner = new CodebaseScanner({ rootDir: projectDir })
-    const scanResult = codebaseScanner.scanDirectory()
-    const fixer = new AutoFixer(projectDir)
-    const allFixes = fixer.generateFixes(scanResult.findings)
-    const fixable = allFixes.filter((fix) => fix.fixed !== fix.original)
-
-    if (fixable.length === 0) {
-        console.log('  No safe automatic fixes available.')
-        return
-    }
-
-    console.log(`\n  Found ${fixable.length} fixable vulnerabilities:`)
-    for (const fix of fixable) {
-        console.log(`\n  ${fix.file}:${fix.line} [${fix.category}]`)
-        console.log(`  - ${fix.original.trim()}`)
-        console.log(`  + ${fix.fixed.trim()}`)
-    }
-    console.log('')
-
-    const confirmation = await ask('Apply fixes and commit? [y/N]:')
-    const approved = confirmation.toLowerCase() === 'y' || confirmation.toLowerCase() === 'yes'
-    if (!approved) {
-        console.log('  Aborted. No changes applied.')
-        return
-    }
-
-    const applied = fixer.applyFixes(fixable)
-    const appliedCount = applied.filter((fix) => fix.applied).length
-    const commitHash = fixer.atomicCommit(applied)
-
-    if (!commitHash) {
-        console.log('  Failed to create atomic commit. Changes were rolled back.')
-        return
-    }
-
-    console.log(`  Applied ${appliedCount} fixes. Commit: ${commitHash}. To revert: git revert ${commitHash}`)
+    await runInteractiveFix({ projectDir })
 }
 
 async function commandRevert(projectDir: string, commitHashArg?: string): Promise<void> {
@@ -388,7 +462,7 @@ async function commandDashboard(projectDir: string): Promise<void> {
 
     if (!existsSync(dbPath)) {
         console.log('  No invariant.db found. Running initial scan first...\n')
-        await commandScan(projectDir)
+        await commandScan(projectDir, [])
     }
 
     const dashboard = startDashboard(dbPath, DASHBOARD_PORT)
@@ -1190,7 +1264,12 @@ async function main(): Promise<void> {
             break
         case 'scan':
             logo()
-            await commandScan(projectDir)
+            {
+                const exitCode = await commandScan(projectDir, args.slice(1))
+                if (typeof exitCode === 'number' && exitCode !== 0) {
+                    process.exit(exitCode)
+                }
+            }
             break
         case 'codescan':
             logo()
@@ -1275,9 +1354,11 @@ async function main(): Promise<void> {
             console.log(`    ${colors.cyan}exceptions${colors.reset}  Manage exception rules`)
             console.log(`    ${colors.cyan}test${colors.reset}        Run security detection tests`)
             console.log(`    ${colors.cyan}logs${colors.reset}        Stream recent detection events`)
-            console.log(`    ${colors.cyan}scan${colors.reset}        Scan dependencies + configuration`)
+            console.log(`    ${colors.cyan}scan${colors.reset}        Run standard scan or --diff/--pr modes`)
+            console.log(`    ${colors.cyan}scan --diff${colors.reset}   Scan working tree diff with engine`)
+            console.log(`    ${colors.cyan}scan --pr <n>${colors.reset}    Fetch PR diff and post inline review comments`)
             console.log('    codescan    Scan source code for sink pattern vulnerabilities')
-            console.log('    fix         Auto-fix vulnerable sink patterns and create atomic git commit')
+            console.log('    fix         Interactive scan-driven fix workflow')
             console.log('    revert      Revert a fix commit by hash')
             console.log('    analyze     Analyze a single input through the full detection pipeline')
             console.log('    benchmark   Run detection engine benchmarks')

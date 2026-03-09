@@ -69,6 +69,7 @@ const CLASS_TO_DOMAIN: Record<string, string> = {
     path_null_terminate: 'path',
     path_encoding_bypass: 'path',
     path_normalization_bypass: 'path',
+    path_windows_traversal: 'path',
 
     // SSTI domain
     ssti_jinja_twig: 'ssti',

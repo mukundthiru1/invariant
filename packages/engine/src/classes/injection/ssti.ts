@@ -113,7 +113,7 @@ export const sstiElExpression: InvariantClassModule = {
 
 export const templateInjectionGeneric: InvariantClassModule = {
     id: 'template_injection_generic',
-    description: 'Generic server-side template injection patterns across ERB, Mako, Handlebars/Mustache, Velocity, FreeMarker, Smarty, Pebble, and Thymeleaf',
+    description: 'Generic server-side template injection patterns across ERB, Mako, Handlebars/Mustache, Velocity, FreeMarker, Smarty, Pebble, Go, and Thymeleaf',
     category: 'injection',
     severity: 'high',
     calibration: { baseConfidence: 0.84 },
@@ -127,12 +127,23 @@ export const templateInjectionGeneric: InvariantClassModule = {
         '<%= 7*7 %>',
         '#set($x=7*7)$x',
         '{{_self.env.registerUndefinedFilterCallback("system")}}',
+        '{{#with (constructor.constructor \'alert(1)\')()}}',
+        '{{#with (constructor.constructor "alert(1)")()}}',
+        '{{lookup . \'constructor\'}}',
+        '{{{raw_html}}}',
+        '{{> partial}}',
+        '{{.Env}}',
+        '{{call .FieldName}}',
+        '{{call .OS.Stdout.Write .Request.URL.RawPath}}',
     ],
 
     knownBenign: [
         'render user profile template',
         'Handlebars template for email rendering',
         'The value is {x}',
+        '{{greeting}}',
+        '{{name}}',
+        'Hello {{world}}',
     ],
 
     detect: (input: string): boolean => {
@@ -145,6 +156,13 @@ export const templateInjectionGeneric: InvariantClassModule = {
             // Handlebars / Mustache / Pebble expression or dangerous callbacks
             || /\{\{\s*(?:\d+\s*[*+\-/]\s*\d+|[^}]{0,120}(?:exec|runtime|processbuilder|system|__|class|env\.)[^}]*)\}\}/i.test(d)
             || /\{\{\s*_self\.env\.registerUndefinedFilterCallback\(/i.test(d)
+            // Handlebars specific exploit patterns
+            || /\{\{#?with\s+.*constructor|lookup\s+\.\s+'constructor'|\{\{[^}]*constructor\.constructor/i.test(d)
+            // Mustache unescaped or partials
+            || /\{\{\{.*\}\}\}/.test(d)
+            || /\{\{>\s*.*\}\}/.test(d)
+            // Go template injection patterns
+            || /\{\{[^}]*(?:\.Env|call\s|printf\s|println\s|\.OS|exec\.Command)/i.test(d)
             // Smarty variable interpolation (require '$' to avoid plain "{x}" text)
             || /\{\s*\$[A-Za-z_][\w.]*\s*\}/.test(d)
             // Velocity directives
@@ -161,6 +179,12 @@ export const templateInjectionGeneric: InvariantClassModule = {
             '#set($x=7*7)$x',
             '{{_self.env.registerUndefinedFilterCallback("system")}}',
             'th:text="${7*7}"',
+            '{{#with (constructor.constructor \'alert(1)\')()}}',
+            '{{lookup . \'constructor\'}}',
+            '{{{raw_html}}}',
+            '{{> partial}}',
+            '{{.Env}}',
+            '{{call .FieldName}}',
         ]
         const mutated = seeds.flatMap(payload => [
             encodeURIComponent(payload),

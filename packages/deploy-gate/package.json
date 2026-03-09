@@ -1,0 +1,31 @@
+{
+  "name": "@santh/deploy-gate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Invariant Deployment Firewall webhook receiver on Cloudflare Workers.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@santh/invariant-engine": "*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.69.0"
+  }
+}

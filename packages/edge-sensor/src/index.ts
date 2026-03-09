@@ -72,11 +72,14 @@ import {
     PrivilegeGraph,
     SensorStateManager,
     syncRulesFromIntel,
+    startRuleStream,
+    getRuleStreamStatus,
     matchDynamicRules,
     type DynamicRuleMatch,
     IOCCorrelator,
     DriftDetector,
     RiskSurfaceCalculator,
+    DeceptionLayer,
 } from './modules/index.js'
 
 // ── Extracted Layer Modules ───────────────────────────────────────
@@ -125,11 +128,14 @@ const mitreMapper = new MitreMapper()
 const iocCorrelator = new IOCCorrelator()
 const driftDetector = new DriftDetector()
 const riskSurface = new RiskSurfaceCalculator()
+const deceptionLayer = new DeceptionLayer()
 let evidenceSealer: EvidenceSealer | null = null
 
 let signalBuffer: SignalBuffer | null = null
 let stateManager: SensorStateManager | null = null
 let initialized = false
+let streamInitialized = false
+let streamTask: Promise<void> | null = null
 
 // ── Encrypted collective intelligence state ───────────────────────
 // Instantiated once per Worker process. Survives across requests.
@@ -394,6 +400,23 @@ function shouldSkipClass(skipClasses: Set<string>, ...candidates: Array<string |
     return false
 }
 
+function selectPrimaryAttackClass(
+    threatSignals: ThreatSignal[],
+    invariantMatches: InvariantMatch[],
+): string {
+    if (invariantMatches.length > 0) {
+        const sorted = [...invariantMatches].sort((a, b) => b.confidence - a.confidence)
+        return sorted[0].class
+    }
+
+    if (threatSignals.length > 0) {
+        const sorted = [...threatSignals].sort((a, b) => b.confidence - a.confidence)
+        return sorted[0].subtype ?? sorted[0].type
+    }
+
+    return 'unknown_attack'
+}
+
 type PolicyDecision = 'allow' | 'block' | 'challenge' | 'none'
 
 function resolveIpRule(ip: string, rules: IpRuleConfig): PolicyDecision {
@@ -542,6 +565,20 @@ export default {
             } catch {
                 // KV failure must not block traffic
                 initialized = true
+            }
+        }
+
+        // Push-based rule distribution: connect to intel SSE stream once per isolate.
+        // If stream setup fails or disconnects later, cron falls back to polling.
+        if (
+            stateManager
+            && env.SANTH_INTEL_URL
+            && !streamInitialized
+        ) {
+            streamInitialized = true
+            streamTask = startRuleStream(stateManager, env.SANTH_INTEL_URL, env.SENSOR_API_KEY)
+            if (streamTask) {
+                ctx.waitUntil(streamTask)
             }
         }
 
@@ -898,6 +935,19 @@ export default {
         const sourceIp = request.headers.get('cf-connecting-ip') ?? '0.0.0.0'
         const sourceHash = await hashSource(sourceIp)
         const country = request.headers.get('cf-ipcountry') ?? null
+
+        // Deception replay: tracked attacker reused a deception token.
+        const trackingToken = await deceptionLayer.isTrackingToken(request)
+        if (trackingToken) {
+            await deceptionLayer.recordAttackerAction(trackingToken, request)
+            const replayResponse = await deceptionLayer.generateFakeResponse(
+                request,
+                trackingToken.attackClass,
+                applicationModel,
+                trackingToken,
+            )
+            return withHeaders(replayResponse)
+        }
 
         // L1: Signature detection — checks path, query, headers, AND body
         const signatureMatches = SIGNATURES.filter(rule => {
@@ -1321,6 +1371,21 @@ export default {
 
         // ── Block Response ───────────────────────────────────────
         if (action === 'blocked') {
+            const primaryAttackClass = selectPrimaryAttackClass(threatSignals, invariantMatches)
+            const shouldDecept = deceptionLayer.shouldDecept(threatScore.score / 100, primaryAttackClass)
+
+            if (shouldDecept) {
+                const newTrackingToken = await deceptionLayer.generateTrackingToken(primaryAttackClass, sourceHash)
+                await deceptionLayer.recordAttackerAction(newTrackingToken, request)
+                const deceptiveResponse = await deceptionLayer.generateFakeResponse(
+                    request,
+                    primaryAttackClass,
+                    applicationModel,
+                    newTrackingToken,
+                )
+                return withHeaders(deceptiveResponse)
+            }
+
             // SAA-059: Timing oracle defense. Without jitter, blocked requests
             // return in ~2ms while origin-proxied requests take 50-200ms.
             // An attacker can binary-search for the exact evasion threshold
@@ -1448,8 +1513,8 @@ export default {
             }
         }
 
-        // Sync rules from intel pipeline (legacy path — runs alongside encrypted bundles)
-        if (stateManager) {
+        // Polling fallback: only used when SSE stream is unavailable/disconnected.
+        if (stateManager && !getRuleStreamStatus().connected) {
             await syncRulesFromIntel(stateManager, env.SENSOR_API_KEY)
         }
 

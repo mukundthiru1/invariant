@@ -36,12 +36,16 @@ export type InvariantClass =
     | 'xss_event_handler'
     | 'xss_protocol_handler'
     | 'xss_template_expression'
+    | 'dom_xss'
+    | 'angularjs_sandbox_escape'
+    | 'css_injection'
 
     // Path traversal invariants
     | 'path_dotdot_escape'
     | 'path_null_terminate'
     | 'path_encoding_bypass'
     | 'path_normalization_bypass'
+    | 'path_windows_traversal'
 
     // Command injection invariants
     | 'cmd_separator'
@@ -69,6 +73,8 @@ export type InvariantClass =
     | 'oauth_state_missing'
     | 'oauth_redirect_hijack'
     | 'oauth_redirect_uri_bypass'
+    | 'oauth_redirect_manipulation'
+    | 'oauth_state_bypass'
     | 'saml_signature_wrapping'
     | 'jwt_algorithm_confusion'
     | 'mfa_bypass_indicator'
@@ -171,6 +177,7 @@ export type InvariantClass =
     | 'llm_prompt_injection'
     | 'llm_data_exfiltration'
     | 'llm_jailbreak'
+    | 'llm_indirect_injection'
     // WebSocket threats
     | 'ws_injection'
     | 'ws_hijack'

@@ -20,7 +20,7 @@
  */
 import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
-import { l2HTTPSmuggleCLTE, l2HTTPSmuggleH2 } from '../../evaluators/l2-adapters.js'
+import { l2HttpSmuggling } from '../../evaluators/l2-adapters.js'
 
 
 // ── Shared Utilities ─────────────────────────────────────────────
@@ -58,6 +58,14 @@ const H2_TEMPLATES: readonly string[] = [
     ':method POST\r\n:path /api\r\nHost: internal\r\n\r\nGET /admin HTTP/1.1',
     ':authority target.com\r\nfoo: bar\r\nHost: attacker.com',
 ]
+const HTTP_SMUGGLE_CONTENT_LENGTH_HEADER_RE = /Content-Length\s*:/i
+const HTTP_SMUGGLE_TRANSFER_ENCODING_HEADER_RE = /Transfer-Encoding\s*:/i
+const HTTP_SMUGGLE_CHUNK_EXTENSION_RE = /([0-9a-fA-F]+)\s*;+([^\r\n]+)\r?\n/g
+const HTTP_SMUGGLE_CL_ZERO_LINE_RE = /Content-Length:\s*0\s*\r?\n/i
+const HTTP_SMUGGLE_EMBEDDED_REQUEST_LINE_RE = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\/[^\s]*)\s+HTTP\/[\d.]+/m
+const HTTP_SMUGGLE_CL_ZERO_RE = /Content-Length:\s*0/i
+const HTTP_SMUGGLE_CL_ANY_RE = /Content-Length/i
+const HTTP_SMUGGLE_TE_ANY_RE = /Transfer-Encoding/i
 
 
 // ── CL.TE / TE.TE / TE Obfuscation ──────────────────────────────
@@ -87,6 +95,14 @@ export const httpSmuggleClTe: InvariantClassModule = {
         'Transfer-Encoding:\tchunked\r\nContent-Length: 0',
         ' Transfer-Encoding: chunked\r\nContent-Length: 5',
         'Transfer-Encoding: chunked\r\nContent-Length: 10\r\n\r\n0\r\n\r\nPATCH /api HTTP/1.1',
+        'CONTENT-LENGTH: 0\r\nTRANSFER-ENCODING: chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1',
+        'Content-Length: 0\r\nTransfer-Encoding:\tchunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1',
+        'Content-Length: 0\r\nTransfer-Encoding:\r\n chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1',
+        'Content-Length: 0\r\nTransfer-Encoding: chunked;boundary=X\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1',
+        'POST / HTTP/1.0\r\nHost: target.com\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\nGET /admin HTTP/1.1',
+        'POST / HTTP/1.0\r\nHost: target.com\r\nContent-Length: 0\r\nProxy-Connection: keep-alive\r\n\r\nGET /admin HTTP/1.1',
+        'Transfer-Encoding: chunked\r\n\r\n0\r\nX-Injected: true\r\nAnother-Header: value\r\n\r\nGET /admin HTTP/1.1',
+        'Transfer-Encoding: chunked\r\nTrailer: X-Auth-Token\r\n\r\n5\r\nHello\r\n0\r\nX-Auth-Token: admin-token\r\n\r\nGET /admin HTTP/1.1',
     ],
 
     knownBenign: [
@@ -99,17 +115,25 @@ export const httpSmuggleClTe: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         // Both CL and TE in same payload
-        const hasCL = /Content-Length\s*:/i.test(d)
-        const hasTE = /Transfer-Encoding\s*:/i.test(d)
+        const hasCL = HTTP_SMUGGLE_CONTENT_LENGTH_HEADER_RE.test(d)
+        const hasTE = HTTP_SMUGGLE_TRANSFER_ENCODING_HEADER_RE.test(d)
         if (hasCL && hasTE) return true
         // Duplicate TE headers
         const teMatches = d.match(/Transfer-Encoding\s*:/gi)
         if (teMatches && teMatches.length >= 2) return true
         // Obfuscated TE (tab, space, newline in header name area)
-        if (/Transfer[\s-]*Encoding\s*:\s*chunked/i.test(d) && /\r?\n\r?\n.*(?:GET|POST|PUT|DELETE|PATCH)\s+\//i.test(d)) return true
+        if (/Transfer[\s-]*Encoding\s*:(?:\s|\r?\n\s+)*(?:x?chunked|identity|cHuNkEd|CHUNKED)/i.test(d) && /\r?\n\r?\n.*(?:GET|POST|PUT|DELETE|PATCH)\s+\//i.test(d)) return true
+        // TE with extension-like suffix
+        if (/Transfer-Encoding\s*:\s*chunked;boundary=/i.test(d)) return true
+        // HTTP/1.0 keep-alive CL:0 desync
+        if (/HTTP\/1\.0/i.test(d) && /(?:Proxy-)?Connection:\s*keep-alive/i.test(d) && /Content-Length:\s*0/i.test(d) && /(?:GET|POST|PUT|DELETE|PATCH)\s+\//.test(d)) return true
+        // Trailer chunk injection
+        if (/\r?\n0(?:\s*;+[^\r\n]*)?\r?\n(?:[A-Za-z0-9-]+:[^\r\n]+\r?\n)+\r?\n(?:GET|POST|PUT|DELETE|PATCH)\s+\//i.test(d)) return true
+        if (/Trailer:\s*[A-Za-z0-9-]+/i.test(d) && /\r?\n0(?:\s*;+[^\r\n]*)?\r?\n[A-Za-z0-9-]+:[^\r\n]+\r?\n/i.test(d) && /(?:GET|POST|PUT|DELETE|PATCH)\s+\//i.test(d)) return true
+
         return false
     },
-    detectL2: l2HTTPSmuggleCLTE,
+    detectL2: l2HttpSmuggling,
     generateVariants: (count: number): string[] => {
         const variants: string[] = []
         for (let i = 0; i < count; i++) {
@@ -174,7 +198,7 @@ export const httpSmuggleH2: InvariantClassModule = {
         if (/:(?:path|method|authority|scheme)\s[^\r\n]*(?:\r\n|\\r\\n)/i.test(d)) return true
         return false
     },
-    detectL2: l2HTTPSmuggleH2,
+    detectL2: l2HttpSmuggling,
     generateVariants: (count: number): string[] => {
         const variants: string[] = []
         for (let i = 0; i < count; i++) {
@@ -220,6 +244,12 @@ export const httpSmuggleChunkExt: InvariantClassModule = {
         '5;ext=val\r\nhello\r\n0;ext=val\r\n\r\n',
         '0 ;ext=val\r\n\r\n',
         '0;ext=val\r\nX-Injected: true\r\n\r\n',
+        '0 ;ext=foo\r\n\r\nGET /admin HTTP/1.1',
+        '0;;ext=foo\r\n\r\nGET /admin HTTP/1.1',
+        '0;ext="value\r\nX-Injected: true"\r\n\r\nGET /admin HTTP/1.1',
+        '00000000000\r\n\r\nGET /admin HTTP/1.1',
+        '+0\r\n\r\nGET /admin HTTP/1.1',
+        'A;ext=foo\r\n0123456789\r\n0;ext=bar\r\n\r\nGET /admin HTTP/1.1',
     ],
 
     knownBenign: [
@@ -230,25 +260,30 @@ export const httpSmuggleChunkExt: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        // Chunk size followed by semicolon and extension
-        // "0;ext" pattern is the primary indicator
-        if (/\b0\s*;[^\r\n]+\r?\n/.test(d)) return true
-        // Non-zero chunk with extension
-        if (/\b[1-9a-fA-F][0-9a-fA-F]*\s*;[^\r\n]+\r?\n/.test(d)) {
-            // Only flag if there's also a smuggled request or terminator
-            if (/(?:GET|POST|PUT|DELETE|PATCH)\s+\//.test(d)) return true
+        
+        // 1. Terminal chunk with extension
+        if (/(?:^|\r?\n)[\t ]*0+\s*;+[^\r\n]+\r?\n/.test(d)) return true
+        
+        // 2. Terminal chunk size obfuscated (multiple zeros or plus prefix)
+        if (/(?:^|\r?\n)[\t ]*(?:\+0+|00+)\s*\r?\n/.test(d)) return true
+
+        // 3. Non-terminal chunk with extension
+        if (/(?:^|\r?\n)[\t ]*[1-9a-fA-F][0-9a-fA-F]*\s*;+[^\r\n]+\r?\n/.test(d)) {
+            // Only flag if there's also a smuggled request or terminator or multiple chunks
+            if (/(?:GET|POST|PUT|DELETE|PATCH)\s+\//.test(d) || /(?:^|\r?\n)[\t ]*\+?0+\s*;/.test(d) || /(?:[\t ]*\+?[1-9a-fA-F][0-9a-fA-F]*\s*;+[^\r\n]+\r?\n.*){2,}/s.test(d)) return true
         }
+        
         return false
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
         // Parse for chunk extension patterns with structural analysis
-        const chunkExtPattern = /([0-9a-fA-F]+)\s*;([^\r\n]+)\r?\n/g
         let match
         const extensions: Array<{ size: number; ext: string }> = []
 
-        while ((match = chunkExtPattern.exec(d)) !== null) {
+        HTTP_SMUGGLE_CHUNK_EXTENSION_RE.lastIndex = 0
+        while ((match = HTTP_SMUGGLE_CHUNK_EXTENSION_RE.exec(d)) !== null) {
             extensions.push({
                 size: parseInt(match[1], 16),
                 ext: match[2].trim(),
@@ -363,7 +398,7 @@ export const httpSmuggleZeroCl: InvariantClassModule = {
 
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
-        const clZeroMatch = /Content-Length:\s*0\s*\r?\n/i.exec(d)
+        const clZeroMatch = HTTP_SMUGGLE_CL_ZERO_LINE_RE.exec(d)
         if (!clZeroMatch) return null
 
         // Find the body boundary
@@ -377,7 +412,7 @@ export const httpSmuggleZeroCl: InvariantClassModule = {
         if (body.length === 0) return null
 
         // Structural check: is there a valid HTTP request line in the body?
-        const embeddedRequest = /^(GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+(\/[^\s]*)\s+HTTP\/[\d.]+/m.exec(body)
+        const embeddedRequest = HTTP_SMUGGLE_EMBEDDED_REQUEST_LINE_RE.exec(body)
         if (embeddedRequest) {
             return {
                 detected: true,
@@ -477,8 +512,8 @@ export const httpSmuggleExpect: InvariantClassModule = {
         const d = deepDecode(input)
         if (!/Expect:\s*100-continue/i.test(d)) return null
 
-        const hasCLZero = /Content-Length:\s*0/i.test(d)
-        const hasCLTE = /Content-Length/i.test(d) && /Transfer-Encoding/i.test(d)
+        const hasCLZero = HTTP_SMUGGLE_CL_ZERO_RE.test(d)
+        const hasCLTE = HTTP_SMUGGLE_CL_ANY_RE.test(d) && HTTP_SMUGGLE_TE_ANY_RE.test(d)
         const embeddedRequests = (d.match(/(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\/[^\s]*\s+HTTP\/[\d.]+/gi) || [])
 
         if (embeddedRequests.length >= 2) {

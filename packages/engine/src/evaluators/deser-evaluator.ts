@@ -37,6 +37,18 @@ interface GadgetHit {
     match: string
 }
 
+interface PickleRceHit {
+    type: 'pickle_rce'
+    confidence: number
+    evidence: string
+}
+
+interface PhpPopHit {
+    type: 'php_pop_chain'
+    confidence: number
+    evidence: string
+}
+
 
 // ── Core Helpers ────────────────────────────────────────────────
 
@@ -56,7 +68,7 @@ function hasBytesSequence(buf: Uint8Array, seq: number[]): boolean {
 }
 
 function extractBase64Candidates(input: string): string[] {
-    const matches = input.match(/[A-Za-z0-9+/=]{16,}/g) ?? []
+    const matches: string[] = input.match(/[A-Za-z0-9+/=]{16,}/g) ?? []
     const dedup = new Set<string>()
 
     const stripped = input.replace(/\s+/g, '')
@@ -208,6 +220,109 @@ function collectGadgets(texts: string[], tokens: string[]): GadgetHit[] {
     return hits
 }
 
+function detectPickleRce(input: string): PickleRceHit | null {
+    const normalized = deepDecode(input)
+    const requiredPattern = /cos\nsystem\n\(|c__builtin__\neval\n|gASV[A-Za-z0-9+/]|\\x80\\x04\\x95/
+    const requiredMatch = normalized.match(requiredPattern)
+    if (requiredMatch?.[0]) {
+        return {
+            type: 'pickle_rce',
+            confidence: 0.93,
+            evidence: requiredMatch[0],
+        }
+    }
+
+    const directPatterns: RegExp[] = [
+        /(?:^|\n)cos\nsystem\n\(/i,
+        /(?:^|\n)c__builtin__\neval\n/i,
+        /\\x80\\x04\\x95|\\x80\\x05\\x95|\x80\x04\x95|\x80\x05\x95/i,
+        /\bgASV[A-Za-z0-9+/=]{4,}\b/,
+    ]
+
+    for (const pattern of directPatterns) {
+        const match = normalized.match(pattern)
+        if (match?.[0]) {
+            return {
+                type: 'pickle_rce',
+                confidence: 0.93,
+                evidence: match[0],
+            }
+        }
+    }
+
+    const b64Candidates = extractBase64Candidates(normalized)
+    for (const b64 of b64Candidates) {
+        try {
+            const bytes = new Uint8Array(Buffer.from(b64, 'base64'))
+            if (bytes.length >= 3 && bytes[0] === 0x80 && (bytes[1] === 0x04 || bytes[1] === 0x05) && bytes[2] === 0x95) {
+                return {
+                    type: 'pickle_rce',
+                    confidence: 0.93,
+                    evidence: b64.slice(0, 32),
+                }
+            }
+            if (bytes.length >= 2 && bytes[0] === 0x80 && (bytes[1] === 0x04 || bytes[1] === 0x05)) {
+                return {
+                    type: 'pickle_rce',
+                    confidence: 0.93,
+                    evidence: b64.slice(0, 32),
+                }
+            }
+        } catch {
+            // Ignore invalid base64 candidate
+        }
+    }
+
+    return null
+}
+
+function detectPickleRCE(input: string): PickleRceHit | null {
+    return detectPickleRce(input)
+}
+
+function detectPhpPop(input: string): PhpPopHit | null {
+    const normalized = deepDecode(input)
+
+    const stdClass = normalized.match(/\bO\s*:\s*8\s*:\s*"stdClass"\s*:/i)
+    if (stdClass?.[0]) {
+        return {
+            type: 'php_pop_chain',
+            confidence: 0.91,
+            evidence: stdClass[0],
+        }
+    }
+
+    const arrayObject = normalized.match(/\bC\s*:\s*11\s*:\s*"ArrayObject"\b/i)
+    if (arrayObject?.[0]) {
+        return {
+            type: 'php_pop_chain',
+            confidence: 0.91,
+            evidence: arrayObject[0],
+        }
+    }
+
+    const hasSerializedObject = /\bO\s*:\s*\d+\s*:\s*"[A-Za-z]+"\s*:\s*\d+\s*:\s*\{[\s\S]{0,400}\}/i.test(normalized)
+    const magicMention = normalized.match(/__wakeup|__destruct/i)
+    if (hasSerializedObject && magicMention?.[0]) {
+        return {
+            type: 'php_pop_chain',
+            confidence: 0.91,
+            evidence: magicMention[0],
+        }
+    }
+
+    const generic = normalized.match(/\bO\s*:\s*\d+\s*:\s*"[A-Za-z]+"\s*:\s*\d+\s*:\s*\{/i)
+    if (generic?.[0]) {
+        return {
+            type: 'php_pop_chain',
+            confidence: 0.91,
+            evidence: generic[0],
+        }
+    }
+
+    return null
+}
+
 
 // ── Public API ───────────────────────────────────────────────────
 
@@ -224,6 +339,8 @@ export function detectDeserialization(input: string): DeserDetection[] {
     const texts = artifacts.map(a => a.text)
     const tokens = tokenize(texts.join(' '))
     const gadgetHits = collectGadgets(texts, tokens)
+    const pickleRceHit = detectPickleRce(normalized)
+    const phpPopHit = detectPhpPop(normalized)
 
     const hasJavaMagic = artifacts.some(a => hasBytesSequence(a.bytes, JAVA_MAGIC)) ||
         /rO0AB(?:Q|X|[A-Za-z0-9+/=])|aced\s*0005|\\x?ac\\x?ed\\x?00\\x?05/i.test(normalized)
@@ -276,15 +393,15 @@ export function detectDeserialization(input: string): DeserDetection[] {
     }
 
     const pickleHit = gadgetHits.find(h => h.family === 'python' || h.family === 'yaml')
-    if (hasPickleMagic || pickleHit?.family === 'python' || /!!python\/object\/apply\s*:/i.test(normalized)) {
-        const chain = pickleHit?.match ?? (hasPickleMagic ? '\\x80\\x02..\\x05' : '!!python/object/apply')
+    if (hasPickleMagic || pickleHit?.family === 'python' || /!!python\/object\/apply\s*:/i.test(normalized) || pickleRceHit) {
+        const chain = pickleRceHit?.evidence ?? pickleHit?.match ?? (hasPickleMagic ? '\\x80\\x02..\\x05' : '!!python/object/apply')
         const isYaml = /!!python\/object\/apply\s*:/i.test(normalized)
         detections.push({
             type: 'python_pickle',
             detail: `${isYaml ? 'YAML Python object apply' : 'Python pickle'}${chain ? ` with gadget indicator: ${chain}` : ''}`,
             format: isYaml ? 'YAML Python tags' : 'Python pickle',
             gadgetChain: chain,
-            confidence: (hasPickleMagic && pickleHit) || isYaml ? 0.97 : 0.86,
+            confidence: pickleRceHit?.confidence ?? ((hasPickleMagic && pickleHit) || isYaml ? 0.97 : 0.86),
             proofEvidence: [
                 mkEvidence(
                     normalized,
@@ -297,15 +414,15 @@ export function detectDeserialization(input: string): DeserDetection[] {
     }
 
     const phpHit = gadgetHits.find(h => h.family === 'php' || h.family === 'node')
-    if (phpHit || /\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i.test(normalized)) {
-        const chain = phpHit?.match ?? normalized.match(/\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i)?.[0] ?? null
+    if (phpHit || phpPopHit || /\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i.test(normalized)) {
+        const chain = phpPopHit?.evidence ?? phpHit?.match ?? normalized.match(/\b[OC]\s*:\s*[+-]?\d+\s*:\s*"[^"]+"/i)?.[0] ?? null
         const isNodeProto = phpHit?.family === 'node'
         detections.push({
             type: 'php_object',
             detail: `${isNodeProto ? 'JSON prototype mutation chain' : 'PHP serialized object'}${chain ? ` with gadget indicator: ${chain}` : ''}`,
             format: isNodeProto ? 'JSON object graph' : 'PHP serialize',
             gadgetChain: chain,
-            confidence: isNodeProto ? 0.87 : 0.93,
+            confidence: isNodeProto ? 0.87 : (phpPopHit?.confidence ?? 0.93),
             proofEvidence: [
                 mkEvidence(
                     normalized,

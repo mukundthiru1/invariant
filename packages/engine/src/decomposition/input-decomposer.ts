@@ -411,20 +411,28 @@ function extractPropertiesForContext(
     context: InputContext,
     requestContext?: { method?: string; contentType?: string; path?: string; headers?: Headers },
 ): ExtractedProperty[] {
-    switch (context) {
-        case 'sql': return extractSQLProperties(input)
-        case 'html': return extractHTMLProperties(input)
-        case 'shell': return extractShellProperties(input)
-        case 'xml': return extractXMLProperties(input)
-        case 'json': return extractJSONProperties(input)
-        case 'ldap': return extractLDAPProperties(input)
-        case 'template': return extractTemplateProperties(input)
-        case 'graphql': return extractGraphQLProperties(input)
-        case 'url': return extractURLProperties(input)
-        case 'header': return extractHeaderProperties(input, requestContext?.headers)
-        case 'unknown': return extractUnknownContextProperties(input)
-        default: return []
-    }
+    const extractor = CONTEXT_PROPERTY_EXTRACTORS[context]
+    if (!extractor) return []
+    return extractor(input, requestContext)
+}
+
+type ContextPropertyExtractor = (
+    input: string,
+    requestContext?: { method?: string; contentType?: string; path?: string; headers?: Headers },
+) => ExtractedProperty[]
+
+const CONTEXT_PROPERTY_EXTRACTORS: Partial<Record<InputContext, ContextPropertyExtractor>> = {
+    sql: (value) => extractSQLProperties(value),
+    html: (value) => extractHTMLProperties(value),
+    shell: (value) => extractShellProperties(value),
+    xml: (value) => extractXMLProperties(value),
+    json: (value) => extractJSONProperties(value),
+    ldap: (value) => extractLDAPProperties(value),
+    template: (value) => extractTemplateProperties(value),
+    graphql: (value) => extractGraphQLProperties(value),
+    url: (value) => extractURLProperties(value),
+    header: (value, ctx) => extractHeaderProperties(value, ctx?.headers),
+    unknown: (value) => extractUnknownContextProperties(value),
 }
 
 // ── SQL Property Extraction ──────────────────────────────────────

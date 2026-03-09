@@ -12,6 +12,10 @@
 import type { InvariantDB, DefenseAction, Severity } from '../db.js'
 import { createRequire } from 'node:module'
 import { recordRaspEvent } from './request-session.js'
+import { InvariantEngine } from '../../../engine/src/invariant-engine.js'
+
+const CODE_ENGINE_CONFIDENCE_THRESHOLD = 0.7
+const codeEngine = new InvariantEngine()
 
 export interface ExecRaspConfig {
     mode: 'observe' | 'sanitize' | 'defend' | 'lockdown'
@@ -84,6 +88,35 @@ function containsDangerousCode(code: string): boolean {
         if (pattern.test(code)) return true
     }
     return false
+}
+
+/** Run InvariantEngine.detect() on code string; return violations with confidence > threshold. */
+function engineDetectCode(code: string): Array<VmInvariant> {
+    if (typeof code !== 'string' || code.length === 0) return []
+    try {
+        const matches = codeEngine.detect(code, [], 'javascript')
+        const violations: Array<VmInvariant> = []
+        for (const m of matches) {
+            if (m.confidence > CODE_ENGINE_CONFIDENCE_THRESHOLD) {
+                violations.push({ id: m.class, severity: (m.severity ?? 'high') as Severity })
+            }
+        }
+        return violations
+    } catch {
+        return []
+    }
+}
+
+/** Combined check: dangerous patterns OR engine detection above threshold. */
+function inspectCodeForVm(code: string): Array<VmInvariant> {
+    const byPattern = containsDangerousCode(code) ? [{ id: 'vm_code_execution', severity: 'critical' as Severity }] : []
+    const byEngine = engineDetectCode(code)
+    const seen = new Set<string>()
+    const out: Array<VmInvariant> = []
+    for (const v of [...byPattern, ...byEngine]) {
+        if (!seen.has(v.id)) { seen.add(v.id); out.push(v) }
+    }
+    return out
 }
 
 function inspectForInvariants(input: string, invariants: Array<{ id: string; severity: Severity; test: (value: string) => boolean }>): Array<VmInvariant> {
@@ -191,180 +224,340 @@ let vmHooksInstalled = false
 let workerHooksInstalled = false
 let inspectorHooksInstalled = false
 let linkedBindingHookInstalled = false
+let functionHookInstalled = false
+let resolveFilenameHookInstalled = false
+
+const storedOriginals: {
+    vm?: { runInContext?: (...args: unknown[]) => unknown; runInNewContext?: (...args: unknown[]) => unknown; runInThisContext?: (...args: unknown[]) => unknown; Script?: new (...args: unknown[]) => unknown }
+    workerThreads?: { Worker: new (...args: unknown[]) => unknown }
+    inspector?: { Session: new (...args: unknown[]) => unknown; sessionPost?: (...args: unknown[]) => unknown }
+    linkedBinding?: (...args: unknown[]) => unknown
+    Function?: (...args: unknown[]) => unknown
+    resolveFilename?: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string
+} = {}
+const wrappedRefs: {
+    vmRunInContext?: (...args: unknown[]) => unknown
+    vmRunInNewContext?: (...args: unknown[]) => unknown
+    vmRunInThisContext?: (...args: unknown[]) => unknown
+    vmScript?: new (...args: unknown[]) => unknown
+    resolveFilename?: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string
+} = {}
+
+function installFunctionConstructorHook(config: ExecRaspConfig): void {
+    if (functionHookInstalled) return
+    const g = globalThis as unknown as { Function: (...args: string[]) => CallableFunction }
+    const OriginalFunction = g.Function
+    if (typeof OriginalFunction !== 'function') {
+        functionHookInstalled = true
+        return
+    }
+    storedOriginals.Function = OriginalFunction as unknown as (...args: unknown[]) => unknown
+    try {
+        const WrappedFunction = function (this: unknown, ...args: unknown[]): unknown {
+            try {
+                if (args.length >= 1) {
+                    const body = args[args.length - 1]
+                    if (typeof body === 'string') {
+                        const violations = inspectCodeForVm(body)
+                        if (violations.length > 0) {
+                            reportVmViolation(config, 'Function()', body, violations, { category: 'vm_execution', path: 'Function()' })
+                        }
+                    }
+                }
+            } catch (err) {
+                if (err instanceof Error && err.message.includes('[INVARIANT]')) throw err
+                console.warn('[invariant] exec RASP: Function() hook error', err)
+            }
+            return OriginalFunction.apply(this, args as string[])
+        }
+        Object.defineProperty(g, 'Function', {
+            value: WrappedFunction,
+            writable: true,
+            configurable: true,
+            enumerable: false,
+        })
+    } catch (err) {
+        console.warn('[invariant] exec RASP: Function constructor hook install error', err)
+        throw err
+    }
+    functionHookInstalled = true
+}
+
+function installResolveFilenameHook(config: ExecRaspConfig): void {
+    if (resolveFilenameHookInstalled) return
+    try {
+        const require = createRequire(import.meta.url)
+        const Mod = require('node:module') as { _resolveFilename: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string }
+        const original = Mod._resolveFilename
+        storedOriginals.resolveFilename = original
+        const wrapped = function (this: unknown, request: string, parent: unknown, isMain: boolean, options?: unknown): string {
+            const result = original.call(this, request, parent, isMain, options)
+            const suspicious = /(?:^|[\\/])\.\.(?:[\\/]|$)|%2e%2e/i.test(request) || /^[\\/]|^\w:[\\/]/.test(request)
+            if (suspicious && config.mode !== 'observe') {
+                try {
+                    recordRaspEvent('vm_code_execution', request, ['dynamic_import_unexpected'], 0.75, false)
+                    config.db.insertSignal({
+                        type: 'runtime_invariant_violation',
+                        subtype: 'dynamic_import_unexpected',
+                        severity: 'medium',
+                        action: 'monitored',
+                        path: 'Module._resolveFilename',
+                        method: 'IMPORT',
+                        source_hash: null,
+                        invariant_classes: JSON.stringify(['dynamic_import_unexpected']),
+                        is_novel: false,
+                        timestamp: new Date().toISOString(),
+                    })
+                } catch { /* never break */ }
+            }
+            return result
+        }
+        wrappedRefs.resolveFilename = wrapped
+        Mod._resolveFilename = wrapped
+    } catch (err) {
+        console.warn('[invariant] exec RASP: Module._resolveFilename hook install error', err)
+        throw err
+    }
+    resolveFilenameHookInstalled = true
+}
 
 function installVmModuleHooks(config: ExecRaspConfig, vm: Record<string, unknown>): void {
     if (vmHooksInstalled) return
-    if (typeof vm.runInContext === 'function') {
-        const originalRunInContext = vm.runInContext.bind(vm)
-        vm.runInContext = function (...args: unknown[]) {
-            const [code, context, opts] = args
-            if (typeof code === 'string' && containsDangerousCode(code)) {
-                reportVmViolation(
-                    config,
-                    'vm.runInContext',
-                    code,
-                    [{ id: 'vm_code_execution', severity: 'critical' }],
-                    { category: 'vm_execution', path: 'vm.runInContext()' },
-                )
+    try {
+        if (typeof vm.runInContext === 'function') {
+            const originalRunInContext = vm.runInContext.bind(vm) as (...args: unknown[]) => unknown
+            storedOriginals.vm = storedOriginals.vm ?? {}
+            storedOriginals.vm.runInContext = originalRunInContext
+            const wrapped = function (...args: unknown[]) {
+                const [code, context, opts] = args
+                try {
+                    if (typeof code === 'string') {
+                        const violations = inspectCodeForVm(code)
+                        if (violations.length > 0) {
+                            reportVmViolation(config, 'vm.runInContext', code, violations, { category: 'vm_execution', path: 'vm.runInContext()' })
+                        }
+                    }
+                } catch (err) {
+                    if (err instanceof Error && err.message.includes('[INVARIANT]')) throw err
+                    console.warn('[invariant] exec RASP: vm.runInContext hook error', err)
+                }
+                return originalRunInContext(code, context, opts)
             }
-            return (originalRunInContext as (...fnArgs: unknown[]) => unknown)(code, context, opts)
+            wrappedRefs.vmRunInContext = wrapped
+            vm.runInContext = wrapped
         }
-    }
 
-    if (typeof vm.runInNewContext === 'function') {
-        const originalRunInNewContext = vm.runInNewContext.bind(vm)
-        vm.runInNewContext = function (...args: unknown[]) {
-            const [code, context, opts] = args
-            if (typeof code === 'string' && containsDangerousCode(code)) {
-                reportVmViolation(
-                    config,
-                    'vm.runInNewContext',
-                    code,
-                    [{ id: 'vm_code_execution', severity: 'critical' }],
-                    { category: 'vm_execution', path: 'vm.runInNewContext()' },
-                )
+        if (typeof vm.runInNewContext === 'function') {
+            const originalRunInNewContext = vm.runInNewContext.bind(vm) as (...args: unknown[]) => unknown
+            storedOriginals.vm = storedOriginals.vm ?? {}
+            storedOriginals.vm.runInNewContext = originalRunInNewContext
+            const wrapped = function (...args: unknown[]) {
+                const [code, context, opts] = args
+                try {
+                    if (typeof code === 'string') {
+                        const violations = inspectCodeForVm(code)
+                        if (violations.length > 0) {
+                            reportVmViolation(config, 'vm.runInNewContext', code, violations, { category: 'vm_execution', path: 'vm.runInNewContext()' })
+                        }
+                    }
+                } catch (err) {
+                    if (err instanceof Error && err.message.includes('[INVARIANT]')) throw err
+                    console.warn('[invariant] exec RASP: vm.runInNewContext hook error', err)
+                }
+                return originalRunInNewContext(code, context, opts)
             }
-            return (originalRunInNewContext as (...fnArgs: unknown[]) => unknown)(code, context, opts)
+            wrappedRefs.vmRunInNewContext = wrapped
+            vm.runInNewContext = wrapped
         }
-    }
 
-    if (typeof vm.runInThisContext === 'function') {
-        const originalRunInThisContext = vm.runInThisContext.bind(vm)
-        vm.runInThisContext = function (...args: unknown[]) {
-            const [code, opts] = args
-            if (typeof code === 'string' && containsDangerousCode(code)) {
-                reportVmViolation(
-                    config,
-                    'vm.runInThisContext',
-                    code,
-                    [{ id: 'vm_code_execution', severity: 'critical' }],
-                    { category: 'vm_execution', path: 'vm.runInThisContext()' },
-                )
+        if (typeof vm.runInThisContext === 'function') {
+            const originalRunInThisContext = vm.runInThisContext.bind(vm) as (...args: unknown[]) => unknown
+            storedOriginals.vm = storedOriginals.vm ?? {}
+            storedOriginals.vm.runInThisContext = originalRunInThisContext
+            const wrapped = function (...args: unknown[]) {
+                const [code, opts] = args
+                try {
+                    if (typeof code === 'string') {
+                        const violations = inspectCodeForVm(code)
+                        if (violations.length > 0) {
+                            reportVmViolation(config, 'vm.runInThisContext', code, violations, { category: 'vm_execution', path: 'vm.runInThisContext()' })
+                        }
+                    }
+                } catch (err) {
+                    if (err instanceof Error && err.message.includes('[INVARIANT]')) throw err
+                    console.warn('[invariant] exec RASP: vm.runInThisContext hook error', err)
+                }
+                return originalRunInThisContext(code, opts)
             }
-            return (originalRunInThisContext as (...fnArgs: unknown[]) => unknown)(code, opts)
+            wrappedRefs.vmRunInThisContext = wrapped
+            vm.runInThisContext = wrapped
         }
-    }
 
+        const ScriptCtor = vm.Script as unknown as abstract new (code: string, options?: unknown) => { runInContext: unknown; runInNewContext: unknown }
+        if (typeof ScriptCtor === 'function') {
+            storedOriginals.vm = storedOriginals.vm ?? {}
+            storedOriginals.vm.Script = ScriptCtor as unknown as new (...args: unknown[]) => unknown
+            class WrappedScript extends (ScriptCtor as abstract new (code: string, options?: unknown) => { runInContext: unknown; runInNewContext: unknown }) {
+                constructor(code: string, options?: unknown) {
+                    if (typeof code === 'string') {
+                        const violations = inspectCodeForVm(code)
+                        if (violations.length > 0) {
+                            reportVmViolation(config, 'vm.Script', code, violations, { category: 'vm_execution', path: 'vm.Script()' })
+                        }
+                    }
+                    super(code, options)
+                }
+            }
+            wrappedRefs.vmScript = WrappedScript as new (...args: unknown[]) => unknown
+            vm.Script = WrappedScript as typeof vm.Script
+        }
+    } catch (err) {
+        console.warn('[invariant] exec RASP: vm hook install error', err)
+        if (storedOriginals.vm) {
+            if (storedOriginals.vm.runInContext) vm.runInContext = storedOriginals.vm.runInContext as typeof vm.runInContext
+            if (storedOriginals.vm.runInNewContext) vm.runInNewContext = storedOriginals.vm.runInNewContext as typeof vm.runInNewContext
+            if (storedOriginals.vm.runInThisContext) vm.runInThisContext = storedOriginals.vm.runInThisContext as typeof vm.runInThisContext
+            if (storedOriginals.vm.Script) vm.Script = storedOriginals.vm.Script as typeof vm.Script
+        }
+        throw err
+    }
     vmHooksInstalled = true
 }
 
 function installWorkerThreadHooks(config: ExecRaspConfig): void {
     if (workerHooksInstalled) return
-    const require = createRequire(import.meta.url)
-    const workerThreads = require('node:worker_threads') as {
-        Worker?: new (...args: unknown[]) => unknown
-    }
-    const WorkerCtor = workerThreads.Worker
-    if (typeof WorkerCtor !== 'function') {
-        workerHooksInstalled = true
-        return
-    }
-
-    const wrappedWorker = class extends (WorkerCtor as new (...args: unknown[]) => unknown) {
-        constructor(filename: unknown, opts?: { eval?: boolean }) {
-            if (opts?.eval && typeof filename === 'string' && containsDangerousCode(filename)) {
-                reportVmViolation(
-                    config,
-                    'worker_threads.Worker(eval)',
-                    filename,
-                    [{ id: 'worker_eval_execution', severity: 'critical' }],
-                    { category: 'worker_execution', path: 'worker_threads.Worker(eval)' },
-                )
-            } else if (typeof filename === 'string' && !opts?.eval) {
-                inspectWorkerPath(filename, config, 'worker_threads.Worker(file)')
-            }
-            super(filename, opts)
+    try {
+        const require = createRequire(import.meta.url)
+        const workerThreads = require('node:worker_threads') as { Worker?: new (...args: unknown[]) => unknown }
+        const WorkerCtor = workerThreads.Worker
+        if (typeof WorkerCtor !== 'function') {
+            workerHooksInstalled = true
+            return
         }
-    } as unknown as typeof WorkerCtor
-
-    workerThreads.Worker = wrappedWorker
+        storedOriginals.workerThreads = { Worker: WorkerCtor }
+        const wrappedWorker = class extends (WorkerCtor as abstract new (...args: unknown[]) => object) {
+            constructor(filename: unknown, opts?: { eval?: boolean }) {
+                if (opts?.eval && typeof filename === 'string') {
+                    let violations = inspectCodeForVm(filename)
+                    if (violations.length === 0 && containsDangerousCode(filename)) {
+                        violations = [{ id: 'worker_eval_execution', severity: 'critical' }]
+                    }
+                    if (violations.length > 0) {
+                        reportVmViolation(
+                            config,
+                            'worker_threads.Worker(eval)',
+                            filename,
+                            violations,
+                            { category: 'worker_execution', path: 'worker_threads.Worker(eval)' },
+                        )
+                    }
+                } else if (typeof filename === 'string' && !opts?.eval) {
+                    inspectWorkerPath(filename, config, 'worker_threads.Worker(file)')
+                }
+                super(filename, opts)
+            }
+        } as unknown as typeof WorkerCtor
+        workerThreads.Worker = wrappedWorker
+    } catch (err) {
+        console.warn('[invariant] exec RASP: worker_threads hook install error', err)
+        if (storedOriginals.workerThreads) {
+            const require = createRequire(import.meta.url)
+            const wt = require('node:worker_threads') as { Worker?: new (...args: unknown[]) => unknown }
+            wt.Worker = storedOriginals.workerThreads.Worker
+        }
+        throw err
+    }
     workerHooksInstalled = true
 }
 
 function installInspectorHooks(config: ExecRaspConfig): void {
     if (inspectorHooksInstalled) return
-    const require = createRequire(import.meta.url)
-    const inspector = require('node:inspector') as { Session?: unknown }
-    const Session: unknown = inspector.Session
-    if (typeof Session !== 'function') {
-        inspectorHooksInstalled = true
-        return
-    }
-
-    const sessionCtor = Session as {
-        prototype?: {
-            post?: (...args: unknown[]) => unknown
+    try {
+        const require = createRequire(import.meta.url)
+        const inspector = require('node:inspector') as { Session?: unknown }
+        const Session: unknown = inspector.Session
+        if (typeof Session !== 'function') {
+            inspectorHooksInstalled = true
+            return
         }
-    }
-
-    const originalPost = sessionCtor.prototype?.post
-    if (typeof originalPost === 'function') {
-        sessionCtor.prototype.post = function (...args: unknown[]) {
-            const [method, params, cb] = args
-            if (method === 'Runtime.evaluate') {
-                const expression =
-                    typeof params === 'object' && params !== null && 'expression' in (params as Record<string, unknown>)
-                        ? String((params as { expression?: unknown }).expression ?? '')
-                        : ''
-                if (containsDangerousCode(expression)) {
-                    inspectCode(expression, config, 'inspector.Runtime.evaluate')
-                } else {
-                    reportVmViolation(
-                        config,
-                        'inspector.Runtime.evaluate',
-                        expression,
-                        [{ id: 'inspector_runtime_evaluate', severity: 'high' }],
-                        { category: 'inspector', path: 'inspector.Runtime.evaluate()' },
-                    )
+        storedOriginals.inspector = { Session: Session as new (...args: unknown[]) => unknown }
+        const sessionCtor = Session as { prototype?: unknown }
+        const sessionPrototype = sessionCtor.prototype as Record<string, unknown> | undefined
+        const originalPost = sessionPrototype?.['post'] as ((...args: unknown[]) => unknown) | undefined
+        if (typeof originalPost === 'function') {
+            storedOriginals.inspector.sessionPost = originalPost
+            ;(sessionPrototype as { post?: (...args: unknown[]) => unknown }).post = function (...args: unknown[]) {
+                const [method, params] = args
+                if (method === 'Runtime.evaluate') {
+                    const expression =
+                        typeof params === 'object' && params !== null && 'expression' in (params as Record<string, unknown>)
+                            ? String((params as { expression?: unknown }).expression ?? '')
+                            : ''
+                    const violations = inspectCodeForVm(expression)
+                    if (violations.length > 0) {
+                        reportVmViolation(config, 'inspector.Runtime.evaluate', expression, violations, { category: 'inspector', path: 'inspector.Runtime.evaluate()' })
+                    } else if (expression.length > 0) {
+                        reportVmViolation(
+                            config,
+                            'inspector.Runtime.evaluate',
+                            expression,
+                            [{ id: 'inspector_runtime_evaluate', severity: 'high' }],
+                            { category: 'inspector', path: 'inspector.Runtime.evaluate()' },
+                        )
+                    }
                 }
+                return (originalPost as (...postArgs: unknown[]) => unknown).apply(this, args)
             }
-
-            return (originalPost as (...postArgs: unknown[]) => unknown).apply(this, args)
         }
+        const wrappedSessionCtor = new Proxy(Session, {
+            construct(target, args) {
+                const session = Reflect.construct(target as new (...args: unknown[]) => object, args as never[])
+                reportVmViolation(
+                    config,
+                    'inspector.Session',
+                    'new Session()',
+                    [{ id: 'inspector_session_created', severity: 'high' }],
+                    { category: 'inspector', path: 'inspector.Session' },
+                )
+                return session
+            },
+        }) as typeof Session
+        inspector.Session = wrappedSessionCtor as unknown as typeof inspector.Session
+    } catch (err) {
+        console.warn('[invariant] exec RASP: inspector hook install error', err)
+        throw err
     }
-
-    const wrappedSessionCtor = new Proxy(Session, {
-        construct(target, args) {
-            const session = Reflect.construct(target as new (...args: unknown[]) => object, args as never[])
-            reportVmViolation(
-                config,
-                'inspector.Session',
-                'new Session()',
-                [{ id: 'inspector_session_created', severity: 'high' }],
-                { category: 'inspector', path: 'inspector.Session' },
-            )
-            return session
-        },
-    }) as typeof Session
-
-    inspector.Session = wrappedSessionCtor as unknown as typeof inspector.Session
     inspectorHooksInstalled = true
 }
 
 function installLinkedBindingHook(config: ExecRaspConfig): void {
     if (linkedBindingHookInstalled) return
-
     const originalLinkedBinding = (process as unknown as { _linkedBinding?: (...args: unknown[]) => unknown })._linkedBinding
     if (typeof originalLinkedBinding !== 'function') {
         linkedBindingHookInstalled = true
         return
     }
-
+    storedOriginals.linkedBinding = originalLinkedBinding
     const processWithLinkedBinding = process as unknown as { _linkedBinding: (...args: unknown[]) => unknown }
-    processWithLinkedBinding._linkedBinding = function (...args: unknown[]) {
-        const [bindingName] = args
-        if (typeof bindingName === 'string' && (bindingName === 'spawn_sync' || bindingName === 'pipe_wrap' || bindingName === 'tcp_wrap' || bindingName === 'pipe_sync')) {
-            reportVmViolation(
-                config,
-                'process._linkedBinding',
-                String(bindingName),
-                [{ id: 'native_binding_access', severity: 'critical' }],
-                { category: 'linked_binding', path: `process._linkedBinding(${bindingName})` },
-            )
+    try {
+        processWithLinkedBinding._linkedBinding = function (...args: unknown[]) {
+            const [bindingName] = args
+            if (typeof bindingName === 'string' && (bindingName === 'spawn_sync' || bindingName === 'pipe_wrap' || bindingName === 'tcp_wrap' || bindingName === 'pipe_sync')) {
+                reportVmViolation(
+                    config,
+                    'process._linkedBinding',
+                    String(bindingName),
+                    [{ id: 'native_binding_access', severity: 'critical' }],
+                    { category: 'linked_binding', path: `process._linkedBinding(${bindingName})` },
+                )
+            }
+            return originalLinkedBinding.apply(processWithLinkedBinding, args)
         }
-        return originalLinkedBinding.apply(processWithLinkedBinding, args)
+    } catch (err) {
+        console.warn('[invariant] exec RASP: _linkedBinding hook install error', err)
+        processWithLinkedBinding._linkedBinding = originalLinkedBinding
+        throw err
     }
-
     linkedBindingHookInstalled = true
 }
 
@@ -373,6 +566,83 @@ export function installVmRuntimeHooks(config: ExecRaspConfig, vm: Record<string,
     installWorkerThreadHooks(config)
     installInspectorHooks(config)
     installLinkedBindingHook(config)
+    installFunctionConstructorHook(config)
+    installResolveFilenameHook(config)
+}
+
+/**
+ * Restore all RASP hooks to their original implementations.
+ * Call on shutdown/cleanup so the process can exit or re-initialize cleanly.
+ */
+export function uninstallVmRuntimeHooks(vm: Record<string, unknown>): void {
+    if (storedOriginals.vm) {
+        if (storedOriginals.vm.runInContext) vm.runInContext = storedOriginals.vm.runInContext as typeof vm.runInContext
+        if (storedOriginals.vm.runInNewContext) vm.runInNewContext = storedOriginals.vm.runInNewContext as typeof vm.runInNewContext
+        if (storedOriginals.vm.runInThisContext) vm.runInThisContext = storedOriginals.vm.runInThisContext as typeof vm.runInThisContext
+        if (storedOriginals.vm.Script) vm.Script = storedOriginals.vm.Script as typeof vm.Script
+        storedOriginals.vm = undefined
+    }
+    vmHooksInstalled = false
+    if (storedOriginals.workerThreads) {
+        const require = createRequire(import.meta.url)
+        const wt = require('node:worker_threads') as { Worker?: new (...args: unknown[]) => unknown }
+        wt.Worker = storedOriginals.workerThreads.Worker
+        storedOriginals.workerThreads = undefined
+    }
+    workerHooksInstalled = false
+    if (storedOriginals.inspector) {
+        const require = createRequire(import.meta.url)
+        const inspector = require('node:inspector') as { Session?: unknown }
+        if (storedOriginals.inspector.Session) inspector.Session = storedOriginals.inspector.Session
+        if (storedOriginals.inspector.sessionPost) {
+            const Session = inspector.Session as { prototype?: { post?: (...args: unknown[]) => unknown } }
+            if (Session?.prototype) Session.prototype.post = storedOriginals.inspector.sessionPost
+        }
+        storedOriginals.inspector = undefined
+    }
+    inspectorHooksInstalled = false
+    if (storedOriginals.linkedBinding) {
+        (process as unknown as { _linkedBinding: (...args: unknown[]) => unknown })._linkedBinding = storedOriginals.linkedBinding
+        storedOriginals.linkedBinding = undefined
+    }
+    linkedBindingHookInstalled = false
+    if (storedOriginals.Function) {
+        Object.defineProperty(globalThis, 'Function', { value: storedOriginals.Function, writable: true, configurable: true, enumerable: false })
+        storedOriginals.Function = undefined
+    }
+    functionHookInstalled = false
+    if (storedOriginals.resolveFilename) {
+        const require = createRequire(import.meta.url)
+        const Mod = require('node:module') as { _resolveFilename: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string }
+        Mod._resolveFilename = storedOriginals.resolveFilename
+        storedOriginals.resolveFilename = undefined
+    }
+    resolveFilenameHookInstalled = false
+}
+
+/**
+ * Verify that RASP hooks are still in place. Call periodically to detect tampering.
+ * Returns an object with a boolean per hook surface; true means the hook is still active.
+ */
+export function hookIntegrityCheck(vm: Record<string, unknown>): {
+    vmRunInContext: boolean
+    vmRunInNewContext: boolean
+    vmRunInThisContext: boolean
+    vmScript: boolean
+    workerThreads: boolean
+    resolveFilename: boolean
+} {
+    const require = createRequire(import.meta.url)
+    const Mod = require('node:module') as { _resolveFilename: (request: string, parent: unknown, isMain: boolean, options?: unknown) => string }
+    const wt = require('node:worker_threads') as { Worker?: new (...args: unknown[]) => unknown }
+    return {
+        vmRunInContext: wrappedRefs.vmRunInContext !== undefined && vm.runInContext === wrappedRefs.vmRunInContext,
+        vmRunInNewContext: wrappedRefs.vmRunInNewContext !== undefined && vm.runInNewContext === wrappedRefs.vmRunInNewContext,
+        vmRunInThisContext: wrappedRefs.vmRunInThisContext !== undefined && vm.runInThisContext === wrappedRefs.vmRunInThisContext,
+        vmScript: wrappedRefs.vmScript !== undefined && vm.Script === wrappedRefs.vmScript,
+        workerThreads: storedOriginals.workerThreads !== undefined && wt.Worker !== storedOriginals.workerThreads.Worker,
+        resolveFilename: wrappedRefs.resolveFilename !== undefined && Mod._resolveFilename === wrappedRefs.resolveFilename,
+    }
 }
 
 export function wrapExec<T extends (...args: unknown[]) => unknown>(

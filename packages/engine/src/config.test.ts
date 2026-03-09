@@ -71,7 +71,7 @@ describe('config.ts', () => {
     it('ignores unknown fields (forwards compat)', () => {
         const config = validateConfig({ futureField: true, category: 'api' })
         expect(config.category).toBe('api')
-        expect((config as Record<string, unknown>).futureField).toBeUndefined()
+        expect((config as unknown as Record<string, unknown>).futureField).toBeUndefined()
     })
 
     it('DEFAULT_CONFIG is valid', () => {

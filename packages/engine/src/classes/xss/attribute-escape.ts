@@ -57,6 +57,36 @@ export const xssAttributeEscape: InvariantClassModule = {
                 evidence: match.element,
             }
         }
+
+        const quoteBreak = d.match(/['"][\s/]*(?:>|on\w+\s*=|style\s*=|xmlns\s*=|src\s*=|href\s*=|action\s*=|formaction\s*=)/i)
+        if (quoteBreak?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.86,
+                explanation: 'HTML analysis: input breaks out of quoted attribute into executable context',
+                evidence: quoteBreak[0],
+            }
+        }
+
+        const injectedTag = d.match(/['"]\s*>\s*<(?:script|img|svg|iframe|math)\b[\s\S]{0,180}/i)
+        if (injectedTag?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.90,
+                explanation: 'HTML analysis: attribute escape closes element and injects executable tag',
+                evidence: injectedTag[0].slice(0, 220),
+            }
+        }
+
+        const styleExec = d.match(/\bstyle\s*=\s*['"]?[^'">]{0,220}(?:expression\s*\(|behavior\s*:\s*url\(|-moz-binding\s*:\s*url\()/i)
+        if (styleExec?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.88,
+                explanation: 'HTML analysis: escaped attribute introduces style-based script execution primitive',
+                evidence: styleExec[0],
+            }
+        }
         return null
     },
 

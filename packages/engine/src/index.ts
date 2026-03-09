@@ -257,6 +257,11 @@ export {
 
 // ── Static Codebase Scanner ─────────────────────────────────────
 export {
+    AstScanner,
+    type AstFinding,
+} from './ast-scanner.js'
+
+export {
     CodebaseScanner,
     formatReport,
     toSarif,

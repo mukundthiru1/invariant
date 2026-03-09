@@ -1,0 +1,20 @@
+name = "auth-gate"
+main = "src/index.ts"
+compatibility_date = "2026-03-09"
+
+[vars]
+WEBAUTHN_RP_NAME = "Santh Deploy Gate"
+WEBAUTHN_RP_ID = "localhost"
+WEBAUTHN_ORIGIN = "http://localhost"
+AUTH_GATE_DEFAULT_USER_ID = "operator"
+VAPID_SUBJECT = "mailto:alerts@santh.io"
+
+[[kv_namespaces]]
+binding = "AUTH_GATE_CREDENTIAL_STORE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"
+
+[[kv_namespaces]]
+binding = "AUTH_GATE_CHALLENGE_STORE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"

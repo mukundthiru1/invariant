@@ -42,7 +42,17 @@ pub mod runtime;
 pub mod shape;
 pub mod telemetry;
 pub mod threat_intel;
+pub mod tiers;
 pub mod tokenizers;
 pub mod types;
+pub mod zero_trust;
 #[cfg(feature = "wasm")]
 pub mod wasm;
+
+#[cfg(feature = "wasm")]
+use wasm_bindgen::prelude::*;
+
+#[cfg_attr(feature = "wasm", wasm_bindgen)]
+pub fn classify_zero_trust_tier(threat_level: f64) -> u8 {
+    tiers::ZeroTrustTier::from_threat_level(threat_level).numeric_value()
+}

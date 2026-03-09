@@ -7,6 +7,10 @@
 import type { EncryptedRuleBundle, RuleBundle } from '../../../engine/src/crypto/types.js'
 import { concat, decode, encode, fromBase64Url, uint64BE } from '../../../engine/src/crypto/encoding.js'
 
+function asBufferSource(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+    return bytes as Uint8Array<ArrayBuffer>
+}
+
 // PKCS8 v0 ASN.1 prefix for an X25519 private key (RFC 5958 / RFC 8410).
 // This is the format produced by Web Crypto (Node.js 20+, CF Workers, Chrome).
 // Layout (48 bytes total = 16-byte header + 32-byte key):
@@ -52,7 +56,7 @@ export async function verifyRuleBundle(
         const verifyKeyBytes = fromBase64Url(santhVerifyKeyB64)
         const verifyKey = await crypto.subtle.importKey(
             'raw',
-            verifyKeyBytes,
+            asBufferSource(verifyKeyBytes),
             { name: 'Ed25519' },
             false,
             ['verify'],
@@ -71,8 +75,8 @@ export async function verifyRuleBundle(
         return await crypto.subtle.verify(
             { name: 'Ed25519' },
             verifyKey,
-            fromBase64Url(bundle.signature),
-            signedMessage,
+            asBufferSource(fromBase64Url(bundle.signature)),
+            asBufferSource(signedMessage),
         )
     } catch {
         return false
@@ -102,7 +106,7 @@ export async function decryptRuleBundle(
         const subscriberPrivateKey = await importX25519PrivateKey(subscriberPrivateKeyB64)
         const ephemeralPublicKey = await crypto.subtle.importKey(
             'raw',
-            ephemeralPubKeyBytes,
+            asBufferSource(ephemeralPubKeyBytes),
             { name: 'X25519' },
             false,
             [],
@@ -116,7 +120,7 @@ export async function decryptRuleBundle(
 
         const hkdfKey = await crypto.subtle.importKey(
             'raw',
-            new Uint8Array(sharedBits),
+            asBufferSource(new Uint8Array(sharedBits)),
             { name: 'HKDF' },
             false,
             ['deriveKey'],
@@ -126,8 +130,8 @@ export async function decryptRuleBundle(
             {
                 name: 'HKDF',
                 hash: 'SHA-256',
-                salt: encode('invariant-rule-salt-v1'),
-                info: encode('santh-rule-bundle-v1'),
+                salt: asBufferSource(encode('invariant-rule-salt-v1')),
+                info: asBufferSource(encode('santh-rule-bundle-v1')),
             },
             hkdfKey,
             { name: 'AES-GCM', length: 256 },
@@ -140,9 +144,9 @@ export async function decryptRuleBundle(
 
         const decryptedBundleKey = new Uint8Array(
             await crypto.subtle.decrypt(
-                { name: 'AES-GCM', iv: keyIv },
+                { name: 'AES-GCM', iv: asBufferSource(keyIv) },
                 bundleKeyDerivationKey,
-                encryptedBundleKey,
+                asBufferSource(encryptedBundleKey),
             ),
         )
         if (decryptedBundleKey.length !== 32) {
@@ -151,7 +155,7 @@ export async function decryptRuleBundle(
 
         const bundleKey = await crypto.subtle.importKey(
             'raw',
-            decryptedBundleKey,
+            asBufferSource(decryptedBundleKey),
             { name: 'AES-GCM' },
             false,
             ['decrypt'],
@@ -171,11 +175,11 @@ export async function decryptRuleBundle(
             await crypto.subtle.decrypt(
                 {
                     name: 'AES-GCM',
-                    iv: rulesIv,
-                    additionalData: aad,
+                    iv: asBufferSource(rulesIv),
+                    additionalData: asBufferSource(aad),
                 },
                 bundleKey,
-                encRules,
+                asBufferSource(encRules),
             ),
         )
 
@@ -219,7 +223,7 @@ async function importX25519PrivateKey(rawKeyB64: string): Promise<CryptoKey> {
     try {
         return await crypto.subtle.importKey(
             'pkcs8',
-            pkcs8,
+            asBufferSource(pkcs8),
             { name: 'X25519' },
             false,
             ['deriveBits'],

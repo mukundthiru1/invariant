@@ -421,7 +421,7 @@ function hasXssDetection(classSet: Set<string>): boolean {
 
 function hasPathDetection(classSet: Set<string>): boolean {
     return ['path_dotdot_escape', 'path_encoding_bypass', 'path_null_terminate',
-            'path_normalization_bypass'].some(c => classSet.has(c))
+            'path_normalization_bypass', 'path_windows_traversal'].some(c => classSet.has(c))
 }
 
 function hasSsrfDetection(classSet: Set<string>): boolean {

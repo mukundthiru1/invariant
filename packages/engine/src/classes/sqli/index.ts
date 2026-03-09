@@ -31,6 +31,7 @@ import { sqlOutOfBand } from './out-of-band.js'
 import { sqlLateralMovement } from './lateral-movement.js'
 import { sqlDdlInjection } from './ddl-injection.js'
 import { sqlMysqlSpecific } from './mysql-specific.js'
+export { detectTimeBasedBlindSqli } from '../../evaluators/sql-structural-evaluator.js'
 
 export const SQL_CLASSES: InvariantClassModule[] = [
     sqlStringTermination,

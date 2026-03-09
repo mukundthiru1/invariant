@@ -15,6 +15,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 use crate::types::InvariantClass;
+use crate::zero_trust::{self, ThreatTier};
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -109,6 +110,7 @@ pub struct AttackerSession {
     pub phase_history: Vec<PhaseEntry>,
     pub signals: Vec<CampaignSignal>,
     pub threat_level: f64,
+    pub threat_tier: ThreatTier,
     pub first_seen: u64,
     pub last_seen: u64,
     pub fingerprint_history: Vec<String>,
@@ -369,6 +371,28 @@ impl CampaignIntelligence {
                 let previous = reindex_old_fp.unwrap_or_else(String::new);
                 self.reindex_fingerprint(&source, &previous, new_fp);
             }
+        }
+
+        {
+            let fps: Vec<u64> = self
+                .sessions
+                .iter()
+                .map(|(_, s)| zero_trust::fingerprint_to_u64(&s.fingerprint.hash))
+                .collect();
+            let srcs: Vec<&str> = self.sessions.keys().map(|k| k.as_str()).collect();
+            let coordinated = !fps.is_empty() && zero_trust::detect_coordinated_scan(&fps, &srcs);
+            let session = self.sessions.get_mut(&source).unwrap();
+            let chain_matched = self
+                .fingerprint_index
+                .get(&session.fingerprint.hash)
+                .map(|sources| sources.len() >= 2)
+                .unwrap_or(false);
+            session.threat_tier = zero_trust::ThreatTierEngine::evaluate_tier(
+                session.threat_level,
+                session.signals.len(),
+                chain_matched,
+                coordinated,
+            );
         }
 
         // Buffer for campaign detection
@@ -950,6 +974,7 @@ fn create_session(source_hash: &str, now: u64) -> AttackerSession {
         }],
         signals: Vec::new(),
         threat_level: 0.0,
+        threat_tier: zero_trust::classify_threat(0.0, &[]),
         first_seen: now,
         last_seen: now,
         fingerprint_history: Vec::new(),
@@ -981,6 +1006,7 @@ fn restore_session(source_hash: &str, seed: &DormantCampaignSeed, now: u64) -> A
         phase_history,
         signals: Vec::new(),
         threat_level: seed.threat_level,
+        threat_tier: zero_trust::classify_threat(seed.threat_level, &[]),
         first_seen: seed.first_seen,
         last_seen: now,
         fingerprint_history: Vec::new(),

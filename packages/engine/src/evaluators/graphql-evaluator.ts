@@ -207,6 +207,9 @@ function detectFragmentAbuse(structural: string): GraphQLDetection[] {
         edges.set(name, refs)
     }
 
+    // Count total spreads across the entire query (including query body, not just fragment bodies)
+    const totalSpreads = (structural.match(/\.\.\.\s*[A-Za-z_][A-Za-z0-9_]*/g) ?? []).length
+
     const cycle = hasFragmentCycle(edges)
     if (cycle) {
         return [{
@@ -220,7 +223,7 @@ function detectFragmentAbuse(structural: string): GraphQLDetection[] {
         }]
     }
 
-    if (fragments.size >= 4 && spreadCount >= fragments.size * 2) {
+    if (fragments.size >= 4 && totalSpreads >= fragments.size * 2) {
         return [{
             type: 'fragment_abuse',
             detail: `Fragment spread amplification detected (${fragments.size} fragments, ${spreadCount} spreads)`,

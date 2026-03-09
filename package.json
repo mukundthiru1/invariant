@@ -11,5 +11,8 @@
     },
     "engines": {
         "node": ">=20.0.0"
+    },
+    "devDependencies": {
+        "@types/web-push": "^3.6.4"
     }
 }

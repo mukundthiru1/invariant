@@ -1,4 +1,4 @@
-import type { InvariantClassModule } from '../types.js'
+import type { InvariantClass, InvariantClassModule } from '../types.js'
 import { deepDecode } from '../encoding.js'
 
 const GHA_SET_OUTPUT_RE = /::set-output\s+name=[^:\r\n]+::/i
@@ -14,11 +14,14 @@ const K8S_SYSTEM_SECRETS_RE = /\/api\/v1\/namespaces\/kube-system\/secrets(?:\/|
 const K8S_WILDCARD_VERBS_RE = /(?:verbs\s*:\s*\[\s*\*\s*\]|["']verbs["']\s*:\s*\[\s*["']\*["']\s*\])/i
 const K8S_EXEC_ATTACH_SYSTEM_RE = /(?:\/api\/v1\/namespaces\/kube-system\/pods\/[^\/\s]+\/(?:exec|attach)|\bkubectl\s+exec\b[^\n]*(?:--namespace(?:=|\s+)kube-system|-n\s+kube-system))/i
 const K8S_TTY_EXEC_RE = /\bkubectl\s+exec\b[^\n]*(?:--stdin|-i)[^\n]*(?:--tty|-t)/i
+const K8S_ADMISSION_WEBHOOK_BYPASS_RE = /(?:namespaceSelector.*kube-system|dryRun.*true|sideEffects.*None|failurePolicy.*Ignore|webhookconfig.*skip)/i
 
 const TF_FILE_ABS_RE = /\$\{\s*file\s*\(\s*["']\/(?:etc|proc|root|home|var|tmp)[^"']*["']\s*\)\s*\}/i
 const TF_LOCAL_EXEC_URL_RE = /provisioner\s+"local-exec"[\s\S]{0,260}command\s*=\s*["'][^"']*(?:curl|wget)[^"']*(?:https?:\/\/|[A-Za-z0-9.-]+\.[A-Za-z]{2,})[^"']*["']/i
 const TF_DATA_EXTERNAL_RESULT_RE = /data\.external\.[A-Za-z0-9_-]+\.result/i
 const TF_DATA_EXTERNAL_CMD_RE = /data\s+"external"[\s\S]{0,260}(?:program|query)\s*=\s*\[[^\]]*(?:bash|sh|python|curl|wget|nc|powershell)/i
+
+const HELM_CHART_INJECTION_RE = /\{\{[^}]*(?:\.Values\.[^}]*\|\s*exec|tpl\s+\.Values|\|\s*sh\b|\|\s*bash\b|exec\s*\.(?:Command|OS\.Exec))/i
 
 const DOCKER_PROC_PID1_RE = /\/proc\/1\/(?:root|mounts|ns|cgroup|environ|fd)(?:\/|\b)/i
 const DOCKER_SOCK_RE = /(?:\/var\/run\/docker\.sock|docker\.sock)/i
@@ -211,10 +214,76 @@ export const cloudMetadataAdvanced: InvariantClassModule = {
     },
 }
 
+export const k8sAdmissionWebhookBypass: InvariantClassModule = {
+    id: 'k8s_admission_webhook_bypass' as InvariantClass,
+    description: 'Kubernetes admission webhook bypass via namespace scope, dryRun annotation, or sideEffects manipulation',
+    category: 'injection',
+    severity: 'critical',
+    calibration: { baseConfidence: 0.9 },
+    mitre: ['T1612'],
+    cwe: 'CWE-284',
+    knownPayloads: [
+        'namespaceSelector: matchExpressions: key: kubernetes.io/metadata.name NotIn kube-system',
+        'dryRun: true requestKind: Pod webhookConfig:',
+        'failurePolicy: Ignore sideEffects: None',
+    ],
+    knownBenign: [
+        'kubectl apply -f deploy.yaml',
+        'kubectl get pods',
+        'apiVersion: apps/v1 kind: Deployment',
+    ],
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        return K8S_ADMISSION_WEBHOOK_BYPASS_RE.test(d)
+    },
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            'namespaceSelector: matchExpressions: key: kubernetes.io/metadata.name NotIn kube-system',
+            'dryRun: true requestKind: Pod webhookConfig:',
+            'failurePolicy: Ignore sideEffects: None',
+        ]
+        return variants.slice(0, count)
+    },
+}
+
+export const helmChartInjection: InvariantClassModule = {
+    id: 'helm_chart_injection' as InvariantClass,
+    description: 'Helm chart template injection via dangerous functions and user-controlled tpl rendering',
+    category: 'injection',
+    severity: 'high',
+    calibration: { baseConfidence: 0.87 },
+    mitre: ['T1059.004'],
+    cwe: 'CWE-94',
+    knownPayloads: [
+        '{{ .Values.command | exec }}',
+        '{{ tpl .Values.config . }}',
+        '{{ exec .OS.Exec .Values.cmd }}',
+    ],
+    knownBenign: [
+        '{{ .Values.image.tag }}',
+        '{{ .Release.Name }}-app',
+        '{{ include "labels" . }}',
+    ],
+    detect: (input: string): boolean => {
+        const d = deepDecode(input)
+        return HELM_CHART_INJECTION_RE.test(d)
+    },
+    generateVariants: (count: number): string[] => {
+        const variants = [
+            '{{ .Values.command | exec }}',
+            '{{ tpl .Values.config . }}',
+            '{{ exec .OS.Exec .Values.cmd }}',
+        ]
+        return variants.slice(0, count)
+    },
+}
+
 export const INFRA_ATTACK_CLASSES: InvariantClassModule[] = [
     githubActionsInjection,
     kubernetesRbacAbuse,
     terraformInjection,
     dockerEscapeIndicator,
     cloudMetadataAdvanced,
+    k8sAdmissionWebhookBypass,
+    helmChartInjection,
 ]

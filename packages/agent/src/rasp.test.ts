@@ -9,8 +9,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { createRequire } from 'node:module'
 import { InvariantDB } from './db.js'
-import { wrapExec, type ExecRaspConfig } from './rasp/exec.js'
+import { wrapExec, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, type ExecRaspConfig } from './rasp/exec.js'
+
+const require = createRequire(import.meta.url)
 import { wrapFsOperation, type FsRaspConfig } from './rasp/fs.js'
 import { wrapFetch, type HttpRaspConfig } from './rasp/http.js'
 import { wrapJsonParse, checkDeserInvariants, type DeserRaspConfig } from './rasp/deser.js'
@@ -297,5 +300,68 @@ describe('Deser RASP', () => {
     it('returns violations for raw input', () => {
         const violations = checkDeserInvariants('aced0005')
         expect(violations.some(v => v.id === 'deser_java_gadget')).toBe(true)
+    })
+})
+
+// ── VM / Function / Module RASP hooks ─────────────────────────────────────
+
+describe('VM runtime hooks (vm, Function, Module._resolveFilename)', () => {
+    let db: InvariantDB
+    const vm = require('node:vm') as Record<string, unknown>
+
+    beforeEach(() => { db = new InvariantDB(':memory:') })
+    afterEach(() => {
+        try {
+            uninstallVmRuntimeHooks(vm)
+        } catch { /* ignore */ }
+        db.close()
+    })
+
+    it('installVmRuntimeHooks installs vm and Script hooks', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        const check = hookIntegrityCheck(vm)
+        expect(check.vmRunInContext).toBe(true)
+        expect(check.vmRunInNewContext).toBe(true)
+        expect(check.vmScript).toBe(true)
+    })
+
+    it('vm.runInNewContext with dangerous code is monitored in observe mode', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        const createContext = vm['createContext'] as (sandbox: object) => object
+        const runInNewContext = vm['runInNewContext'] as (code: string, ctx: object) => unknown
+        const context = createContext({})
+        try { runInNewContext('require("child_process")', context) } catch { /* require not in sandbox */ }
+        const signals = db.getSignals(10)
+        expect(signals.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('vm.Script constructor inspects code', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        new (vm.Script as new (c: string) => unknown)('require("fs")')
+        const signals = db.getSignals(10)
+        expect(signals.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('Function constructor hook inspects body in observe mode', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        const F = globalThis.Function
+        F('return require("child_process")')
+        const signals = db.getSignals(10)
+        expect(signals.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('uninstallVmRuntimeHooks restores originals and hookIntegrityCheck reflects it', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        expect(hookIntegrityCheck(vm).vmRunInNewContext).toBe(true)
+        uninstallVmRuntimeHooks(vm)
+        const check = hookIntegrityCheck(vm)
+        expect(check.vmRunInContext).toBe(false)
+        expect(check.vmRunInNewContext).toBe(false)
+        expect(check.vmScript).toBe(false)
     })
 })

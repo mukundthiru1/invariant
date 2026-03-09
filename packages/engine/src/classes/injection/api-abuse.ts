@@ -109,7 +109,7 @@ export const apiMassEnum: InvariantClassModule = {
                 for (let i = 1; i < ids.length; i++) {
                     if (ids[i] === ids[i - 1] + 1) sequential++
                 }
-                if (sequential >= 3) return true
+                if (sequential >= 4) return true
             }
         }
 

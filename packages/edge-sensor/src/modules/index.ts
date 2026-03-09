@@ -14,6 +14,9 @@ export type { BodyAnalysisResult } from './body-analysis.js'
 export { ThreatScoringEngine } from './threat-scoring.js'
 export type { ThreatSignal, ThreatScore, SignalContribution, ChainIndicator } from './threat-scoring.js'
 
+export { DeceptionLayer, DEFAULT_DECEPTION_CONFIG } from './deception-layer.js'
+export type { DeceptionConfig, TrackingToken, AttackerAction, AttackerDossier } from './deception-layer.js'
+
 // ── Response Audit (L7) ──────────────────────────────────────────
 export { ResponseAuditor } from './response-audit.js'
 export type { PostureFinding, PostureReport } from './response-audit.js'
@@ -57,6 +60,8 @@ export type {
 // ── Rule Sync ────────────────────────────────────────────────────
 export { syncRulesFromIntel, matchDynamicRules } from './rule-sync.js'
 export type { RuleSyncResult, DynamicRuleMatch } from './rule-sync.js'
+export { startRuleStream, stopRuleStream, getRuleStreamStatus } from './rule-stream.js'
+export type { RuleStreamStatus, RuleStreamOptions } from './rule-stream.js'
 
 // ── Drift Detection (from Axiom Drift merge) ─────────────────────
 export { DriftDetector } from './drift-detector.js'

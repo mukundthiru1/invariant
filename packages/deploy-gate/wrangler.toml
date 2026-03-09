@@ -1,0 +1,8 @@
+name = "invariant-deploy-gate"
+main = "src/index.ts"
+compatibility_date = "2026-03-09"
+
+[[kv_namespaces]]
+binding = "DEPLOY_STATE"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_NAMESPACE_ID"

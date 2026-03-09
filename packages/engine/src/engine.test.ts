@@ -767,7 +767,7 @@ describe('InvariantEngine error logging', () => {
         if (!module) throw new Error('sql_tautology module missing')
 
         const originalDetect = module.detect
-        module.detect = () => {
+        ;(module as any).detect = () => {
             throw new Error('forced detect failure')
         }
 
@@ -775,7 +775,7 @@ describe('InvariantEngine error logging', () => {
             errorEngine.detect("' OR 1=1--", [])
             expect(errorEngine.getErrorLog().some(e => e.source === 'detect:sql_tautology')).toBe(true)
         } finally {
-            module.detect = originalDetect
+            ;(module as any).detect = originalDetect
         }
     })
 
@@ -786,10 +786,10 @@ describe('InvariantEngine error logging', () => {
 
         const originalDetect = module.detect
         const originalDetectL2 = module.detectL2
-        module.detect = () => {
+        ;(module as any).detect = () => {
             throw new Error('forced detectDeep l1 failure')
         }
-        module.detectL2 = () => {
+        ;(module as any).detectL2 = () => {
             throw new Error('forced detectDeep l2 failure')
         }
 
@@ -799,8 +799,8 @@ describe('InvariantEngine error logging', () => {
             expect(errorLog).toContain('detectDeep.l1:sql_tautology')
             expect(errorLog).toContain('detectDeep.l2:sql_tautology')
         } finally {
-            module.detect = originalDetect
-            module.detectL2 = originalDetectL2
+            ;(module as any).detect = originalDetect
+            ;(module as any).detectL2 = originalDetectL2
         }
     })
 
@@ -826,7 +826,7 @@ describe('InvariantEngine error logging', () => {
         if (!module) throw new Error('sql_tautology module missing')
 
         const originalDetect = module.detect
-        module.detect = () => {
+        ;(module as any).detect = () => {
             throw new Error('forced detect failure')
         }
 
@@ -839,7 +839,7 @@ describe('InvariantEngine error logging', () => {
             expect(errorLog).toHaveLength(100)
             expect(errorLog[errorLog.length - 1].error).toContain('forced detect failure')
         } finally {
-            module.detect = originalDetect
+            ;(module as any).detect = originalDetect
         }
     })
 })

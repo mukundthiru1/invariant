@@ -14,6 +14,83 @@ use regex::Regex;
 
 pub struct OAuthEvaluator;
 
+impl OAuthEvaluator {
+    fn detect_oauth_fixation(&self, lower: &str) -> Vec<L2Detection> {
+        let mut dets = Vec::new();
+
+        if lower.contains("response_type=token") {
+            let pos = lower.find("response_type=token").unwrap_or(0);
+            dets.push(L2Detection {
+                detection_type: "oauth_token_fixation_implicit".into(),
+                confidence: 0.85,
+                detail: "OAuth implicit flow (response_type=token) enables token fixation via URL fragment"
+                    .into(),
+                position: pos,
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: "response_type=token".into(),
+                    interpretation: "Implicit flow leaks the access_token in the URL fragment, which can be fixated or stolen via Referer or redirect chain abuse.".into(),
+                    offset: pos,
+                    property: "Authorization code flow with PKCE must be used instead of implicit flow."
+                        .into(),
+                }],
+            });
+        }
+
+        if lower.contains("redirect_uri=") {
+            if let Some(pos) = lower.find("redirect_uri=") {
+                let value_start = pos + "redirect_uri=".len();
+                let value_end = lower[value_start..]
+                    .find('&')
+                    .map(|i| value_start + i)
+                    .unwrap_or(lower.len());
+                let redirect_value = &lower[value_start..value_end];
+
+                if redirect_value.contains("authorize?")
+                    || redirect_value.contains("/oauth/")
+                    || redirect_value.contains("response_type=")
+                {
+                    dets.push(L2Detection {
+                        detection_type: "oauth_redirect_chain_abuse".into(),
+                        confidence: 0.95,
+                        detail: "OAuth redirect_uri contains another OAuth endpoint (redirect chain abuse)"
+                            .into(),
+                        position: pos,
+                        evidence: vec![ProofEvidence {
+                            operation: EvidenceOperation::SemanticEval,
+                            matched_input: redirect_value.to_string(),
+                            interpretation: "Chaining OAuth redirect URIs can be used to leak authorization codes or tokens to unintended endpoints in a token fixation or theft attack.".into(),
+                            offset: pos,
+                            property: "redirect_uri must be strictly validated against a static allowlist and should not chain into other authorization endpoints.".into(),
+                        }],
+                    });
+                }
+            }
+        }
+
+        let seq_code_re = Regex::new(r"(?i)[?&]code=(?:12345?|23456?|34567?|45678?|56789?|01234?|98765?|87654?|76543?|65432?|54321?|\d{1,4})(?:&|$)").unwrap();
+        if let Some(m) = seq_code_re.find(lower) {
+            dets.push(L2Detection {
+                detection_type: "oauth_code_fixation_probe".into(),
+                confidence: 0.88,
+                detail:
+                    "OAuth authorization code contains predictable or sequential numeric values (fixation probe)"
+                        .into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_string(),
+                    interpretation: "Short, numeric, or sequential authorization codes indicate a brute-force or fixation probe attempt against the OAuth callback.".into(),
+                    offset: m.start(),
+                    property: "Authorization codes must be cryptographically random strings with high entropy.".into(),
+                }],
+            });
+        }
+
+        dets
+    }
+}
+
 impl L2Evaluator for OAuthEvaluator {
     fn id(&self) -> &'static str {
         "oauth"
@@ -420,6 +497,8 @@ impl L2Evaluator for OAuthEvaluator {
             });
         }
 
+        dets.extend(self.detect_oauth_fixation(&lower));
+
         dets
     }
 
@@ -438,7 +517,7 @@ impl L2Evaluator for OAuthEvaluator {
             | "oauth_request_uri_injection"
             | "oauth_nonce_missing_oidc"
             | "oauth_redirect_double_encoded"
-            | "oauth_prompt_none_bypass" => Some(InvariantClass::OauthFlowAbuse),
+            | "oauth_prompt_none_bypass" | "oauth_token_fixation_implicit" | "oauth_redirect_chain_abuse" | "oauth_code_fixation_probe" => Some(InvariantClass::OauthFlowAbuse),
             _ => None,
         }
     }
@@ -564,6 +643,27 @@ mod tests {
         let dets = eval.detect("response_type=code&client_id=abc&redirect_uri=https://app.com/cb&state=random123&scope=openid");
         // With proper state and non-suspicious redirect_uri, nothing malicious
         assert!(dets.is_empty());
+    }
+
+    #[test]
+    fn detects_oauth_token_fixation_implicit() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("response_type=token&client_id=123");
+        assert!(dets.iter().any(|d| d.detection_type == "oauth_token_fixation_implicit"));
+    }
+
+    #[test]
+    fn detects_oauth_redirect_chain_abuse() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("redirect_uri=https://example.com/oauth/authorize?response_type=code");
+        assert!(dets.iter().any(|d| d.detection_type == "oauth_redirect_chain_abuse"));
+    }
+
+    #[test]
+    fn detects_oauth_code_fixation_probe() {
+        let eval = OAuthEvaluator;
+        let dets = eval.detect("?code=12345");
+        assert!(dets.iter().any(|d| d.detection_type == "oauth_code_fixation_probe"));
     }
 
     #[test]

@@ -1,37 +1,24 @@
-name: 'Invariant Security Scan'
-description: 'Scan your codebase for vulnerability patterns using Invariant Engine'
+name: 'Invariant PR Scan'
+description: 'Scan pull-request diffs with Invariant and optionally post inline review comments'
 inputs:
-  path:
-    description: 'Directory to scan'
+  token:
+    description: 'GitHub token used for PR API requests'
     required: false
-    default: '.'
-  severity-threshold:
-    description: 'Fail when findings at or above this severity are detected'
-    required: false
-    default: 'high'
-  fail-on-findings:
-    description: 'Fail the job when findings exceed the severity threshold'
-    required: false
-    default: 'true'
   fail-on:
     description: "Failure mode: one of 'critical', 'high', 'medium', 'any', 'none'"
     required: false
     default: 'high'
-  extensions:
-    description: 'Comma-separated extensions to include'
+  post-comments:
+    description: 'Post inline review comments for findings'
     required: false
-    default: '.ts,.js,.tsx,.jsx'
-  exclude:
-    description: 'Comma-separated directories/files to skip while scanning'
-    required: false
-    default: 'node_modules,.git,dist,build'
+    default: 'true'
 outputs:
   findings-count:
-    description: 'Total number of findings returned by the scanner'
+    description: 'Total number of findings returned by the PR scan'
   critical-count:
     description: 'Number of critical findings'
   high-count:
     description: 'Number of high findings'
 runs:
   using: 'node20'
-  main: 'dist/index.js'
+  main: 'dist/main.js'

@@ -28,14 +28,16 @@ import { auditConfiguration } from './scanner/config.js'
 import { type SqlRaspConfig, wrapPgModule, wrapMysqlModule } from './rasp/sql.js'
 import { type FsRaspConfig, wrapFsOperation } from './rasp/fs.js'
 import { type HttpRaspConfig, wrapFetch } from './rasp/http.js'
-import { type ExecRaspConfig, installVmRuntimeHooks, wrapExec } from './rasp/exec.js'
+import { type ExecRaspConfig, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, wrapExec } from './rasp/exec.js'
 import { type DeserRaspConfig, wrapJsonParse } from './rasp/deser.js'
 import { type WebSocketRaspConfig, wrapWebSocketSend } from './rasp/websocket.js'
 import { type GrpcRaspConfig, wrapGrpcClient } from './rasp/grpc.js'
 import { AutonomousDefenseController, type DefenseDecision } from './autonomous-defense.js'
 import { AdaptiveCalibrator, type CalibrationReport } from './calibration.js'
 import { RuntimeHealthMonitor, type RuntimeHealthSnapshot } from './runtime.js'
+import { evaluateAgentLaws, type AgentLawReport } from './laws.js'
 import { flushSignals, queueSignal } from './intel-feedback.js'
+import { DEFAULT_HEARTBEAT_CONFIG, type HeartbeatConfig, type HeartbeatHandle, detectTamper, registerLastBreath, startHeartbeat } from './heartbeat.js'
 
 // ── Types ────────────────────────────────────────────────────────
 
@@ -72,6 +74,8 @@ export interface AgentStatus {
     lastScan: string | null
 }
 
+export type { AgentLawReport }
+
 export class AgentPublicError extends Error {
     readonly code: string
 
@@ -95,6 +99,9 @@ export class InvariantAgent {
     private healthMonitor: RuntimeHealthMonitor
     private wrapped = new Set<string>()
     private processErrorHandlersInstalled = false
+    private heartbeatHandle: HeartbeatHandle | null = null
+    private lastBreathRegistered = false
+    private lawReport: AgentLawReport = { stage: 'init', results: [], violations: [] }
 
     constructor(config: AgentConfig = {}) {
         const projectDir = config.projectDir ?? process.cwd()
@@ -132,6 +139,7 @@ export class InvariantAgent {
             this.log('INVARIANT agent starting...')
             this.log(`Mode: ${this.config.mode}`)
             this.log(`Project: ${this.config.projectDir}`)
+            this.installHeartbeatGuards()
 
             if (this.config.captureRuntimeExceptions) {
                 this.installProcessErrorHandlers()
@@ -176,6 +184,7 @@ export class InvariantAgent {
 
             // Calculate and store initial posture
             this.updatePosture()
+            this.enforceLaws('start')
 
             this.log('INVARIANT agent ready')
         } catch (error) {
@@ -375,6 +384,11 @@ export class InvariantAgent {
         return this.healthMonitor.snapshot()
     }
 
+    /** Most recent laws report for runtime compliance visibility. */
+    getLawReport(): AgentLawReport {
+        return this.lawReport
+    }
+
     // ── Status ───────────────────────────────────────────────────
 
     getStatus(): AgentStatus {
@@ -553,6 +567,10 @@ export class InvariantAgent {
             clearInterval(this.scanTimer)
             this.scanTimer = null
         }
+        if (this.heartbeatHandle) {
+            this.heartbeatHandle.stop()
+            this.heartbeatHandle = null
+        }
         void flushSignals()
         this.removeProcessErrorHandlers()
         this.db.close()
@@ -628,6 +646,60 @@ export class InvariantAgent {
     private hashPayload(input: string): string {
         return createHash('sha256').update(input).digest('hex').slice(0, 32)
     }
+
+    private installHeartbeatGuards(): void {
+        const heartbeatConfig = this.resolveHeartbeatConfig()
+
+        if (!this.lastBreathRegistered) {
+            registerLastBreath(heartbeatConfig)
+            this.lastBreathRegistered = true
+        }
+
+        const tampered = detectTamper()
+        if (tampered) {
+            this.log('Agent tamper detection triggered on startup')
+        }
+
+        if (!heartbeatConfig.endpoint || this.heartbeatHandle) {
+            return
+        }
+
+        this.heartbeatHandle = startHeartbeat(heartbeatConfig)
+    }
+
+    private resolveHeartbeatConfig(): HeartbeatConfig {
+        return {
+            intervalMs: Number.parseInt(process.env.SANTH_HEARTBEAT_INTERVAL_MS ?? '', 10) || DEFAULT_HEARTBEAT_CONFIG.intervalMs,
+            endpoint: process.env.SANTH_SENSOR_URL?.trim() ?? '',
+            sensorId: process.env.SANTH_SENSOR_ID?.trim() || `${process.pid}`,
+            secret: process.env.SANTH_SENSOR_SECRET ?? '',
+        }
+    }
+
+    private enforceLaws(stage: string): void {
+        const report = evaluateAgentLaws(stage, {
+            autoConfigure: this.config.autoConfigure,
+            captureRuntimeExceptions: this.config.captureRuntimeExceptions,
+            wrappedIntegrations: this.wrapped.size,
+            hasCoreControllers: !!this.db && !!this.defenseController && !!this.healthMonitor,
+            rescanInterval: this.config.rescanInterval,
+        })
+
+        this.lawReport = report
+
+        try {
+            this.db.setAsset('agent.laws.report', JSON.stringify(report))
+        } catch (error) {
+            this.handleInternalError('laws.persist', error)
+        }
+
+        if (report.violations.length > 0) {
+            this.handleInternalError(
+                `laws.${stage}`,
+                new Error(`Law violations: ${report.violations.map((law) => `L${law.law}`).join(', ')}`),
+            )
+        }
+    }
 }
 
 // ── Re-exports ───────────────────────────────────────────────────
@@ -639,7 +711,7 @@ export { auditConfiguration } from './scanner/config.js'
 export { wrapSqlQuery, wrapPgModule, wrapMysqlModule } from './rasp/sql.js'
 export { wrapFsOperation } from './rasp/fs.js'
 export { wrapFetch, checkUrlInvariants } from './rasp/http.js'
-export { wrapExec } from './rasp/exec.js'
+export { wrapExec, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck } from './rasp/exec.js'
 export { wrapJsonParse, checkDeserInvariants } from './rasp/deser.js'
 export { wrapWebSocketServer, wrapWebSocketSend } from './rasp/websocket.js'
 export { wrapGrpcClient, wrapGrpcClientMethod } from './rasp/grpc.js'
@@ -650,6 +722,14 @@ export { BehavioralAnalyzer, type BehaviorSignal, type BehaviorResult, type Requ
 export { type RequestSessionData, type RaspEvent, type CompoundDetection, recordRaspEvent, startRequestSession, finalizeRequestSession, getCurrentSession, runWithSession } from './rasp/request-session.js'
 export { AdaptiveCalibrator, type ClassCalibrationState, type CalibrationReport } from './calibration.js'
 export { queueSignal, flushSignals } from './intel-feedback.js'
+export {
+    type HeartbeatConfig,
+    type HeartbeatHandle,
+    DEFAULT_HEARTBEAT_CONFIG,
+    startHeartbeat,
+    registerLastBreath,
+    detectTamper,
+} from './heartbeat.js'
 export { invariantFastify } from './middleware/fastify.js'
 export { invariantKoa } from './middleware/koa.js'
 export { invariantHono } from './middleware/hono.js'

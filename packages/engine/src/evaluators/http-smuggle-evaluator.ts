@@ -84,6 +84,8 @@ const TE_OBFUSCATION_PATTERNS = [
     { pattern: /transfer-encoding:\s*x?chunk/i, name: 'chunked variant' },
     { pattern: /transfer-encoding:\s*$/im, name: 'empty TE value' },
     { pattern: /transfer-encoding:\s*identity/i, name: 'identity encoding' },
+    { pattern: /transfer-encoding:(?:\s|\r?\n\s+)+chunked/i, name: 'multiline header continuation' },
+    { pattern: /transfer-encoding:\s*chunked;boundary=/i, name: 'chunked with boundary extension' }
 ]
 
 

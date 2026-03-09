@@ -1,0 +1,28 @@
+{
+  "name": "@santh/audit-log",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Immutable append-only git audit log Cloudflare Worker with tamper detection.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250224.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.0.0",
+    "wrangler": "^4.69.0"
+  }
+}

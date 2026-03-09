@@ -6,6 +6,7 @@
 
 export interface Env {
     SANTH_INGEST_URL: string
+    SANTH_INTEL_URL?: string
     SIGNAL_BATCH_SIZE: string
     DEFENSE_MODE: string           // "monitor" | "enforce" | "off"
     SENSOR_STATE: KVNamespace      // KV binding for persistent state

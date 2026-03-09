@@ -21,6 +21,8 @@ export const sqlTimeOracle: InvariantClassModule = {
 
     knownPayloads: [
         "' AND SLEEP(5)--",
+        "1 OR pg_sleep(5)--",
+        "1; WAITFOR DELAY '0:0:5'--",
         "'; WAITFOR DELAY '0:0:5'--",
         "' AND BENCHMARK(10000000,SHA1('test'))--",
         "' AND (SELECT pg_sleep(5))--",
@@ -50,7 +52,7 @@ export const sqlTimeOracle: InvariantClassModule = {
     detectL2: (input: string): DetectionLevelResult | null => {
         const d = deepDecode(input)
         const detections = detectSqlStructural(d)
-        const match = detections.find(det => det.type === 'time_oracle')
+        const match = detections.find(det => det.type === 'time_oracle' || det.type === 'time_based_blind')
         if (match) {
             return {
                 detected: true,

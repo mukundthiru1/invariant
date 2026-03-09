@@ -42,11 +42,11 @@ export interface SSRFDetection {
 
 
 // ── Cloud Metadata Endpoints ─────────────────────────────────────
-
 const CLOUD_METADATA_IPS = [
     '169.254.169.254',   // AWS, GCP, Azure, DigitalOcean, Oracle
     '100.100.100.200',   // Alibaba Cloud
     '169.254.170.2',     // AWS ECS task metadata
+    '168.63.129.16',     // Azure Wire Server / IMDS
 ]
 
 const CLOUD_METADATA_HOSTNAMES = new Set([
@@ -121,11 +121,14 @@ export function parseIPRepresentation(host: string): number | null {
     let h = host.replace(/^\[|\]$/g, '').trim()
 
     // IPv6 loopback
-    if (h === '::1') return ip4ToNum(127, 0, 0, 1)
+    if (h === '::1' || /^(?:0000:){7}0001$/.test(h)) return ip4ToNum(127, 0, 0, 1)
 
     // IPv4-mapped IPv6: ::ffff:127.0.0.1
     const v4mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i)
     if (v4mapped) h = v4mapped[1]
+
+    // IPv4-mapped unspecified: ::ffff:0:0
+    if (h === '::ffff:0:0') return ip4ToNum(0, 0, 0, 0)
 
     // IPv4-mapped IPv6 hex: ::ffff:7f00:0001
     const v4hex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i)
@@ -317,12 +320,24 @@ function detectInternalReach(parsed: ParsedURL): SSRFDetection | null {
         }
     }
 
+    // Known DNS rebinding aliases for localhost
+    const LOCALHOST_ALIASES = new Set(['localtest.me', 'lvh.me', 'yurets.dev', '1u.ms'])
+    if (LOCALHOST_ALIASES.has(h)) {
+        return {
+            type: 'internal_reach',
+            detail: `Localhost domain alias: ${h}`,
+            resolvedHost: h,
+            resolvedIP: '127.0.0.1',
+            confidence: 0.95,
+        }
+    }
+
     // DNS rebinding services — hostnames that resolve to internal IPs
     // e.g., 127.0.0.1.nip.io, 10.0.0.1.xip.io, 192.168.1.1.sslip.io
     const rebindServices = ['.nip.io', '.xip.io', '.sslip.io']
     for (const suffix of rebindServices) {
         if (h.endsWith(suffix)) {
-            const ipPart = h.slice(0, -suffix.length)
+            const ipPart = h.slice(0, -suffix.length).replace(/-/g, '.')
             const rebindIP = parseIPRepresentation(ipPart)
             if (rebindIP !== null) {
                 const range = isInternalIP(rebindIP)

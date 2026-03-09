@@ -4,7 +4,9 @@
         "module": "NodeNext",
         "moduleResolution": "NodeNext",
         "lib": [
-            "ES2022"
+            "ES2022",
+            "DOM",
+            "DOM.Iterable"
         ],
         "strict": true,
         "esModuleInterop": true,
@@ -17,6 +19,13 @@
     },
     "exclude": [
         "node_modules",
-        "dist"
+        "dist",
+        "apps",
+        "debug.ts",
+        "debug2.ts",
+        "intel-api-edits",
+        "outreach",
+        "test.ts",
+        "test_decode.ts"
     ]
 }

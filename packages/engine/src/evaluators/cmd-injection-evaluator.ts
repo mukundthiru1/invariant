@@ -90,6 +90,20 @@ const SUBSTITUTION_TYPES: ReadonlySet<ShellTokenType> = new Set([
     'CMD_SUBST_OPEN', 'BACKTICK_SUBST',
 ])
 
+const POWERSHELL_DANGEROUS_SNIPPETS: readonly string[] = [
+    '-EncodedCommand',
+    '-ExecutionPolicy Bypass',
+    '-Exec Bypass',
+    'IEX(IWR',
+    'IEX(New-Object Net.WebClient)',
+    '[Ref].Assembly.GetType',
+    'Invoke-Expression',
+    'Invoke-WebRequest',
+    'Start-Process -WindowStyle Hidden',
+]
+
+const POWERSHELL_DANGEROUS_PATTERN = /(?:-[Ee]ncodedCommand|-[Ee]xec(?:utionPolicy)?\s+[Bb]ypass|IEX\s*\(|Invoke-Expression|Invoke-WebRequest|Start-Process\s+(?:-WindowStyle\s+)?[Hh]idden|\[Ref\]\.Assembly\.GetType)/
+
 
 // ── Tokenizer singleton ─────────────────────────────────────────
 
@@ -153,10 +167,13 @@ export function detectCmdInjection(input: string): CmdInjectionDetection[] {
     // Strategy 8: Sensitive file references (boost)
     detectSensitiveFileAccess(decoded, detections)
 
-    // Strategy 9: Environment mutation via variable assignment
+    // Strategy 9: PowerShell execution primitives and AMSI bypass syntax
+    detectPowerShellInjection(decoded, detections)
+
+    // Strategy 10: Environment mutation via variable assignment
     detectEnvironmentMutation(decoded, detections)
 
-    // Strategy 10: Null-byte command truncation/bypass attempts
+    // Strategy 11: Null-byte command truncation/bypass attempts
     detectNullByteBypass(rawInput, detections)
 
     return detections
@@ -616,7 +633,35 @@ function detectSensitiveFileAccess(
     }
 }
 
-// ── Strategy 9: Environment Mutation ────────────────────────────
+// ── Strategy 9: PowerShell Injection Primitives ──────────────────
+//
+// Invariant: user input should not include PowerShell execution controls
+// that disable policy checks, decode opaque payloads, or invoke downloaded
+// script content.
+
+function detectPowerShellInjection(
+    rawInput: string,
+    detections: CmdInjectionDetection[],
+): void {
+    const hasSnippet = POWERSHELL_DANGEROUS_SNIPPETS.some(snippet => rawInput.includes(snippet))
+    const patternMatch = rawInput.match(POWERSHELL_DANGEROUS_PATTERN)
+    if (!hasSnippet && !patternMatch) return
+
+    const evidence = patternMatch?.[0] ??
+        POWERSHELL_DANGEROUS_SNIPPETS.find(snippet => rawInput.includes(snippet)) ??
+        'powershell-exec-primitive'
+
+    detections.push({
+        type: 'structural',
+        separator: 'powershell',
+        command: evidence,
+        detail: `PowerShell execution primitive detected: ${evidence}`,
+        position: patternMatch?.index ?? Math.max(0, rawInput.indexOf(evidence)),
+        confidence: 0.91,
+    })
+}
+
+// ── Strategy 10: Environment Mutation ────────────────────────────
 //
 // Invariant: user input should not mutate shell execution environment
 // (PATH/IFS/LD_PRELOAD/etc). These assignments alter downstream command
@@ -644,7 +689,7 @@ function detectEnvironmentMutation(
     })
 }
 
-// ── Strategy 10: Null Byte Bypass ───────────────────────────────
+// ── Strategy 11: Null Byte Bypass ───────────────────────────────
 //
 // Invariant: command input should not carry null-byte terminators.
 // Presence of \\x00/%00/NUL in shell-like context is a strong bypass signal.

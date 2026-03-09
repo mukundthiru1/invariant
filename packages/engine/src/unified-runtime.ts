@@ -233,6 +233,7 @@ const EFFECT_ROUTES: readonly EffectRoute[] = [
         classes: [
             'path_dotdot_escape', 'path_encoding_bypass',
             'path_null_terminate', 'path_normalization_bypass',
+            'path_windows_traversal',
         ] as InvariantClass[],
         simulate: (input, proof) => simulatePathEffect(input, proof ?? undefined),
     },
@@ -317,7 +318,7 @@ const CLASS_BEHAVIORS: readonly ClassBehaviorRule[] = [
 const CONTENT_BEHAVIORS: readonly ContentBehaviorRule[] = [
     // Credential file targeting via path traversal
     {
-        classes: ['path_dotdot_escape', 'path_encoding_bypass', 'path_null_terminate', 'path_normalization_bypass'],
+        classes: ['path_dotdot_escape', 'path_encoding_bypass', 'path_null_terminate', 'path_normalization_bypass', 'path_windows_traversal'],
         patterns: [
             '.env', 'passwd', 'shadow', 'id_rsa', 'id_ed25519',
             '.ssh', '.git/config', '.aws/credentials', '.docker/config',

@@ -60,6 +60,36 @@ export const xssProtocolHandler: InvariantClassModule = {
                 evidence: match.element,
             }
         }
+
+        const scriptScheme = d.match(/(?:^|[=\s"'(])(?:javascript|vbscript|livescript)\s*:/i)
+        if (scriptScheme?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.91,
+                explanation: 'HTML analysis: URI scheme resolves to script-capable protocol',
+                evidence: scriptScheme[0],
+            }
+        }
+
+        const dataExecutable = d.match(/data\s*:\s*(?:text\/javascript|text\/html|application\/xhtml\+xml)[^,\s]*,/i)
+        if (dataExecutable?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.90,
+                explanation: 'HTML analysis: data URI embeds executable document/script content',
+                evidence: dataExecutable[0],
+            }
+        }
+
+        const obfuscatedJavascript = d.match(/j(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*a(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*v(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*a(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*s(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*c(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*r(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*i(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:09|0a|0d);)*p(?:\s|&(?:tab|newline);|&#(?:9|10|13);|&#x(?:9|0a|0d);)*t\s*:/i)
+        if (obfuscatedJavascript?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.88,
+                explanation: 'HTML analysis: obfuscated javascript: protocol bypass detected',
+                evidence: obfuscatedJavascript[0],
+            }
+        }
         return null
     },
 

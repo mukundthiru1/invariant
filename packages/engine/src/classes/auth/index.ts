@@ -5,6 +5,7 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret } from './jwt-attacks.js'
 import { jwtConfusion } from './jwt-abuse.js'
+import { oauthRedirectManipulation, oauthStateBypass, pkceDowngrade } from './oauth-attacks.js'
 import { oauthRedirectHijack, oauthTokenLeak, jwtAlgorithmConfusion, oidcNonceReplay, samlSignatureWrapping } from './protocol-attacks.js'
 
 function decodeBase64Url(value: string): string | null {
@@ -698,7 +699,7 @@ export const mfaBypassIndicator: InvariantClassModule = {
     },
 }
 
-export const pkceDowngrade: InvariantClassModule = {
+const pkceDowngradeLegacy: InvariantClassModule = {
     id: 'pkce_downgrade',
     description: 'PKCE downgrade when code_challenge_method=plain or code flow is initiated without code_challenge',
     category: 'auth',
@@ -848,6 +849,7 @@ export const passwordSprayIndicator: InvariantClassModule = {
 
 export { jwtKidInjection, jwtJwkEmbedding, jwtWeakSecret } from './jwt-attacks.js'
 export { jwtConfusion } from './jwt-abuse.js'
+export { oauthRedirectManipulation, oauthStateBypass, pkceDowngrade } from './oauth-attacks.js'
 
 export const AUTH_CLASSES: InvariantClassModule[] = [
     authNoneAlgorithm,
@@ -855,6 +857,9 @@ export const AUTH_CLASSES: InvariantClassModule[] = [
     jwtWeakHmacSecret,
     jwtMissingExpiry,
     jwtPrivilegeEscalation,
+    oauthRedirectManipulation,
+    oauthStateBypass,
+    pkceDowngrade,
     oauthStateMissing,
     sessionFixation,
     oauthTokenLeak,
@@ -862,7 +867,6 @@ export const AUTH_CLASSES: InvariantClassModule[] = [
     samlSignatureWrapping,
     oauthRedirectUriBypass,
     mfaBypassIndicator,
-    pkceDowngrade,
     bearerTokenExposure,
     passwordSprayIndicator,
     jwtAlgorithmConfusion,

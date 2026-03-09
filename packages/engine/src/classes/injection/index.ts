@@ -33,7 +33,7 @@ import { xxeEntityExpansion, xmlInjection } from './xxe.js'
 import { crlfHeaderInjection, crlfLogInjection } from './crlf.js'
 import { graphqlBatchAbuse } from './graphql.js'
 import { openRedirectBypass, ldapFilterInjection, regexDos, xxeInjection, httpSmuggling } from './misc.js'
-import { llmPromptInjection, llmDataExfiltration, llmJailbreak } from './llm-injection.js'
+import { llmPromptInjection, llmDataExfiltration, llmJailbreak, llmIndirectInjection } from './llm-injection.js'
 import {
     httpSmuggleClTe,
     httpSmuggleH2,
@@ -107,7 +107,7 @@ export { xxeEntityExpansion, xmlInjection } from './xxe.js'
 export { crlfHeaderInjection, crlfLogInjection } from './crlf.js'
 export { graphqlBatchAbuse } from './graphql.js'
 export { openRedirectBypass, ldapFilterInjection, regexDos, xxeInjection, httpSmuggling } from './misc.js'
-export { llmPromptInjection, llmDataExfiltration, llmJailbreak } from './llm-injection.js'
+export { llmPromptInjection, llmDataExfiltration, llmJailbreak, llmIndirectInjection } from './llm-injection.js'
 export {
     httpSmuggleClTe,
     httpSmuggleH2,
@@ -226,6 +226,7 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     llmPromptInjection,
     llmDataExfiltration,
     llmJailbreak,
+    llmIndirectInjection,
     // Cache poisoning / deception
     cachePoisoning,
     cacheDeception,

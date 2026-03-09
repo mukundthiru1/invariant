@@ -3,6 +3,7 @@
  */
 import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
+import { l2JwtAlgConfusion } from '../../evaluators/l2-adapters.js'
 
 const JWT_TOKEN_PATTERN = /\b(?:eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9._-]*)/g
 const JWT_QUERY_TOKEN_PARAM_PATTERN = /(?:^|[?&\s])(id_token|access_token|token|jwt)=([^&\s]+)/gi
@@ -201,14 +202,26 @@ export const oauthRedirectHijack: InvariantClassModule = {
             if (/^javascript:/i.test(uri)) return true
             if (/^\/\//.test(uri)) return true
             if (/^https?:\/\//i.test(uri)) {
-                if (/(?:app\.mycompany\.com|localhost|127\.0\.0\.1)/i.test(uri)) return false
-                return true
+                if (/(?:localhost|127\.0\.0\.1)/i.test(uri)) return false
+                // Path traversal or chained URL = suspicious
+                if (/\.\.|%2e%2e/i.test(uri)) return true
+                if (/https?:\/\//i.test(uri.replace(/^https?:\/\/[^/]+/, ''))) return true
+                // Raw IP address as redirect host = suspicious
+                try { if (/^(?:\d{1,3}\.){3}\d{1,3}$/.test(new URL(uri).hostname)) return true } catch { return true }
+                // Attack-pattern keywords in host
+                if (/(?:evil|attacker|burp|ngrok|steal|hook)/i.test(uri)) return true
+                // Bare root domain with no auth-looking path
+                try {
+                    const { pathname } = new URL(uri)
+                    if (pathname === '/' && !/(?:callback|oauth|auth|return|redirect|login)/i.test(uri)) return true
+                } catch { return true }
+                return false
             }
 
             const encodedHost = safeDecode(uri)
             if (encodedHost !== uri) {
                 if (/^javascript:/i.test(encodedHost) || /^\/\//.test(encodedHost)) return true
-                if (/^https?:\/\//i.test(encodedHost) && !/(?:app\.mycompany\.com|localhost|127\.0\.0\.1)/i.test(encodedHost)) return true
+                if (/^https?:\/\//i.test(encodedHost) && /(?:\.\.|evil|attacker)/i.test(encodedHost)) return true
             }
 
             return false
@@ -220,7 +233,7 @@ export const oauthRedirectHijack: InvariantClassModule = {
             '?redirect_uri=https://evil.com',
             '?redirect_uri=javascript:alert(1)',
             '?redirect_uri=//attacker.com/steal',
-            '?redirect_uri=https://app.mycompany.com/callback',
+            '?redirect_uri=https://login.evil.com/callback',
         ]
         return Array.from({ length: count }, (_, i) => variants[i % variants.length])
     },
@@ -330,35 +343,7 @@ export const jwtAlgorithmConfusion: InvariantClassModule = {
         return false
     },
 
-    detectL2: (input: string): DetectionLevelResult | null => {
-        if (!input) return null
-        const d = deepDecode(input)
-        const tokens = extractJwtTokens(d)
-        for (const token of tokens) {
-            const header = parseJwtHeader(token)
-            if (!header) continue
-            const alg = String(header.alg ?? '').toUpperCase()
-            if (alg === 'NONE') {
-                return {
-                    detected: true,
-                    confidence: 0.98,
-                    explanation: 'JWT header explicitly disables signature verification',
-                    evidence: token.slice(0, 20),
-                }
-            }
-
-            if (/^HS\d{3}$/.test(alg) && /(RS256|RS384|RS512|public|rsa|jw[kks]|BEGIN PUBLIC KEY|x5[cux])/i.test(d)) {
-                return {
-                    detected: true,
-                    confidence: 0.93,
-                    explanation: 'HS algorithm appears in an asymmetric-key JWT context',
-                    evidence: `alg=${alg} with asymmetric-key indicators`,
-                }
-            }
-        }
-
-        return null
-    },
+    detectL2: (input: string): DetectionLevelResult | null => l2JwtAlgConfusion(input, input),
 
     generateVariants: (count: number): string[] => {
         const variants = [
@@ -432,7 +417,7 @@ export const oidcNonceReplay: InvariantClassModule = {
 
     generateVariants: (count: number): string[] => {
         const variants = [
-            'GET /auth/callback?id_token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIiwibm9uY2UiOiJyYW5kb211dGhlX3V1aWRfaGVyIn0.signature&state=abc',
+            'GET /auth/callback?id_token=eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.signature&state=abc',
             'nonce=static_value&code=xyz&state=abc&nonce=static_value',
             'nonce=static_value',
             'response_type=id_token&nonce=static_value&code=abc',

@@ -28,6 +28,35 @@ export interface RuleSyncResult {
     skippedReason: string | null
 }
 
+export function validateDynamicRules(rules: DynamicRule[]): DynamicRule[] {
+    const validRules: DynamicRule[] = []
+
+    for (const rule of rules) {
+        if (!rule.ruleId || typeof rule.ruleId !== 'string') continue
+        if (!rule.signalType || typeof rule.signalType !== 'string') continue
+        if (!Array.isArray(rule.patterns) || rule.patterns.length === 0) continue
+        if (typeof rule.baseConfidence !== 'number' || rule.baseConfidence < 0 || rule.baseConfidence > 1) continue
+
+        let regexValid = true
+        for (const pattern of rule.patterns) {
+            if (pattern.operator === 'regex') {
+                try {
+                    new RegExp(pattern.value, 'i')
+                } catch {
+                    regexValid = false
+                    console.warn(`Rule ${rule.ruleId}: regex compilation failed for pattern: ${pattern.value.slice(0, 50)}`)
+                    break
+                }
+            }
+        }
+        if (!regexValid) continue
+
+        validRules.push(rule)
+    }
+
+    return validRules
+}
+
 /**
  * Sync detection rules from intel pipeline.
  *
@@ -131,30 +160,7 @@ export async function syncRulesFromIntel(
         }
 
         // Step 5: Validate each rule structure (SAA-036 defense-in-depth)
-        const validRules: DynamicRule[] = []
-        for (const rule of rulesData.rules) {
-            if (!rule.ruleId || typeof rule.ruleId !== 'string') continue
-            if (!rule.signalType || typeof rule.signalType !== 'string') continue
-            if (!Array.isArray(rule.patterns) || rule.patterns.length === 0) continue
-            if (typeof rule.baseConfidence !== 'number' || rule.baseConfidence < 0 || rule.baseConfidence > 1) continue
-
-            // Validate regex patterns compile successfully on sensor side
-            let regexValid = true
-            for (const pattern of rule.patterns) {
-                if (pattern.operator === 'regex') {
-                    try {
-                        new RegExp(pattern.value, 'i')
-                    } catch {
-                        regexValid = false
-                        console.warn(`Rule ${rule.ruleId}: regex compilation failed for pattern: ${pattern.value.slice(0, 50)}`)
-                        break
-                    }
-                }
-            }
-            if (!regexValid) continue
-
-            validRules.push(rule)
-        }
+        const validRules = validateDynamicRules(rulesData.rules)
 
         // Step 6: Store validated rules
         state.updateRules(validRules, rulesData.version, rulesFetchUrl)

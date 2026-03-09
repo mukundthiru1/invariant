@@ -1,0 +1,26 @@
+{
+  "name": "@santh/mcp-server",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "MCP server exposing Santh security scanning tools.",
+  "bin": {
+    "santh-mcp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "@santh/invariant-engine": "*",
+    "@modelcontextprotocol/sdk": "^1.17.4",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "typescript": "^5.7.0"
+  },
+  "license": "MIT"
+}

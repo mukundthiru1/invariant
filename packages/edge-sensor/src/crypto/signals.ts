@@ -1,6 +1,10 @@
 import type { EncryptedSignalBundle, SignalBundle } from '../../../engine/src/crypto/types.js'
 import { decode, encode, fromBase64Url, toBase64Url } from '../../../engine/src/crypto/encoding.js'
 
+function asBufferSource(bytes: Uint8Array<ArrayBufferLike>): Uint8Array<ArrayBuffer> {
+    return bytes as Uint8Array<ArrayBuffer>
+}
+
 /**
  * Encrypt a signal bundle using ephemeral X25519 ECDH, HKDF-SHA256 key derivation,
  * and AES-256-GCM with anonymous daily token bound as AAD.
@@ -23,7 +27,7 @@ export async function encryptSignal(
 
     const centralPublicKey = await crypto.subtle.importKey(
         'raw',
-        fromBase64Url(centralPublicKeyB64),
+        asBufferSource(fromBase64Url(centralPublicKeyB64)),
         { name: 'X25519' },
         false,
         [],
@@ -47,8 +51,8 @@ export async function encryptSignal(
         {
             name: 'HKDF',
             hash: 'SHA-256',
-            salt: encode('invariant-signal-salt-v2'),
-            info: encode(`santh-signal-v2:${token}`),
+            salt: asBufferSource(encode('invariant-signal-salt-v2')),
+            info: asBufferSource(encode(`santh-signal-v2:${token}`)),
         },
         hkdfKey,
         { name: 'AES-GCM', length: 256 },
@@ -61,9 +65,9 @@ export async function encryptSignal(
     const plaintext = encode(JSON.stringify(bundle))
 
     const ciphertext = await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv, additionalData: aad },
+        { name: 'AES-GCM', iv: asBufferSource(iv), additionalData: asBufferSource(aad) },
         encKey,
-        plaintext,
+        asBufferSource(plaintext),
     )
 
     const ephemeralPublicKey = await crypto.subtle.exportKey('raw', ephemeral.publicKey) as ArrayBuffer
@@ -87,7 +91,7 @@ export async function decryptSignal(
 ): Promise<SignalBundle> {
     const centralPrivateKey = await crypto.subtle.importKey(
         'raw',
-        fromBase64Url(centralPrivateKeyB64),
+        asBufferSource(fromBase64Url(centralPrivateKeyB64)),
         { name: 'X25519' },
         false,
         ['deriveBits'],
@@ -95,7 +99,7 @@ export async function decryptSignal(
 
     const ephemeralPublicKey = await crypto.subtle.importKey(
         'raw',
-        fromBase64Url(encrypted.ephemeralPublicKey),
+        asBufferSource(fromBase64Url(encrypted.ephemeralPublicKey)),
         { name: 'X25519' },
         false,
         [],
@@ -121,8 +125,8 @@ export async function decryptSignal(
         {
             name: 'HKDF',
             hash: 'SHA-256',
-            salt: encode('invariant-signal-salt-v2'),
-            info: encode(`santh-signal-v2:${token}`),
+            salt: asBufferSource(encode('invariant-signal-salt-v2')),
+            info: asBufferSource(encode(`santh-signal-v2:${token}`)),
         },
         hkdfKey,
         { name: 'AES-GCM', length: 256 },
@@ -133,11 +137,11 @@ export async function decryptSignal(
     const plaintext = await crypto.subtle.decrypt(
         {
             name: 'AES-GCM',
-            iv: fromBase64Url(encrypted.iv),
-            additionalData: encode(token),
+            iv: asBufferSource(fromBase64Url(encrypted.iv)),
+            additionalData: asBufferSource(encode(token)),
         },
         decKey,
-        fromBase64Url(encrypted.ciphertext),
+        asBufferSource(fromBase64Url(encrypted.ciphertext)),
     )
 
     // Prototype pollution guard — decrypted content is a trust boundary

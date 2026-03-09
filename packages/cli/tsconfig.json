@@ -13,11 +13,13 @@
         "resolveJsonModule": true,
         "declaration": false,
         "sourceMap": true,
+        "types": ["node"],
         "outDir": "./dist",
         "rootDir": "../../packages"
     },
     "include": [
         "src/**/*",
+        "../engine/src/**/*",
         "../agent/src/**/*",
         "../dashboard/src/**/*"
     ]

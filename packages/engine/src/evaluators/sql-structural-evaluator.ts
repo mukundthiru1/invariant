@@ -28,6 +28,7 @@ export interface SqlStructuralDetection {
     | 'union_extraction'
     | 'stacked_execution'
     | 'time_oracle'
+    | 'time_based_blind'
     | 'error_oracle'
     | 'comment_truncation'
     detail: string
@@ -412,6 +413,68 @@ function detectCommentTruncation(tokens: SqlToken[]): SqlStructuralDetection[] {
 }
 
 
+// ── Time-based blind (regex) ───────────────────────────────────────
+//
+// Fast regex checks for time-delay SQL primitives before tokenization.
+// Complements token-based detectTimeOracle for payloads like SLEEP(5), WAITFOR DELAY 0:0:5.
+const TIME_BASED_BLIND_PATTERNS = [
+    /\bsleep\s*\(\s*\d+(?:\.\d+)?\s*\)/i,
+    /\bbenchmark\s*\(\s*\d+\s*,/i,
+    /\bpg_sleep\s*\(\s*\d+(?:\.\d+)?\s*\)/i,
+    /\bpg_sleep_for\b/i,
+    /\bwaitfor\s+delay\b/i,
+    /\bwaitfor\s+time\b/i,
+] as const
+const PG_DOLLAR_QUOTE_RE = /\$\$[^\$]*(?:select|union|insert|drop|exec)[^\$]*\$\$/i
+const PG_TAGGED_DOLLAR_QUOTE_RE = /\$\w*\$[^\$]*(?:select|union|insert)[^\$]*\$\w*\$/i
+const BRACE_EXPANSION_SQL_RE = /\{[A-Za-z,]+SELECT[A-Za-z,]*\}|\$\{IFS\}[A-Za-z]/i
+
+function classifyBypassDetection(match: string): SqlStructuralDetection['type'] {
+    if (/(?:select|union)/i.test(match)) return 'union_extraction'
+    if (/(?:insert|drop|exec)/i.test(match)) return 'stacked_execution'
+    return 'string_termination'
+}
+
+function detectSqlBypassObfuscation(input: string): SqlStructuralDetection[] {
+    const detections: SqlStructuralDetection[] = []
+    const regexes = [PG_DOLLAR_QUOTE_RE, PG_TAGGED_DOLLAR_QUOTE_RE, BRACE_EXPANSION_SQL_RE]
+
+    for (const re of regexes) {
+        const match = input.match(re)
+        if (!match) continue
+        detections.push({
+            type: classifyBypassDetection(match[0]),
+            detail: `SQL bypass obfuscation pattern detected: ${match[0]}`,
+            position: input.search(re),
+            confidence: 0.90,
+        })
+    }
+
+    return detections
+}
+
+export function detectTimeBasedBlind(decoded: string): { type: 'time_based_blind'; confidence: number; evidence: string } | null {
+    const match = findTimeBasedBlindMatch(decoded)
+    if (!match) return null
+    return {
+        type: 'time_based_blind',
+        confidence: 0.88,
+        evidence: match[0],
+    }
+}
+
+function findTimeBasedBlindMatch(input: string): RegExpMatchArray | null {
+    for (const pattern of TIME_BASED_BLIND_PATTERNS) {
+        const match = input.match(pattern)
+        if (match) return match
+    }
+    return null
+}
+
+export function detectTimeBasedBlindSqli(input: string): boolean {
+    return findTimeBasedBlindMatch(input) !== null
+}
+
 // ── Public API ───────────────────────────────────────────────────
 
 /**
@@ -423,6 +486,30 @@ function detectCommentTruncation(tokens: SqlToken[]): SqlStructuralDetection[] {
 export function detectSqlStructural(input: string): SqlStructuralDetection[] {
     const allDetections: SqlStructuralDetection[] = []
     const seen = new Set<string>()
+    const hasTimeBasedBlindSqli = detectTimeBasedBlindSqli(input)
+
+    const bypassDetections = detectSqlBypassObfuscation(input)
+    for (const detection of bypassDetections) {
+        const key = `${detection.type}:${detection.detail}`
+        if (!seen.has(key)) {
+            seen.add(key)
+            allDetections.push(detection)
+        }
+    }
+
+    const timeBasedBlind = detectTimeBasedBlind(input)
+    if (timeBasedBlind) {
+        const key = `time_based_blind:${timeBasedBlind.evidence}`
+        if (!seen.has(key)) {
+            seen.add(key)
+            allDetections.push({
+                type: 'time_based_blind',
+                detail: timeBasedBlind.evidence,
+                position: Math.max(0, input.toLowerCase().indexOf(timeBasedBlind.evidence.toLowerCase())),
+                confidence: Math.max(0.85, timeBasedBlind.confidence),
+            })
+        }
+    }
 
     for (const variant of stripInjectionPrefix(input)) {
         const tokens = sqlTokenize(variant)
@@ -460,6 +547,14 @@ export function detectSqlStructural(input: string): SqlStructuralDetection[] {
                     }
                 }
             } catch { /* never let L2 crash the pipeline */ }
+        }
+    }
+
+    if (hasTimeBasedBlindSqli) {
+        for (const detection of allDetections) {
+            if (detection.type === 'time_oracle' || detection.type === 'time_based_blind') {
+                detection.confidence = Math.max(0.85, detection.confidence)
+            }
         }
     }
 

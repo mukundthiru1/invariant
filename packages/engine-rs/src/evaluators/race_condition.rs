@@ -272,7 +272,9 @@ impl L2Evaluator for RaceConditionEvaluator {
     }
 
     fn detect(&self, input: &str) -> Vec<L2Detection> {
-        let mut dets = evaluate_race_condition(input).into_iter().collect::<Vec<_>>();
+        let mut dets = evaluate_race_condition(input)
+            .into_iter()
+            .collect::<Vec<_>>();
         let decoded = crate::encoding::multi_layer_decode(input).fully_decoded;
 
         static TOCTOU_SESSION_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
@@ -313,12 +315,125 @@ impl L2Evaluator for RaceConditionEvaluator {
             });
         }
 
+        // rapid markers similar to evaluate_race_condition
+        let rapid_markers = [
+            "parallel",
+            "concurrent",
+            "simultaneous",
+            "race",
+            "burst",
+            "immediately",
+            "rapid",
+            "async",
+        ];
+
+        // Detect OAuth/JWT token reuse across concurrent requests
+        static AUTH_BEARER_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?im)authorization\s*:\s*bearer\s+([A-Za-z0-9\-_.=]+)").unwrap()
+        });
+        let mut tokens: Vec<String> = Vec::new();
+        for cap in AUTH_BEARER_RE.captures_iter(&decoded) {
+            if let Some(m) = cap.get(1) {
+                tokens.push(m.as_str().to_string());
+            }
+        }
+        if tokens.len() >= 2 {
+            // count duplicates
+            tokens.sort();
+            let mut dup_count = 0usize;
+            let mut i = 0usize;
+            while i + 1 < tokens.len() {
+                if tokens[i] == tokens[i + 1] {
+                    dup_count += 1;
+                    // skip over a group of identical tokens
+                    let cur = tokens[i].clone();
+                    while i < tokens.len() && tokens[i] == cur {
+                        i += 1;
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+            let has_nonce_or_timestamp = decoded.to_lowercase().contains("nonce")
+                || decoded.to_lowercase().contains("timestamp")
+                || rapid_markers
+                    .iter()
+                    .any(|m| decoded.to_lowercase().contains(m));
+            if dup_count >= 1 && has_nonce_or_timestamp {
+                dets.push(L2Detection {
+                    detection_type: "race_token_reuse".into(),
+                    confidence: 0.82,
+                    detail: "Repeated bearer token usage across concurrent requests indicates token-reuse race".into(),
+                    position: decoded.find("authorization").unwrap_or(0),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::SemanticEval,
+                        matched_input: preview(&decoded),
+                        interpretation: "Same bearer token appearing in multiple near-simultaneous requests suggests token reuse / replay across concurrent requests, which may allow replay or double-use of privileged tokens".into(),
+                        offset: decoded.find("authorization").unwrap_or(0),
+                        property: "Short-lived tokens, nonce usage, and strict replay prevention must be enforced; multi-use of bearer tokens must be treated as suspicious".into(),
+                    }],
+                });
+            }
+        }
+
+        // Inventory check-then-reserve TOCTOU pattern for limited stock
+        static INVENTORY_TOCTOU_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:inventory|stock)[^;{]{0,80}(?:check|available|count|quantity)[^;{]{0,120}(?:reserve|hold|allocate|deduct|decrement|confirm)").unwrap()
+        });
+        if let Some(m) = INVENTORY_TOCTOU_RE.find(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "race_inventory_toctou".into(),
+                confidence: 0.84,
+                detail: "Inventory check-then-reserve pattern indicates TOCTOU risk for limited stock".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::SemanticEval,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation: "Checking inventory availability and then reserving/confirming without atomic reservation creates a race where multiple consumers can all believe stock is available".into(),
+                    offset: m.start(),
+                    property: "Use atomic reservations (DB transactions with SELECT FOR UPDATE, row-level locks, or inventory decrement primitives) to avoid check-then-confirm races".into(),
+                }],
+            });
+        }
+
+        // Gift card balance rapid-redeem race
+        static GIFT_CARD_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"(?i)(?:gift[_\s-]?card|giftcard)[^;{]{0,80}balance[^;{]{0,80}(?:check|available|sufficient|verify)[^;{]{0,80}(?:redeem|use|apply|deduct|debit|consume)").unwrap()
+        });
+        if let Some(m) = GIFT_CARD_RE.find(&decoded) {
+            // require rapid/concurrent signal to raise confidence
+            if rapid_markers
+                .iter()
+                .any(|p| decoded.to_lowercase().contains(p))
+            {
+                dets.push(L2Detection {
+                    detection_type: "race_gift_card_balance".into(),
+                    confidence: 0.78,
+                    detail: "Gift card balance check followed by redeem without atomic guard — rapid requests may double-spend balance".into(),
+                    position: m.start(),
+                    evidence: vec![ProofEvidence {
+                        operation: EvidenceOperation::SemanticEval,
+                        matched_input: m.as_str().to_owned(),
+                        interpretation: "Non-atomic gift-card balance checks followed by redeems in rapid succession create race windows enabling multiple redemptions".into(),
+                        offset: m.start(),
+                        property: "Treat gift-card balance decrements as atomic operations; use database transactions or ledger entries with idempotency keys".into(),
+                    }],
+                });
+            }
+        }
+
         dets
     }
 
     fn map_class(&self, detection_type: &str) -> Option<InvariantClass> {
         match detection_type {
-            "race_condition" | "race_condition_toctou" | "race_toctou_session" | "race_limit_bypass_parallel" => Some(InvariantClass::ApiMassEnum),
+            "race_condition"
+            | "race_condition_toctou"
+            | "race_toctou_session"
+            | "race_limit_bypass_parallel" => Some(InvariantClass::ApiMassEnum),
+            "race_token_reuse" | "race_inventory_toctou" | "race_gift_card_balance" => {
+                Some(InvariantClass::ApiMassEnum)
+            }
             _ => None,
         }
     }
@@ -343,10 +458,9 @@ mod tests {
         let det = evaluate_race_condition(input).expect("expected race condition detection");
         assert_eq!(det.detection_type, "race_condition");
         assert_eq!(det.confidence, 0.55);
-        assert!(
-            det.detail
-                .contains("If-Match without lock/if-unmodified guard")
-        );
+        assert!(det
+            .detail
+            .contains("If-Match without lock/if-unmodified guard"));
     }
 
     #[test]
@@ -354,10 +468,9 @@ mod tests {
         let input = "POST /wallet/withdraw amount=500 parallel=true transfer=token";
         let det = evaluate_race_condition(input).expect("expected double-spend detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(
-            det.detail
-                .contains("double-spend transfer/withdraw pattern")
-        );
+        assert!(det
+            .detail
+            .contains("double-spend transfer/withdraw pattern"));
     }
 
     #[test]
@@ -375,10 +488,9 @@ mod tests {
         let input = "POST /checkout coupon=SPRING2026 concurrent=true\r\nX-Request-Id: 10\r\nX-Request-Id: 11\r\n";
         let det = evaluate_race_condition(input).expect("expected limit bypass race detection");
         assert_eq!(det.confidence, 0.75);
-        assert!(
-            det.detail
-                .contains("coupon/voucher/discount parallel abuse")
-        );
+        assert!(det
+            .detail
+            .contains("coupon/voucher/discount parallel abuse"));
     }
 
     #[test]
@@ -386,10 +498,9 @@ mod tests {
         let input = "POST /auth simultaneous=true login session-id=abc logout session-id=abc";
         let det = evaluate_race_condition(input).expect("expected session race detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(
-            det.detail
-                .contains("session race between login/logout/session-create")
-        );
+        assert!(det
+            .detail
+            .contains("session race between login/logout/session-create"));
     }
 
     #[test]
@@ -405,10 +516,9 @@ mod tests {
         let input = "POST /upload multipart/form-data upload=file.jpg access('/tmp/file.jpg'); scan later()";
         let det = evaluate_race_condition(input).expect("expected upload race detection");
         assert_eq!(det.confidence, 0.55);
-        assert!(
-            det.detail
-                .contains("file upload accessed before validation")
-        );
+        assert!(det
+            .detail
+            .contains("file upload accessed before validation"));
     }
 
     #[test]
@@ -417,10 +527,9 @@ mod tests {
         let det = evaluate_race_condition(input).expect("expected correlated race detection");
         assert_eq!(det.confidence, 0.75);
         assert!(det.detail.contains("sequential X-Request-Id values"));
-        assert!(
-            det.detail
-                .contains("double-spend transfer/withdraw pattern")
-        );
+        assert!(det
+            .detail
+            .contains("double-spend transfer/withdraw pattern"));
     }
 
     #[test]
@@ -471,15 +580,53 @@ mod tests {
     fn detects_race_toctou_session() {
         let eval = RaceConditionEvaluator;
         let dets = eval.detect("session.get('user') if check(s) session.set('user', s)");
-        assert!(dets.iter().any(|d| d.detection_type == "race_toctou_session"));
-        assert_eq!(eval.map_class("race_toctou_session"), Some(InvariantClass::ApiMassEnum));
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_toctou_session"));
+        assert_eq!(
+            eval.map_class("race_toctou_session"),
+            Some(InvariantClass::ApiMassEnum)
+        );
     }
 
     #[test]
     fn detects_race_limit_bypass_parallel() {
         let eval = RaceConditionEvaluator;
         let dets = eval.detect("balance check enough then deduct");
-        assert!(dets.iter().any(|d| d.detection_type == "race_limit_bypass_parallel"));
-        assert_eq!(eval.map_class("race_limit_bypass_parallel"), Some(InvariantClass::ApiMassEnum));
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_limit_bypass_parallel"));
+        assert_eq!(
+            eval.map_class("race_limit_bypass_parallel"),
+            Some(InvariantClass::ApiMassEnum)
+        );
+    }
+
+    #[test]
+    fn detects_token_reuse_race() {
+        let eval = RaceConditionEvaluator;
+        let input = "POST /api Authorization: Bearer ABC.DEF.GHI\r\nAuthorization: Bearer ABC.DEF.GHI\r\nnonce=123 parallel=true";
+        let dets = eval.detect(input);
+        assert!(dets.iter().any(|d| d.detection_type == "race_token_reuse"));
+    }
+
+    #[test]
+    fn detects_inventory_toctou() {
+        let eval = RaceConditionEvaluator;
+        let input = "POST /checkout inventory check available then reserve item";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_inventory_toctou"));
+    }
+
+    #[test]
+    fn detects_gift_card_balance_race() {
+        let eval = RaceConditionEvaluator;
+        let input = "POST /redeem gift_card balance check redeem parallel=true";
+        let dets = eval.detect(input);
+        assert!(dets
+            .iter()
+            .any(|d| d.detection_type == "race_gift_card_balance"));
     }
 }

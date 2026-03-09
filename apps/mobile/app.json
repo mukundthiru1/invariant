@@ -1,0 +1,39 @@
+{
+  "expo": {
+    "name": "Santh",
+    "slug": "santh-security",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "io.santh.security",
+      "infoPlist": {
+        "NSFaceIDUsageDescription": "Authenticate to access your security dashboard",
+        "NSCameraUsageDescription": "Scan your Santh sensor pairing QR code"
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#000000"
+      },
+      "edgeToEdgeEnabled": true,
+      "package": "io.santh.security"
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-local-authentication",
+      "expo-notifications",
+      "expo-camera"
+    ]
+  }
+}
