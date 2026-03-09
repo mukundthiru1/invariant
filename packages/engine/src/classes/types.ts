@@ -177,6 +177,7 @@ export type InvariantClass =
 
     // Supply-chain threats
     | 'dependency_confusion'
+    | 'dependency_hijacking'
     | 'postinstall_injection'
     | 'env_exfiltration'
     | 'npm_dependency_confusion'
@@ -206,6 +207,7 @@ export type InvariantClass =
     // Cache attacks
     | 'cache_poisoning'
     | 'cache_deception'
+    | 'web_cache_deception'
 
     // API logic abuse
     | 'bola_idor'
@@ -294,6 +296,10 @@ export type InvariantClass =
     | 'jsonp_hijacking'
     | 'response_header_injection'
     | 'csv_injection'
+    | 'git_history_tampering'
+    | 'dns_rebinding'
+    | 'web_cache_deception_attack'
+    | 'dependency_hijacking_postinstall'
 
 
 // ── Attack Category ───────────────────────────────────────────────

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { detectSSTI } from './ssti-evaluator'
+import { detectSSTI } from './ssti-evaluator.js'
 
 describe('ssti-evaluator advanced detections', () => {
     it('detects polyglot math probes in Jinja-like braces', () => {

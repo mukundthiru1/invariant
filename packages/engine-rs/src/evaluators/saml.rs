@@ -269,6 +269,15 @@ impl L2Evaluator for SamlEvaluator {
         if let Some(det) = detect_saml_attribute_manipulation(&decoded) {
             dets.push(det);
         }
+        if let Some(det) = detect_saml_relay_state_injection(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_saml_multiple_signature_elements(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_saml_attribute_value_overflow(&decoded) {
+            dets.push(det);
+        }
 
         dets
     }
@@ -290,7 +299,10 @@ impl L2Evaluator for SamlEvaluator {
             | "saml_comment_injection_advanced"
             | "saml_xxe_in_assertion"
             | "saml_signature_exclusion"
-            | "saml_attribute_manipulation" => Some(InvariantClass::SamlBypass),
+            | "saml_attribute_manipulation"
+            | "saml_relay_state_injection"
+            | "saml_multiple_signature_elements"
+            | "saml_attribute_value_overflow" => Some(InvariantClass::SamlBypass),
             _ => None,
         }
     }
@@ -471,6 +483,76 @@ fn detect_saml_attribute_manipulation(input: &str) -> Option<RustDetection> {
             interpretation: "SAML attribute statement includes privilege-escalation markers (admin/superuser/role/privilege), which can indicate attribute manipulation.".into(),
             offset: m.start(),
             property: "Authorization attributes from SAML must be schema-validated and constrained to trusted IdP-issued claims.".into(),
+        }],
+    })
+}
+
+fn detect_saml_relay_state_injection(input: &str) -> Option<RustDetection> {
+    let relay_re = Regex::new(
+        r#"(?i)(?:^|[?&\s])relaystate\s*=\s*(https?%3a%2f%2f|https?://|//|%2f%2f)[^&\s"'<>]+"#,
+    )
+    .expect("valid regex");
+    let m = relay_re.find(input)?;
+    Some(L2Detection {
+        detection_type: "saml_relay_state_injection".into(),
+        confidence: 0.89,
+        detail: "SAML RelayState carries absolute/externally redirectable URL".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::ContextEscape,
+            matched_input: m.as_str().to_string(),
+            interpretation: "RelayState appears attacker-controlled and points to an external location, consistent with SAML post-auth open-redirect abuse.".into(),
+            offset: m.start(),
+            property: "RelayState must be integrity-protected and restricted to relative or allowlisted destinations.".into(),
+        }],
+    })
+}
+
+fn detect_saml_multiple_signature_elements(input: &str) -> Option<RustDetection> {
+    let sig_re = Regex::new(r#"(?is)<(?:\w+:)?Signature\b"#).expect("valid regex");
+    let sig_count = sig_re.find_iter(input).count();
+    if sig_count < 2 {
+        return None;
+    }
+    Some(L2Detection {
+        detection_type: "saml_multiple_signature_elements".into(),
+        confidence: 0.92,
+        detail: format!(
+            "Multiple Signature elements ({}) in one SAML payload — wrapping ambiguity risk",
+            sig_count
+        ),
+        position: 0,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: input[..input.len().min(220)].to_string(),
+            interpretation: "Multiple signature nodes can create verification ambiguity where one signed subtree is validated while another attacker-controlled subtree is consumed.".into(),
+            offset: 0,
+            property: "Enforce a strict signature profile: expected count/location and exact binding to consumed assertion.".into(),
+        }],
+    })
+}
+
+fn detect_saml_attribute_value_overflow(input: &str) -> Option<RustDetection> {
+    let value_re =
+        Regex::new(r#"(?is)<(?:\w+:)?AttributeValue\b[^>]*>\s*([^<]{2048,})\s*</(?:\w+:)?AttributeValue>"#)
+            .expect("valid regex");
+    let caps = value_re.captures(input)?;
+    let content = caps.get(1)?;
+    let full = caps.get(0)?;
+    Some(L2Detection {
+        detection_type: "saml_attribute_value_overflow".into(),
+        confidence: 0.86,
+        detail: format!(
+            "SAML AttributeValue contains unusually long string ({} bytes)",
+            content.as_str().len()
+        ),
+        position: full.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: full.as_str()[..full.as_str().len().min(220)].to_string(),
+            interpretation: "Excessively long attribute value may target parser/resource limits or downstream authorization logic through overflow-style payload inflation.".into(),
+            offset: full.start(),
+            property: "Enforce per-attribute length limits and reject oversized SAML claim values.".into(),
         }],
     })
 }
@@ -662,5 +744,42 @@ mod tests {
     fn detects_saml_attribute_manipulation_negative() {
         let input = r#"<saml:Assertion xmlns:saml="urn:oasis:names:tc:SAML:2.0:assertion"><saml:Attribute Name="department"><saml:AttributeValue>engineering</saml:AttributeValue></saml:Attribute></saml:Assertion>"#;
         assert!(detect_saml_attribute_manipulation(input).is_none());
+    }
+
+    #[test]
+    fn detects_saml_relay_state_injection() {
+        let eval = SamlEvaluator;
+        let input = "POST /sso HTTP/1.1\r\n\r\nSAMLResponse=abc&RelayState=https://evil.example/redirect";
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "saml_relay_state_injection")
+        );
+    }
+
+    #[test]
+    fn detects_saml_multiple_signature_elements() {
+        let eval = SamlEvaluator;
+        let input = r#"<samlp:Response><ds:Signature>one</ds:Signature><saml:Assertion><ds:Signature>two</ds:Signature></saml:Assertion></samlp:Response>"#;
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "saml_multiple_signature_elements")
+        );
+    }
+
+    #[test]
+    fn detects_saml_attribute_value_overflow() {
+        let eval = SamlEvaluator;
+        let long_value = "A".repeat(2300);
+        let input = format!(
+            r#"<saml:Assertion><saml:Attribute Name="blob"><saml:AttributeValue>{}</saml:AttributeValue></saml:Attribute></saml:Assertion>"#,
+            long_value
+        );
+        let dets = eval.detect(&input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "saml_attribute_value_overflow")
+        );
     }
 }

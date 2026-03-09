@@ -254,6 +254,9 @@ impl L2Evaluator for UploadEvaluator {
                             property: "Filenames must be stripped of null bytes before extension validation. The storage path must not contain null terminators.".into(),
                         }],
                     });
+                    if let Some(det) = detect_null_byte_filename_injection(&decoded) {
+                        dets.push(det);
+                    }
                     return dets;
                 }
             }
@@ -455,6 +458,18 @@ impl L2Evaluator for UploadEvaluator {
         if let Some(det) = detect_archive_bomb_upload(&decoded) {
             dets.push(det);
         }
+        if let Some(det) = detect_mime_type_confusion_bypass(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_null_byte_filename_injection(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_php_exif_metadata_pattern(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_multipart_boundary_path_traversal(&decoded) {
+            dets.push(det);
+        }
 
         dets
     }
@@ -474,10 +489,145 @@ impl L2Evaluator for UploadEvaluator {
             | "upload_polyglot_file"
             | "upload_zip_slip_in_archive"
             | "upload_svg_upload_xss"
-            | "upload_archive_bomb" => Some(InvariantClass::MaliciousUpload),
+            | "upload_archive_bomb"
+            | "upload_mime_type_confusion_bypass"
+            | "upload_null_byte_filename_injection"
+            | "upload_php_exif_metadata"
+            | "upload_multipart_boundary_traversal" => Some(InvariantClass::MaliciousUpload),
             _ => None,
         }
     }
+}
+
+fn detect_mime_type_confusion_bypass(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let ct_re = regex::Regex::new(r#"(?im)^content-type\s*:\s*([a-z0-9._+-]+/[a-z0-9._+-]+)"#).ok()?;
+    let file_re = regex::Regex::new(r#"(?i)filename\s*=\s*["']?([^"'\r\n;]+)"#).ok()?;
+
+    let content_type = ct_re
+        .captures(input)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_ascii_lowercase())?;
+    let filename = file_re
+        .captures(input)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str().to_ascii_lowercase())?;
+
+    let safe_ct = content_type.starts_with("image/")
+        || content_type.starts_with("text/")
+        || content_type == "application/pdf";
+    if !safe_ct {
+        return None;
+    }
+    let has_exec_ext = EXECUTABLE_EXTENSIONS.iter().any(|ext| filename.ends_with(ext));
+    if !has_exec_ext {
+        return None;
+    }
+
+    let pos = lower.find("content-type").unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "upload_mime_type_confusion_bypass".into(),
+        confidence: 0.89,
+        detail: "MIME type confusion: benign Content-Type with executable filename extension".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::ContextEscape,
+            matched_input: input[pos..input.len().min(pos + 180)].to_string(),
+            interpretation: "Payload declares a benign MIME type while filename extension is server-executable, a common upload filter bypass when validation trusts only Content-Type.".into(),
+            offset: pos,
+            property: "Validate extension, MIME type, and magic bytes together; reject mismatches with executable extensions.".into(),
+        }],
+    })
+}
+
+fn detect_null_byte_filename_injection(input: &str) -> Option<RustDetection> {
+    let re = regex::Regex::new(r#"(?i)filename\s*=\s*["']([^"']+)["']"#).ok()?;
+    let caps = re.captures(input)?;
+    let filename = caps.get(1)?.as_str();
+    let lower_name = filename.to_ascii_lowercase();
+    let has_null_marker = lower_name.contains("%00")
+        || lower_name.contains("%2500")
+        || lower_name.contains("\\x00")
+        || filename.contains('\0');
+    let has_trailing_safe_ext = [
+        ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".svg",
+    ]
+    .iter()
+    .any(|ext| lower_name.ends_with(ext));
+    if !(has_null_marker && has_trailing_safe_ext) {
+        return None;
+    }
+    let m = caps.get(0)?;
+    Some(RustDetection {
+        detection_type: "upload_null_byte_filename_injection".into(),
+        confidence: 0.90,
+        detail: "Null-byte injection in uploaded filename (e.g., %00.jpg)".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::ContextEscape,
+            matched_input: m.as_str().to_string(),
+            interpretation: "Encoded null byte in multipart filename can truncate parser/viewed extension mismatch and bypass filename-based validation.".into(),
+            offset: m.start(),
+            property: "Reject null-byte sequences (%00, \\x00, double-encoded variants) in upload metadata before validation.".into(),
+        }],
+    })
+}
+
+fn detect_php_exif_metadata_pattern(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let has_exif_marker = lower.contains("exif")
+        || lower.contains("comment:")
+        || lower.contains("usercomment")
+        || lower.contains("xpcomment")
+        || lower.contains("image description");
+    let has_php_marker = lower.contains("<?php")
+        || lower.contains("<?= ")
+        || lower.contains("<?=\n")
+        || lower.contains("phpinfo(")
+        || lower.contains("eval($_")
+        || lower.contains("system($_");
+    if !(has_exif_marker && has_php_marker) {
+        return None;
+    }
+    let pos = lower
+        .find("<?php")
+        .or_else(|| lower.find("phpinfo("))
+        .unwrap_or(0);
+    Some(RustDetection {
+        detection_type: "upload_php_exif_metadata".into(),
+        confidence: 0.88,
+        detail: "PHP payload appears embedded in EXIF-style metadata fields".into(),
+        position: pos,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: input[pos..input.len().min(pos + 160)].to_string(),
+            interpretation: "EXIF comment/metadata includes PHP execution markers, consistent with metadata-based webshell smuggling.".into(),
+            offset: pos,
+            property: "Strip metadata on upload and reject code-like tokens in EXIF fields for untrusted images.".into(),
+        }],
+    })
+}
+
+fn detect_multipart_boundary_path_traversal(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let re = regex::Regex::new(
+        r#"(?i)boundary\s*=\s*["']?[^"'\r\n;]*?(?:\.\./|\.\.\\|%2e%2e%2f|%2e%2e%5c|..%2f|..%5c)[^"'\r\n;]*"#,
+    )
+    .ok()?;
+    let m = re.find(input)?;
+    Some(RustDetection {
+        detection_type: "upload_multipart_boundary_traversal".into(),
+        confidence: 0.86,
+        detail: "Path traversal token found in multipart boundary parameter".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::ContextEscape,
+            matched_input: m.as_str().to_string(),
+            interpretation: "Multipart boundary value contains traversal segments, indicating parser confusion or boundary smuggling attempt.".into(),
+            offset: m.start(),
+            property: "Enforce strict boundary character policy and reject traversal encodings in multipart headers.".into(),
+        }],
+    })
 }
 
 #[cfg(test)]
@@ -617,5 +767,46 @@ mod tests {
         let eval = UploadEvaluator;
         let dets = eval.detect("compressed size: 1024 bytes; uncompressed size: 2147483648 bytes");
         assert!(dets.iter().any(|d| d.detection_type == "upload_archive_bomb"));
+    }
+
+    #[test]
+    fn detects_mime_type_confusion_bypass() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("Content-Type: image/jpeg\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.php\"");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "upload_mime_type_confusion_bypass")
+        );
+    }
+
+    #[test]
+    fn detects_null_byte_filename_injection_pattern() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("Content-Disposition: form-data; name=\"file\"; filename=\"shell.php%00.jpg\"");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "upload_null_byte_filename_injection")
+        );
+    }
+
+    #[test]
+    fn detects_php_exif_metadata_pattern() {
+        let eval = UploadEvaluator;
+        let dets = eval.detect("EXIF UserComment: <?php system($_GET['cmd']); ?>");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "upload_php_exif_metadata")
+        );
+    }
+
+    #[test]
+    fn detects_multipart_boundary_path_traversal() {
+        let eval = UploadEvaluator;
+        let dets =
+            eval.detect("Content-Type: multipart/form-data; boundary=----WebKitFormBoundary..%2f..%2fetc");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "upload_multipart_boundary_traversal")
+        );
     }
 }

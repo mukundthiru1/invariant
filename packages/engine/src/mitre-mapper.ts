@@ -409,6 +409,12 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     xml_external_entity_parameter: { invariantClass: 'xml_external_entity_parameter', techniques: [T1190], rationale: 'Parameter-entity declarations are common XXE exploitation primitives' },
     file_upload_polyglot: { invariantClass: 'file_upload_polyglot', techniques: [T1190], rationale: 'Polyglot file payloads bypass upload validation to exploit parser differentials' },
     rate_limit_bypass_header: { invariantClass: 'rate_limit_bypass_header', techniques: [T1499], rationale: 'Header spoofing patterns help evade per-source throttling and sustain DoS traffic' },
+
+    // Wave 4 new classes
+    dns_rebinding: { invariantClass: 'dns_rebinding', techniques: [T1557], rationale: 'DNS rebinding attacks bypass SOP to reach internal services via browser-controlled DNS TTL manipulation' },
+    web_cache_deception: { invariantClass: 'web_cache_deception', techniques: [T1185], rationale: 'Static-extension path tricks CDNs into caching sensitive responses accessible to attackers' },
+    dependency_hijacking: { invariantClass: 'dependency_hijacking', techniques: [T1195_001], rationale: 'Internal package names published to public registries hijack build pipelines via confusion attacks' },
+    git_history_tampering: { invariantClass: 'git_history_tampering', techniques: [T1070], rationale: 'Force-push, rebase, and filter-branch rewrites destroy forensic audit history and conceal malicious commits' },
 }
 
 // T1552 and T1070 declared above the map where they are referenced

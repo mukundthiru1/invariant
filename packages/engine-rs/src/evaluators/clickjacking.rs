@@ -153,6 +153,15 @@ impl L2Evaluator for ClickjackingEvaluator {
         if let Some(det) = detect_touch_event_hijack(input) {
             dets.push(det);
         }
+        if let Some(det) = detect_ui_redressing_css_manipulation(input) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_iframe_allow_attribute_bypass(input) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_cursorjacking_override(input) {
+            dets.push(det);
+        }
 
         dets
     }
@@ -167,7 +176,10 @@ impl L2Evaluator for ClickjackingEvaluator {
             | "clickjacking_csp_frame_ancestors_bypass"
             | "clickjacking_double_framing_attack"
             | "clickjacking_drag_drop_exfil"
-            | "clickjacking_touch_event_hijack" => Some(InvariantClass::ClickjackingVuln),
+            | "clickjacking_touch_event_hijack"
+            | "clickjacking_ui_redressing_css"
+            | "clickjacking_iframe_allow_bypass"
+            | "clickjacking_cursorjacking" => Some(InvariantClass::ClickjackingVuln),
             _ => None,
         }
     }
@@ -370,6 +382,107 @@ fn detect_touch_event_hijack(input: &str) -> Option<RustDetection> {
     })
 }
 
+fn detect_ui_redressing_css_manipulation(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("<iframe") {
+        return None;
+    }
+
+    let has_opacity_hide = lower.contains("opacity:0")
+        || lower.contains("opacity: 0")
+        || lower.contains("opacity:0.")
+        || lower.contains("opacity: 0.");
+    let has_layering = lower.contains("z-index:")
+        && (lower.contains("position:absolute")
+            || lower.contains("position: absolute")
+            || lower.contains("position:fixed")
+            || lower.contains("position: fixed"));
+    let targets_sensitive_ui = lower.contains("<button")
+        || lower.contains("type=\"submit\"")
+        || lower.contains("onclick")
+        || lower.contains("/transfer")
+        || lower.contains("/payment")
+        || lower.contains("/account");
+
+    if !(has_opacity_hide && has_layering && targets_sensitive_ui) {
+        return None;
+    }
+
+    Some(RustDetection {
+        detection_type: "clickjacking_ui_redressing_css".into(),
+        confidence: 0.86,
+        detail: "UI redressing via CSS opacity and z-index layering over an iframe".into(),
+        position: 0,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: lower[..lower.len().min(220)].to_string(),
+            interpretation: "Transparent/near-transparent layers with z-index positioning can visually redress the interface while forwarding user clicks to a hidden iframe target.".into(),
+            offset: 0,
+            property: "Sensitive flows must enforce frame-ancestors restrictions and avoid overlayable transparent interaction layers.".into(),
+        }],
+    })
+}
+
+fn detect_iframe_allow_attribute_bypass(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    if !lower.contains("<iframe") || !lower.contains("allow=") {
+        return None;
+    }
+
+    let has_risky_allow = lower.contains("allow=\"*")
+        || lower.contains("allow='*")
+        || lower.contains("allow-top-navigation")
+        || lower.contains("allow-popups-to-escape-sandbox")
+        || lower.contains("allowpaymentrequest");
+    if !has_risky_allow {
+        return None;
+    }
+
+    Some(RustDetection {
+        detection_type: "clickjacking_iframe_allow_bypass".into(),
+        confidence: 0.83,
+        detail: "iframe allow attribute grants risky capabilities used in framing bypass chains".into(),
+        position: 0,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: lower[..lower.len().min(220)].to_string(),
+            interpretation: "Permissive iframe allow permissions (wildcard or navigation/escape capabilities) can expand attack surface and help bypass intended embedding isolation.".into(),
+            offset: 0,
+            property: "Use least-privilege iframe allow policies and avoid wildcard or sandbox-escape related capabilities.".into(),
+        }],
+    })
+}
+
+fn detect_cursorjacking_override(input: &str) -> Option<RustDetection> {
+    let lower = input.to_ascii_lowercase();
+    let has_cursor_hide = lower.contains("cursor:none") || lower.contains("cursor: none");
+    let has_cursor_override = lower.contains("cursor:url(")
+        || lower.contains("cursor: url(")
+        || lower.contains("!important")
+        || lower.contains("cursor:crosshair");
+    let has_overlay_context = lower.contains("<iframe")
+        || lower.contains("z-index")
+        || lower.contains("position:absolute")
+        || lower.contains("position: absolute");
+    if !(has_cursor_hide && has_cursor_override && has_overlay_context) {
+        return None;
+    }
+
+    Some(RustDetection {
+        detection_type: "clickjacking_cursorjacking".into(),
+        confidence: 0.84,
+        detail: "Cursorjacking pattern detected via hidden/replaced cursor in overlay context".into(),
+        position: 0,
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: lower[..lower.len().min(220)].to_string(),
+            interpretation: "Overriding cursor rendering can mislead click position and user intent, especially with hidden overlays or framed sensitive controls.".into(),
+            offset: 0,
+            property: "Disallow deceptive cursor overrides on security-sensitive pages and enforce anti-framing headers.".into(),
+        }],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -508,6 +621,39 @@ mod tests {
             !dets
                 .iter()
                 .any(|d| d.detection_type == "clickjacking_double_framing_attack")
+        );
+    }
+
+    #[test]
+    fn detects_ui_redressing_css_manipulation() {
+        let eval = ClickjackingEvaluator;
+        let input = r#"<button type="submit">Confirm</button><iframe src="https://bank.example/transfer" style="opacity:0;position:absolute;z-index:9999"></iframe>"#;
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "clickjacking_ui_redressing_css")
+        );
+    }
+
+    #[test]
+    fn detects_iframe_allow_attribute_bypass() {
+        let eval = ClickjackingEvaluator;
+        let input = r#"<iframe allow="fullscreen *; geolocation *; payment *; allow-top-navigation" src="https://target.example"></iframe>"#;
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "clickjacking_iframe_allow_bypass")
+        );
+    }
+
+    #[test]
+    fn detects_cursorjacking_override() {
+        let eval = ClickjackingEvaluator;
+        let input = r#"<iframe src="https://target.example/account" style="position:absolute;z-index:1000"></iframe><style>body{cursor:none}#overlay{cursor:url('fake.cur'),auto !important;}</style>"#;
+        let dets = eval.detect(input);
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "clickjacking_cursorjacking")
         );
     }
 }

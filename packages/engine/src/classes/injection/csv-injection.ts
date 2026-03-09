@@ -34,7 +34,7 @@ export const csvInjection: InvariantClassModule = {
     severity: 'high',
     calibration: { baseConfidence: 0.85 },
 
-    mitre: ['T1059'],
+    mitre: ['T1027'],
     cwe: 'CWE-1236',
 
     knownPayloads: [

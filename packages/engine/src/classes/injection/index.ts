@@ -50,7 +50,11 @@ import { websocket_origin_bypass, websocket_message_injection, websocket_dos } f
 import { cachePoisoning, cacheDeception } from './cache-poisoning.js'
 import { bolaIdor, apiMassEnum } from './api-abuse.js'
 import { csvInjection } from './csv-injection.js'
+import { gitHistoryTampering } from './git-history-tampering.js'
 import { credentialStuffing } from '../auth/index.js'
+import { webCacheDeception } from './web-cache-deception.js'
+import { dnsRebinding } from './dns-rebinding.js'
+import { dependencyHijacking } from './dependency-hijacking.js'
 import {
     xmlBombDos,
     httpVerbTampering,
@@ -127,10 +131,14 @@ export {
 export { corsOriginAbuse } from './cors.js'
 export { dependencyConfusion, postinstallInjection, envExfiltration } from './supply-chain.js'
 export { ws_injection, ws_hijack } from './websocket.js'
+export { webCacheDeception } from './web-cache-deception.js'
 export { websocket_origin_bypass, websocket_message_injection, websocket_dos } from './websocket-attacks.js'
 export { cachePoisoning, cacheDeception } from './cache-poisoning.js'
+export { dnsRebinding } from './dns-rebinding.js'
+export { dependencyHijacking } from './dependency-hijacking.js'
 export { bolaIdor, apiMassEnum } from './api-abuse.js'
 export { csvInjection } from './csv-injection.js'
+export { gitHistoryTampering } from './git-history-tampering.js'
 export {
     xmlBombDos,
     httpVerbTampering,
@@ -253,11 +261,15 @@ export const INJECTION_CLASSES: InvariantClassModule[] = [
     // Cache poisoning / deception
     cachePoisoning,
     cacheDeception,
+    webCacheDeception,
+    dnsRebinding,
+    dependencyHijacking,
     // API logic abuse
     bolaIdor,
     apiMassEnum,
     // CSV formula / DDE injection
     csvInjection,
+    gitHistoryTampering,
     // Rate-based auth abuse
     credentialStuffing,
     // Nation-state / Advanced Threats

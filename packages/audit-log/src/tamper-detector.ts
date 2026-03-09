@@ -1,6 +1,6 @@
 import type { AuditEvent, MissingCommits, TamperReport } from './types.js'
 
-type PushCommit = { id?: string }
+type PushCommit = { id?: string; sha?: string; timestamp?: string; ts?: string; message?: string; parents?: Array<{ id?: string; sha?: string }> }
 
 type PushWebhookPayload = {
   forced?: boolean

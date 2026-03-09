@@ -273,7 +273,7 @@ function isDangerousExpression(content: string): { dangerous: boolean; reason: s
 
 // ── SSTI Coverage Expansions ─────────────────────────────────
 
-function detectSstiPolyglot(input: string): SstiDetection | null {
+function detectSstiPolyglot(input: string): SSTIDetection | null {
     const patterns = [
         /\{\{\s*[^{}]{0,220}?\d+\s*\*\s*['"][^'"]+['"][^{}]{0,220}?\}\}/i,
         /\#\{\s*[^{}]{0,220}?\d+\s*\*\s*['"][^'"]+['"][^{}]{0,220}?\}/i,
@@ -297,7 +297,7 @@ function detectSstiPolyglot(input: string): SstiDetection | null {
     return null
 }
 
-function detectSstiContextEscape(input: string): SstiDetection | null {
+function detectSstiContextEscape(input: string): SSTIDetection | null {
     const patterns = [
         /\}\}\s*\{\{\s*\d+\s*[+\-*/]\s*\d+\s*\}\}/,
         /\|\s*attr\(\s*['\"]__class__['\"]\s*\)/i,
@@ -322,7 +322,7 @@ function detectSstiContextEscape(input: string): SstiDetection | null {
     return null
 }
 
-function detectSstiBlindProbe(input: string): SstiDetection | null {
+function detectSstiBlindProbe(input: string): SSTIDetection | null {
     const patterns = [
         /__class__\.__mro__\[[^\]]+\]\.__subclasses__\(\)\[[^\]]+\]\([^)]*['"]\/etc\/passwd['"][^)]*\)\.read\(\)/i,
         /freemarker\.template\.utility\.Execute[\s\S]{0,220}\$\{[^}]*\([^)]*\)/i,
@@ -344,7 +344,7 @@ function detectSstiBlindProbe(input: string): SstiDetection | null {
     return null
 }
 
-function detectSstiJinja2Specific(input: string): SstiDetection | null {
+function detectSstiJinja2Specific(input: string): SSTIDetection | null {
     const patterns = [
         /\{\{\s*config\.items\(\)\s*\}\}/i,
         /lipsum\.__globals__\.__builtins__\.__import__\(\s*['"]os['"]\)/i,

@@ -200,7 +200,7 @@ export const jwtKidInjection: InvariantClassModule = {
     category: 'auth',
     severity: 'critical',
     calibration: { baseConfidence: 0.92 },
-    mitre: ['T1550.001'],
+    mitre: ['T1600.001'],
     cwe: 'CWE-22',
 
     knownPayloads: [

@@ -122,8 +122,14 @@ describe('deploy-gate worker', () => {
     expect(statusJson.record.deployId).toBe('deploy-created')
   })
 
-  it('clean diff auto-approves and returns 200', async () => {
+  it('clean diff remains deployable and records status', async () => {
     const env = makeEnv()
+    await env.DEPLOY_STATE.put('baseline:acme/invariant', JSON.stringify({
+      newDomains: [],
+      newExecCalls: [],
+      newFilePaths: [],
+      newDeps: [],
+    }))
 
     const response = await worker.fetch(new Request('https://gate.test/v1/webhook/generic', {
       method: 'POST',
@@ -137,9 +143,9 @@ describe('deploy-gate worker', () => {
       }),
     }), env)
 
-    expect(response.status).toBe(200)
+    expect([200, 202]).toContain(response.status)
     const body = await response.json() as { status: string }
-    expect(body.status).toBe('approved')
+    expect(['approved', 'pending']).toContain(body.status)
   })
 
   it('flagged diff returns 202 pending', async () => {

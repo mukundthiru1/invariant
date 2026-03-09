@@ -3,26 +3,19 @@
  *
  * The invariant property for path traversal is:
  *   resolve(normalize(decode(input))) ESCAPES webroot
- *   ∨ input CONTAINS null_byte ∧ input CONTAINS file_extension
- *   ∨ encoding_layers(input) > 1 ∧ resolved_path ∈ SENSITIVE_FILES
+ *   ∨ input contains null-terminating byte and path context
+ *   ∨ obfuscation is required to expose traversal segments
  *
- * This module evaluates the actual path resolution instead of
- * matching "../" patterns with regex. Key advantage: it handles
- * ALL encoding combinations (double URL, Unicode, overlong UTF-8,
- * mixed slash) by fully decoding first, then resolving the path.
- *
- * Covers:
- *   - path_dotdot_escape:        resolved path escapes root directory
- *   - path_null_terminate:       null byte truncates file extension
- *   - path_encoding_bypass:      multi-layer encoding hides traversal
- *   - path_normalization_bypass: mixed slashes / dot sequences bypass checks
+ * This evaluator is structural:
+ *   1. Decodes encoding layers
+ *   2. Normalizes separators and resolves path segments
+ *   3. Applies explicit detectors for null-byte truncation, UNC, and double encoding
  */
-
 
 // ── Result Type ──────────────────────────────────────────────────
 
 export interface PathTraversalDetection {
-    type: 'dotdot_escape' | 'null_terminate' | 'encoding_bypass' | 'normalization_bypass'
+    type: 'dotdot_escape' | 'null_terminate' | 'encoding_bypass' | 'normalization_bypass' | 'windows_traversal'
     detail: string
     resolvedPath: string
     escapeDepth: number
@@ -46,44 +39,38 @@ const SENSITIVE_TARGETS = new Set([
     'web.config', 'appsettings.json', 'application.properties',
 ])
 
+const WINDOWS_TARGETS = new Set([
+    'windows/system32',
+    'windows/system32/drivers/etc/hosts',
+    'windows/win.ini',
+    'windows/system.ini',
+    'windows/config/sam',
+])
 
-// ── Multi-layer Decoder ──────────────────────────────────────────
-//
-// Attackers use multiple encoding layers to bypass WAF decoders:
-//   - URL encoding:     %2e%2e%2f  → ../
-//   - Double URL:       %252e%252e → %2e%2e → ..
-//   - Unicode:          %u002e     → .
-//   - Overlong UTF-8:   %c0%ae     → .
-//   - HTML entities:    &#46;      → .
-//
-// We decode iteratively until stable (no more decoding changes).
 
-function deepDecode(input: string, maxIterations: number = 5): { decoded: string; layers: number } {
+// ── Multi-layer Decoder ────────────────────────────────────────
+
+function deepDecode(input: string, maxIterations = 5): { decoded: string; layers: number } {
     let current = input
     let layers = 0
 
     for (let i = 0; i < maxIterations; i++) {
         let next = current
 
-        // URL decode (%XX)
+        // URL decode (`%XX`) with tolerant fallback.
         try {
             next = decodeURIComponent(next)
         } catch {
-            // Handle partial encoding: decode only valid sequences
-            next = next.replace(/%([0-9a-fA-F]{2})/g, (_, hex) => {
-                return String.fromCharCode(parseInt(hex, 16))
-            })
+            next = next.replace(/%([0-9a-fA-F]{2})/g, (_, hex) =>
+                String.fromCharCode(parseInt(hex, 16)))
         }
 
-        // Overlong UTF-8 dot: %c0%ae → . (U+002E)
-        next = next.replace(/\xc0\xae/g, '.')
-
-        // Unicode encoding: %u002e
+        // JavaScript-style `%uXXXX` escapes (`%u002e`).
         next = next.replace(/%u([0-9a-fA-F]{4})/gi, (_, hex) => {
             return String.fromCharCode(parseInt(hex, 16))
         })
 
-        // HTML entities
+        // HTML entities that can hide separators.
         next = next.replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(parseInt(dec, 10)))
         next = next.replace(/&#x([0-9a-fA-F]+);/gi, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
         next = next.replace(/&period;/gi, '.')
@@ -99,62 +86,46 @@ function deepDecode(input: string, maxIterations: number = 5): { decoded: string
 }
 
 
-// ── Path Resolver ────────────────────────────────────────────────
-//
-// The core invariant evaluation: resolve the path and determine
-// whether it escapes the root directory.
-//
-// We don't need to know the actual webroot. The property is:
-//   "Does the path contain enough '..' segments to escape
-//    whatever root directory it starts in?"
-//
-// Resolution algorithm:
-//   1. Normalize all slashes (\ → /)
-//   2. Split into segments
-//   3. Walk segments: '.' stays, '..' pops, else push
-//   4. Count how many '..' segments escape above index 0
+// ── Path Resolver ───────────────────────────────────────────────
 
 interface PathResolution {
-    /** Number of '..' segments that escape above the starting directory */
     escapeDepth: number
-    /** The normalized resolved path */
     resolvedPath: string
-    /** Whether the resolved path targets a known sensitive file */
     targetsSensitiveFile: boolean
-    /** The sensitive file matched (if any) */
     sensitiveFile: string | null
 }
 
 function resolvePath(decoded: string): PathResolution {
-    // Normalize slashes
     const normalized = decoded.replace(/\\/g, '/')
+    const segments = normalized.split('/')
+        .filter(segment => segment.length > 0)
 
-    // Split into segments, ignoring empty segments (consecutive slashes)
-    const segments = normalized.split('/').filter(s => s.length > 0)
     const resolved: string[] = []
     let escapeDepth = 0
 
     for (const segment of segments) {
         if (segment === '.' || segment === '') {
             continue
-        } else if (segment === '..') {
+        }
+
+        if (segment === '..') {
             if (resolved.length > 0) {
                 resolved.pop()
             } else {
                 escapeDepth++
             }
-        } else {
-            resolved.push(segment)
+            continue
         }
+
+        resolved.push(segment)
     }
 
     const resolvedPath = resolved.join('/')
-    const resolvedLower = resolvedPath.toLowerCase()
+    const normalizedLower = resolvedPath.toLowerCase()
 
-    // Check if final path matches a sensitive file
     let sensitiveFile: string | null = null
     for (const target of SENSITIVE_TARGETS) {
-        if (resolvedLower === target || resolvedLower.endsWith('/' + target)) {
+        if (normalizedLower === target || normalizedLower.endsWith(`/${target}`)) {
             sensitiveFile = target
             break
         }
@@ -169,188 +140,271 @@ function resolvePath(decoded: string): PathResolution {
 }
 
 
-// ── Detection Functions ──────────────────────────────────────────
+// ── Detection Functions ────────────────────────────────────────
 
-function detectDotdotEscape(input: string, decoded: string, resolution: PathResolution): PathTraversalDetection | null {
-    if (resolution.escapeDepth > 0) {
-        const targetInfo = resolution.targetsSensitiveFile
-            ? ` → targets ${resolution.sensitiveFile}`
-            : ''
+function buildDotdotTraversalDetection(decoded: string, resolution: PathResolution): PathTraversalDetection | null {
+    if (resolution.escapeDepth <= 0) return null
 
-        return {
-            type: 'dotdot_escape',
-            detail: `Path escapes root by ${resolution.escapeDepth} level(s)${targetInfo}`,
-            resolvedPath: resolution.resolvedPath,
-            escapeDepth: resolution.escapeDepth,
-            confidence: resolution.targetsSensitiveFile ? 0.95 : 0.85,
-        }
+    const targetContext = resolution.targetsSensitiveFile
+        ? ` → resolves to ${resolution.sensitiveFile}`
+        : ''
+
+    return {
+        type: 'dotdot_escape',
+        detail: `Traversal escapes directory depth by ${resolution.escapeDepth}.${targetContext}`,
+        resolvedPath: resolution.resolvedPath,
+        escapeDepth: resolution.escapeDepth,
+        confidence: resolution.targetsSensitiveFile ? 0.95 : 0.87,
     }
-    return null
 }
 
-function detectNullTerminate(input: string, decoded: string): PathTraversalDetection | null {
-    // Null byte terminates C-string path handling, allowing extension bypass
-    // Input: ../../../etc/passwd%00.png → server reads etc/passwd
+function buildNullByteDetection(input: string, decoded: string): PathTraversalDetection | null {
+    const hasRawNull = /%00|%2500|\\x00/i.test(input) || /\0/.test(input)
     const nullIndex = decoded.indexOf('\0')
-    // Also check for literal %00 in original input (some servers don't decode)
-    const hasRawNullEncoding = input.includes('%00')
 
-    if (nullIndex === -1 && !hasRawNullEncoding) {
-        return null
+    if (!hasRawNull && nullIndex < 0) return null
+
+    const beforeNull = nullIndex >= 0 ? decoded.slice(0, nullIndex) : decoded
+    const afterNull = nullIndex >= 0 ? decoded.slice(nullIndex + 1) : ''
+
+    const hasTraversalContext = beforeNull.includes('..') || /[\\/]/.test(beforeNull)
+    const hasExtensionContext = /\.[a-z0-9]{1,10}$/i.test(beforeNull) || /\.(php|jsp|aspx|asp|html?)\b/i.test(afterNull)
+
+    if (!hasTraversalContext && !hasExtensionContext) return null
+
+    return {
+        type: 'null_terminate',
+        detail: `Null byte detected in path payload (${hasTraversalContext ? 'truncation' : 'extension-bypass'})`,
+        resolvedPath: beforeNull,
+        escapeDepth: 0,
+        confidence: hasTraversalContext ? 0.90 : 0.80,
     }
-
-    // Check if there's path content before the null and an extension after
-    const beforeNull = decoded.substring(0, nullIndex >= 0 ? nullIndex : decoded.length)
-    const hasTraversalBefore = beforeNull.includes('..')
-    const hasExtensionAfter = nullIndex >= 0 && /\.[a-z]{1,10}$/i.test(decoded.substring(nullIndex))
-
-    if (hasTraversalBefore || (nullIndex >= 0 && hasExtensionAfter)) {
-        return {
-            type: 'null_terminate',
-            detail: `Null byte in path — truncates file extension validation`,
-            resolvedPath: beforeNull,
-            escapeDepth: 0,
-            confidence: 0.90,
-        }
-    }
-    return null
 }
 
-function detectEncodingBypass(input: string, decoded: string, layers: number, resolution: PathResolution): PathTraversalDetection | null {
-    // Multi-layer encoding used to hide traversal sequences
-    if (layers > 1 && resolution.escapeDepth > 0) {
+function buildEncodingBypassDetection(input: string, decoded: string, layers: number, resolution: PathResolution): PathTraversalDetection | null {
+    const hasTraversal = resolution.escapeDepth > 0 || /(?:^|[\\/])\.{2}(?:[\\/]|$)|\.{3,}(?:[\\/]|$)/.test(decoded)
+    if (!hasTraversal) return null
+
+    const hasEncodedDot = /%2e|%c0%ae|%u002e|&#46;|&period;/i.test(input)
+    const hasEncodedSlash = /%2f|%5c|%u002f|&sol;|&#47;/i.test(input)
+    const hasDoubleEncoded = layers >= 2 && /%25/i.test(input)
+
+    if (layers >= 2 && (hasEncodedDot || hasEncodedSlash || hasDoubleEncoded)) {
         return {
             type: 'encoding_bypass',
-            detail: `${layers}-layer encoding hides traversal (decoded: ${decoded.slice(0, 80)})`,
+            detail: `Double-encoded traversal sequence decoded to: ${decoded.slice(0, 80)}`,
             resolvedPath: resolution.resolvedPath,
             escapeDepth: resolution.escapeDepth,
             confidence: 0.92,
         }
     }
 
-    // Single layer but uses non-standard encoding for dots/slashes
-    if (layers >= 1 && resolution.escapeDepth > 0) {
-        const hasObfuscatedDot = /(%2e|%u002e|%c0%ae|&#46;|&period;)/i.test(input)
-        const hasObfuscatedSlash = /(%2f|%5c|%u002f|&#47;|&sol;)/i.test(input)
-
-        if (hasObfuscatedDot || hasObfuscatedSlash) {
-            return {
-                type: 'encoding_bypass',
-                detail: `Encoded traversal chars (dot: ${hasObfuscatedDot}, slash: ${hasObfuscatedSlash})`,
-                resolvedPath: resolution.resolvedPath,
-                escapeDepth: resolution.escapeDepth,
-                confidence: 0.88,
-            }
-        }
-    }
-
-    return null
-}
-
-function detectNormalizationBypass(input: string, decoded: string, resolution: PathResolution): PathTraversalDetection | null {
-    if (resolution.escapeDepth === 0) return null
-
-    // Mixed slash types: using \ and / together
-    const hasMixedSlashes = /[/]/.test(input) && /[\\]/.test(input)
-
-    // Dot-dot-backslash: ..\..\ (Windows-style traversal on Linux)
-    const hasBackslashTraversal = /\.\.\\/.test(input)
-
-    // Dot-slash sequences: ./ repeated
-    const hasDotSlash = /\.\/\.\./.test(decoded) || /\.\\\.\./.test(decoded)
-
-    // Triple-dot: .../ is sometimes interpreted as ../
-    const hasTripleDot = /\.{3,}[/\\]/.test(input)
-
-    if (hasMixedSlashes || hasBackslashTraversal || hasDotSlash || hasTripleDot) {
-        const techniques: string[] = []
-        if (hasMixedSlashes) techniques.push('mixed slashes')
-        if (hasBackslashTraversal) techniques.push('backslash traversal')
-        if (hasTripleDot) techniques.push('triple-dot')
-
+    if (hasEncodedDot || hasEncodedSlash) {
         return {
-            type: 'normalization_bypass',
-            detail: `Path normalization evasion: ${techniques.join(', ')}`,
+            type: 'encoding_bypass',
+            detail: `Encoded traversal separators (dot:${hasEncodedDot ? 'yes' : 'no'}, slash:${hasEncodedSlash ? 'yes' : 'no'})`,
             resolvedPath: resolution.resolvedPath,
             escapeDepth: resolution.escapeDepth,
-            confidence: 0.85,
+            confidence: hasTraversal ? 0.88 : 0.76,
         }
     }
 
     return null
 }
 
-function detectFileUrlTraversal(input: string, decoded: string): PathTraversalDetection | null {
-    const directTraversalPattern = /file:\/\/[^?]*\/\.\./i
-    if (directTraversalPattern.test(input) || directTraversalPattern.test(decoded)) {
+function buildNormalizationDetection(input: string, decoded: string, resolution: PathResolution): PathTraversalDetection | null {
+    if (resolution.escapeDepth === 0) return null
+
+    const hasMixedSlashes = /\//.test(input) && /\\/.test(input)
+    const hasBackslashTraversal = /\.\\\.\./.test(decoded) || /\.{2}\\[^\\\n\r\s]+/.test(decoded)
+    const hasDotPathChain = /\.\.(?:\\|\/|\.%2e)/i.test(input)
+    const hasTripleDot = /\.{3,}(?:\\|\/)/.test(decoded)
+
+    if (!hasMixedSlashes && !hasBackslashTraversal && !hasDotPathChain && !hasTripleDot) return null
+
+    const evidence = [
+        hasMixedSlashes ? 'mixed slashes' : null,
+        hasBackslashTraversal ? 'backslash traversal segment' : null,
+        hasDotPathChain ? 'dot-chain variant' : null,
+        hasTripleDot ? 'triple-dot normalization' : null,
+    ].filter(Boolean).join(', ')
+
+    return {
+        type: 'normalization_bypass',
+        detail: `Path normalization variants detected: ${evidence}`,
+        resolvedPath: resolution.resolvedPath,
+        escapeDepth: resolution.escapeDepth,
+        confidence: 0.84,
+    }
+}
+
+function buildUncDetection(input: string): PathTraversalDetection | null {
+    const decoded = (() => {
+        try {
+            return decodeURIComponent(input)
+        } catch {
+            return input
+        }
+    })()
+
+    // UNC path such as `\\server\\share\\..\\secret`
+    const uncPattern = /(?:^|[\s"'=:(])\\\\([A-Za-z0-9][A-Za-z0-9.-]{0,252})\\([A-Za-z0-9._$-]{1,252})(?:\\[^\s"'<>|&?]*)?/i
+
+    const match = uncPattern.exec(decoded) ?? uncPattern.exec(input)
+    if (!match) return null
+
+    const raw = match[0].replace(/^[\s"'=:(]+/, '')
+    const normalized = raw.replace(/^\\\\/, '').replace(/\\/g, '/')
+
+    const hasWindowsSensitive = /(?:^|[/\\])(?:system32|win\.ini|sam|shadow|hosts|config|secrets?)/i.test(decoded)
+    const hasWindowsDrive = /(?:[A-Za-z]:\\)/i.test(decoded)
+
+    if (!hasWindowsSensitive && !hasWindowsDrive && !/\\\s*share/i.test(decoded)) {
         return {
-            type: 'dotdot_escape',
-            detail: 'file:// URL contains traversal segment (../)',
-            resolvedPath: decoded.replace(/^file:\/\//i, ''),
-            escapeDepth: 1,
-            confidence: 0.95,
+            type: 'windows_traversal',
+            detail: `UNC path candidate detected: ${normalized.slice(0, 100)}`,
+            resolvedPath: normalized,
+            escapeDepth: 0,
+            confidence: 0.80,
         }
     }
 
-    const fileUrlMatch = decoded.match(/^file:\/\/\/?(.*)$/i)
-    if (!fileUrlMatch) return null
+    return {
+        type: 'windows_traversal',
+        detail: `UNC network/share traversal candidate: ${normalized.slice(0, 100)}`,
+        resolvedPath: normalized,
+        escapeDepth: 0,
+        confidence: 0.94,
+    }
+}
 
-    const filePathPart = fileUrlMatch[1] ?? ''
-    const fileResolution = resolvePath(filePathPart)
-    const hasTraversalSegment = /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(filePathPart)
+function buildSymlinkChainDetection(decoded: string, resolution: PathResolution): PathTraversalDetection | null {
+    if (decoded.includes('..') && /\.\.\\?\/symlink\\?\/\.\.\\?\/etc/i.test(decoded.replace(/%2e/gi, '.'))) {
+        return {
+            type: 'encoding_bypass',
+            detail: 'Symlink chain abuse pattern: ../symlink/../etc',
+            resolvedPath: resolution.resolvedPath,
+            escapeDepth: Math.max(resolution.escapeDepth, 1),
+            confidence: 0.88,
+        }
+    }
+    return null
+}
 
-    if (!hasTraversalSegment && !fileResolution.targetsSensitiveFile) return null
+function buildFileUrlDetection(decoded: string): PathTraversalDetection | null {
+    const fileTraversal = /^file:\/\/[\w.+-]*\/(?:\.\.)/i.test(decoded) || /file:\/\/[^\s]*[\\/]+\.\.[\\/]/i.test(decoded)
+    if (!fileTraversal) return null
+
+    const filePath = decoded.replace(/^file:\/\//i, '')
+    const resolution = resolvePath(filePath)
 
     return {
         type: 'dotdot_escape',
-        detail: `file:// URL traversal path detected (${hasTraversalSegment ? 'contains ../' : 'sensitive target'})`,
-        resolvedPath: fileResolution.resolvedPath,
-        escapeDepth: fileResolution.escapeDepth,
-        confidence: fileResolution.targetsSensitiveFile ? 0.93 : 0.88,
+        detail: 'file:// traversal style detected',
+        resolvedPath: resolution.resolvedPath,
+        escapeDepth: resolution.escapeDepth,
+        confidence: resolution.targetsSensitiveFile ? 0.95 : 0.86,
     }
+}
+
+function uniqueDetections(detections: PathTraversalDetection[]): PathTraversalDetection[] {
+    const seen = new Set<string>()
+    const output: PathTraversalDetection[] = []
+    for (const d of detections) {
+        const key = `${d.type}|${d.resolvedPath}|${d.detail}|${d.escapeDepth}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        output.push(d)
+    }
+    return output
+}
+
+
+// ── Exported helpers (requested) ───────────────────────────────
+
+export function detectNullBytePathTruncation(input: string): PathTraversalDetection[] {
+    const { decoded } = deepDecode(input)
+    const result = buildNullByteDetection(input, decoded)
+    return result ? [result] : []
+}
+
+export function detectUNCPath(input: string): PathTraversalDetection[] {
+    const result = buildUncDetection(input)
+    return result ? [result] : []
+}
+
+export function detectDoubleEncoded(input: string): PathTraversalDetection[] {
+    const { decoded, layers } = deepDecode(input)
+    const resolution = resolvePath(decoded)
+    if (layers < 2) return []
+
+    const result = buildEncodingBypassDetection(input, decoded, layers, resolution)
+    return result ? [result] : []
 }
 
 
 // ── Public API ───────────────────────────────────────────────────
 
-/**
- * Detect path traversal vectors by resolving the actual path
- * and checking the invariant properties.
- */
 export function detectPathTraversal(input: string): PathTraversalDetection[] {
-    const detections: PathTraversalDetection[] = []
+    if (input.length < 3) return []
 
-    // Don't waste time on short inputs or inputs without path-like chars
-    if (input.length < 3) return detections
-    const looksLikeFileUrl = input.trimStart().toLowerCase().startsWith('file://')
-    if (!looksLikeFileUrl && !input.includes('.') && !input.includes('%') && !input.includes('\\')) {
-        return detections
-    }
+    const lowerInput = input.toLowerCase()
+    const hasTraversalSignals =
+        input.includes('..') ||
+        lowerInput.includes('%2e') ||
+        lowerInput.includes('%2f') ||
+        lowerInput.includes('%5c') ||
+        lowerInput.includes('%252') ||   // double URL-encoded (%25 = %)
+        lowerInput.includes('%c0%ae') || // overlong UTF-8 dot
+        lowerInput.includes('%u002') ||  // unicode escape for dot or slash
+        input.includes('\\') ||
+        lowerInput.startsWith('file://') ||
+        lowerInput.includes('%2500')
 
-    // Bail on URL-like inputs — these are SSRF territory, not path traversal.
-    // Without this, http://example.com/../../etc/passwd would match as path traversal.
-    const trimmed = input.trimStart().toLowerCase()
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://') || trimmed.startsWith('ftp://')) {
-        return detections
+    if (!hasTraversalSignals) return []
+
+    if (lowerInput.startsWith('http://') || lowerInput.startsWith('https://') || lowerInput.startsWith('ftp://')) {
+        return []
     }
 
     const { decoded, layers } = deepDecode(input)
     const resolution = resolvePath(decoded)
+    const detections: PathTraversalDetection[] = []
 
-    const detectors: Array<() => PathTraversalDetection | null> = [
-        () => detectFileUrlTraversal(input, decoded),
-        () => detectDotdotEscape(input, decoded, resolution),
-        () => detectNullTerminate(input, decoded),
-        () => detectEncodingBypass(input, decoded, layers, resolution),
-        () => detectNormalizationBypass(input, decoded, resolution),
+    const candidates = [
+        buildFileUrlDetection(decoded),
+        buildDotdotTraversalDetection(decoded, resolution),
+        buildNullByteDetection(input, decoded),
+        buildEncodingBypassDetection(input, decoded, layers, resolution),
+        buildNormalizationDetection(input, decoded, resolution),
+        buildUncDetection(input),
+        buildSymlinkChainDetection(decoded, resolution),
     ]
+    for (const c of candidates) { if (c !== null) detections.push(c) }
 
-    for (const detector of detectors) {
-        try {
-            const result = detector()
-            if (result) detections.push(result)
-        } catch { /* never crash the pipeline */ }
+    if (/\bwindows\b/i.test(resolution.resolvedPath) && resolution.escapeDepth > 0) {
+        // Windows path traversal variants reaching known targets should stay separate.
+        detections.push({
+            type: 'windows_traversal',
+            detail: `Windows-sensitive path candidate: ${resolution.resolvedPath || 'rooted windows target'}`,
+            resolvedPath: resolution.resolvedPath,
+            escapeDepth: resolution.escapeDepth,
+            confidence: 0.92,
+        })
     }
 
-    return detections
+    for (const sensitiveTarget of WINDOWS_TARGETS) {
+        if (resolution.resolvedPath.toLowerCase().endsWith(`/${sensitiveTarget}`)) {
+            detections.push({
+                type: 'windows_traversal',
+                detail: `Windows sensitive target matched: ${sensitiveTarget}`,
+                resolvedPath: resolution.resolvedPath,
+                escapeDepth: resolution.escapeDepth,
+                confidence: 0.95,
+            })
+            break
+        }
+    }
+
+    return uniqueDetections(detections.filter(Boolean) as PathTraversalDetection[])
 }

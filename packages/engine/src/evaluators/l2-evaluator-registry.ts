@@ -24,8 +24,8 @@ import { detectSSRF, type SSRFDetection } from './ssrf-evaluator.js'
 import { detectSSTI, type SSTIDetection } from './ssti-evaluator.js'
 import { detectNoSQLInjection, type NoSQLDetection } from './nosql-evaluator.js'
 import { detectXXE, type XXEDetection } from './xxe-evaluator.js'
-import { detectCRLFInjection, type CRLFDetection } from './crlf-evaluator.js'
-import { detectOpenRedirect, type OpenRedirectDetection } from './redirect-evaluator.js'
+import { detectCRLF, type CRLFDetection } from './crlf-evaluator.js'
+import { detectOpenRedirect, type OpenRedirectDetection } from './open-redirect-evaluator.js'
 import { detectPrototypePollution, type ProtoPollutionDetection } from './proto-pollution-evaluator.js'
 import { detectLog4Shell, type Log4ShellDetection } from './log4shell-evaluator.js'
 import { detectDeserialization, type DeserDetection } from './deser-evaluator.js'
@@ -475,6 +475,11 @@ function buildHttpSmuggleEvidence(detections: HTTPSmuggleDetection[]): ProofEvid
         h2_pseudo_header: 'HTTP/2 pseudo-headers must not be interpreted as tunneled HTTP/1 request boundaries',
         h2_crlf: 'HTTP/2 pseudo-header values must not contain CRLF request-splitting controls',
         chunked_body: 'Chunked message termination must not permit appended smuggled requests',
+        h2c_upgrade_smuggling: 'HTTP/2 cleartext upgrade must not allow tunneled HTTP/1 request injection',
+        chunked_trailer_injection: 'Chunked trailer fields must not admit header injection or poisoning',
+        obfuscated_content_length: 'Content-Length must not be obfuscated to bypass length-based parsing',
+        request_tunneling_abuse: 'HTTP tunneling must not allow internal request routing abuse',
+        pipelined_request_poisoning: 'Pipelined HTTP requests must not allow response queue poisoning',
     }
 
     return detections.map(detection => ({
@@ -810,6 +815,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
             null_terminate: 'path_null_terminate' as InvariantClass,
             encoding_bypass: 'path_encoding_bypass' as InvariantClass,
             normalization_bypass: 'path_normalization_bypass' as InvariantClass,
+            windows_traversal: 'path_windows_traversal' as InvariantClass,
         },
         prefix: 'L2 Path',
     },
@@ -864,7 +870,7 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
     // CRLF (2 classes)
     {
         id: 'crlf',
-        detect: (input: string) => mapL2Detections(input, detectCRLFInjection, buildCrlfEvidence),
+        detect: (input: string) => mapL2Detections(input, detectCRLF, buildCrlfEvidence),
         typeToClass: {
             header_injection: 'crlf_header_injection' as InvariantClass,
             response_split: 'crlf_header_injection' as InvariantClass,
@@ -880,10 +886,10 @@ export const L2_EVALUATOR_DESCRIPTORS: readonly L2EvaluatorDescriptor[] = [
         typeToClass: {
             protocol_relative: 'open_redirect_bypass' as InvariantClass,
             backslash: 'open_redirect_bypass' as InvariantClass,
-            auth_confusion: 'open_redirect_bypass' as InvariantClass,
+            scheme_bypass: 'open_redirect_bypass' as InvariantClass,
             data_uri: 'open_redirect_bypass' as InvariantClass,
             javascript_uri: 'open_redirect_bypass' as InvariantClass,
-            domain_bypass: 'open_redirect_bypass' as InvariantClass,
+            host_bypass: 'open_redirect_bypass' as InvariantClass,
         },
         prefix: 'L2 Redirect',
     },

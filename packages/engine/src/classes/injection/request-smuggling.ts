@@ -71,7 +71,7 @@ export const requestSmuggling: InvariantClassModule = {
     category: 'injection',
     severity: 'critical',
     calibration: { baseConfidence: 0.91, minInputLength: 20 },
-    mitre: ['T1190', 'T1574'],
+    mitre: ['T1071.001'],
     cwe: 'CWE-444',
     knownPayloads: [
         'POST / HTTP/1.1\r\nHost: app.local\r\nContent-Length: 44\r\nTransfer-Encoding: chunked\r\n\r\n0\r\n\r\nGET /admin HTTP/1.1\r\nHost: app.local\r\n\r\n',
