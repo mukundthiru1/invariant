@@ -1,7 +1,7 @@
 import type { ScanResult } from './scanner.js'
 
 export interface DeployLawResult {
-  law: 1 | 2 | 3 | 4 | 5
+  law: 1 | 2 | 3 | 4 | 5 | 6
   name: string
   passed: boolean
   detail: string
@@ -14,6 +14,7 @@ export interface DeployLawInput {
   scanResults: ScanResult[]
   trivyPassed: boolean
   hasBehaviorModel: boolean
+  gitIntegrityPassed?: boolean
 }
 
 export function evaluateDeployLaws(input: DeployLawInput): DeployLawResult[] {
@@ -23,7 +24,7 @@ export function evaluateDeployLaws(input: DeployLawInput): DeployLawResult[] {
   const hasBehaviorModel = input.hasBehaviorModel
   const failSafe = input.trivyPassed && hasInvariantScanCoverage && hasDiff
 
-  return [
+  const laws: DeployLawResult[] = [
     {
       law: 1,
       name: 'No Stubs',
@@ -65,5 +66,17 @@ export function evaluateDeployLaws(input: DeployLawInput): DeployLawResult[] {
         : 'Safety gates incomplete; deploy requires explicit human approval.',
     },
   ]
-}
 
+  if (typeof input.gitIntegrityPassed === 'boolean') {
+    laws.push({
+      law: 6,
+      name: 'Git Integrity',
+      passed: input.gitIntegrityPassed,
+      detail: input.gitIntegrityPassed
+        ? 'No force-push or suspected rebase detected in deploy git context.'
+        : 'Force-push or suspected rebase detected in deploy git context.',
+    })
+  }
+
+  return laws
+}

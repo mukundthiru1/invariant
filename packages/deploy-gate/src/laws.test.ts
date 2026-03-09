@@ -42,4 +42,47 @@ describe('deploy laws', () => {
 
     expect(result.find(item => item.law === 3)?.passed).toBe(false)
   })
+
+  it('returns six laws when gitIntegrityPassed is provided', () => {
+    const result = evaluateDeployLaws({
+      repo: 'acme/repo',
+      gitRef: 'refs/heads/main',
+      diffLines: ['const x = 1'],
+      scanResults: [{ line: 'const x = 1', lineNumber: 1, file: 'a.ts', matches: [] }],
+      trivyPassed: true,
+      hasBehaviorModel: true,
+      gitIntegrityPassed: true,
+    })
+
+    expect(result).toHaveLength(6)
+    expect(result.find(item => item.law === 6)?.name).toBe('Git Integrity')
+  })
+
+  it('passes law 6 when git integrity is clean', () => {
+    const result = evaluateDeployLaws({
+      repo: 'acme/repo',
+      gitRef: 'refs/heads/main',
+      diffLines: ['const x = 1'],
+      scanResults: [{ line: 'const x = 1', lineNumber: 1, file: 'a.ts', matches: [] }],
+      trivyPassed: true,
+      hasBehaviorModel: true,
+      gitIntegrityPassed: true,
+    })
+
+    expect(result.find(item => item.law === 6)?.passed).toBe(true)
+  })
+
+  it('fails law 6 when git integrity check fails', () => {
+    const result = evaluateDeployLaws({
+      repo: 'acme/repo',
+      gitRef: 'refs/heads/main',
+      diffLines: ['const x = 1'],
+      scanResults: [{ line: 'const x = 1', lineNumber: 1, file: 'a.ts', matches: [] }],
+      trivyPassed: true,
+      hasBehaviorModel: true,
+      gitIntegrityPassed: false,
+    })
+
+    expect(result.find(item => item.law === 6)?.passed).toBe(false)
+  })
 })

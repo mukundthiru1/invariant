@@ -3,6 +3,7 @@ import { signEvent, verifyEvent } from './hmac.js'
 import { buildWebhookRepoApi, compareShadowLog, detectForcePush } from './tamper-detector.js'
 import { findLastCleanDeploy, triggerRollback } from './rollback.js'
 import type { AuditEvent, AuditEventType, DbClient, DbRowResult, RollbackPlatform, TamperReport } from './types.js'
+export { buildArtifactManifest, signPackageArtifact, verifyPackageSignature } from './package-signing.js'
 
 export type Env = {
   AUDIT_DB?: DbClient

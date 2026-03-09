@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
+import { verifyPackageSignature } from '../../audit-log/src/package-signing.js'
 
 export interface IntegrityResult {
   name: string
@@ -37,6 +38,17 @@ interface NpmLsNode {
 
 interface NpmLsResponse {
   dependencies?: Record<string, NpmLsNode>
+}
+
+interface SignedManifestEntry {
+  name?: string
+  version?: string
+  sha256?: string
+  sig?: string
+}
+
+interface SignedManifestResponse {
+  entries?: SignedManifestEntry[]
 }
 
 async function readJsonFile<T>(path: string): Promise<T | null> {
@@ -180,4 +192,44 @@ export async function getTopDependenciesByDepth(limit = 20): Promise<DependencyW
       return a.name.localeCompare(b.name)
     })
     .slice(0, limit)
+}
+
+export async function verifyInvariantPackageManifest(
+  manifestUrl: string,
+  secretKey: string,
+): Promise<{ valid: boolean; packages: IntegrityResult[] }> {
+  const response = await fetch(manifestUrl)
+  if (!response.ok) {
+    throw new Error(`manifest fetch failed: HTTP ${response.status}`)
+  }
+
+  const parsed = (await response.json()) as SignedManifestResponse
+  const entries = Array.isArray(parsed.entries) ? parsed.entries : []
+
+  const packages: IntegrityResult[] = entries.map((entry) => {
+    const name = typeof entry.name === 'string' ? entry.name : ''
+    const version = typeof entry.version === 'string' ? entry.version : ''
+    const sha256 = typeof entry.sha256 === 'string' ? entry.sha256 : ''
+    const sig = typeof entry.sig === 'string' ? entry.sig : ''
+
+    const matches = name.length > 0
+      && version.length > 0
+      && sha256.length > 0
+      && sig.length > 0
+      && verifyPackageSignature({ name, version, sha256 }, sig, secretKey)
+
+    return {
+      name,
+      version,
+      registryHash: sig,
+      localHash: matches ? sig : '',
+      matches,
+      tampered: !matches,
+    }
+  })
+
+  return {
+    valid: packages.every(pkg => pkg.matches),
+    packages,
+  }
 }
