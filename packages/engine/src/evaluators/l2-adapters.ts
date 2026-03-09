@@ -356,14 +356,27 @@ export function l2XXEEntity(input: string): DetectionLevelResult | null {
 
 export function l2XxeEvaluator(input: string): DetectionLevelResult | null {
     try {
-        const hasDoctype = /<!DOCTYPE\s+\w+/i.test(input)
-        const hasEntitySystemOrPublic = /<!ENTITY\s+\w+\s+(?:SYSTEM|PUBLIC)/i.test(input)
-        const hasExternalDtdReference = /SYSTEM\s+['"]\s*(?:https?:|file:|ftp:)/i.test(input)
-        const hasParameterEntityUsage = /%\w+;/.test(input)
-        const hasParameterEntityDefinition = /<!ENTITY\s+%\s*\w+\s+(?:SYSTEM|PUBLIC|['"])/i.test(input)
+        const decoded = deepDecode(input)
+        const structuralDoctypeEntity = decoded.match(
+            /<!DOCTYPE[\s\S]{0,600}?(?:\[[\s\S]{0,800}?)?<!ENTITY\s+(?:%\s*)?[A-Za-z0-9._:-]+\s+(?:SYSTEM|PUBLIC|['"])[\s\S]{0,600}?>/i,
+        )
+        if (structuralDoctypeEntity?.[0]) {
+            return {
+                detected: true,
+                confidence: 0.94,
+                explanation: 'XML analysis: structural DOCTYPE + ENTITY declaration indicates XXE-capable parser surface',
+                evidence: structuralDoctypeEntity[0].slice(0, 220),
+            }
+        }
+
+        const hasDoctype = /<!DOCTYPE\s+\w+/i.test(decoded)
+        const hasEntitySystemOrPublic = /<!ENTITY\s+\w+\s+(?:SYSTEM|PUBLIC)/i.test(decoded)
+        const hasExternalDtdReference = /SYSTEM\s+['"]\s*(?:https?:|file:|ftp:)/i.test(decoded)
+        const hasParameterEntityUsage = /%\w+;/.test(decoded)
+        const hasParameterEntityDefinition = /<!ENTITY\s+%\s*\w+\s+(?:SYSTEM|PUBLIC|['"])/i.test(decoded)
         const hasParameterEntityXXE = hasParameterEntityDefinition && hasParameterEntityUsage
-        const hasBlindXxeSystemRef = /SYSTEM\s+['"]\s*https?:\/\/[^'"]+['"]/i.test(input)
-        const hasBlindXxeMarker = /(attacker\.com|burpcollaborator|interactsh|oast|dnslog|webhook|canarytokens)/i.test(input)
+        const hasBlindXxeSystemRef = /SYSTEM\s+['"]\s*https?:\/\/[^'"]+['"]/i.test(decoded)
+        const hasBlindXxeMarker = /(attacker\.com|burpcollaborator|interactsh|oast|dnslog|webhook|canarytokens)/i.test(decoded)
         const hasBlindXXE = hasBlindXxeSystemRef && hasBlindXxeMarker
 
         const hasFullXXE = hasDoctype && hasEntitySystemOrPublic
@@ -374,7 +387,7 @@ export function l2XxeEvaluator(input: string): DetectionLevelResult | null {
                 detected: true,
                 confidence: 0.93,
                 explanation: 'XML analysis: DOCTYPE + external entity behavior indicates XXE injection',
-                evidence: input.match(/<!DOCTYPE[\s\S]{0,220}/i)?.[0] ?? input.slice(0, 220),
+                evidence: decoded.match(/<!DOCTYPE[\s\S]{0,220}/i)?.[0] ?? decoded.slice(0, 220),
             }
         }
     } catch { return null }
@@ -736,8 +749,22 @@ export function l2HttpSmuggling(input: string): DetectionLevelResult | null {
         const decoded = normalizeHttpInput(input)
         const { headerText, bodyText } = splitHeaderAndBody(decoded)
         const headers = parseHttpHeaders(headerText)
-        const clHeader = headers.find(h => h.name === 'content-length')
+        const clHeaders = headers.filter(h => h.name === 'content-length')
+        const clHeader = clHeaders[0]
         const teHeaders = headers.filter(h => h.name === 'transfer-encoding')
+        const teIsChunked = teHeaders.some(h => h.value.toLowerCase().split(',').some(token => token.trim() === 'chunked'))
+
+        if (clHeaders.length > 0 && teIsChunked) {
+            const clSummary = clHeaders.map(h => h.value).join(', ')
+            const teSummary = teHeaders.map(h => h.value).join(', ')
+            return {
+                detected: true,
+                confidence: 0.95,
+                explanation: 'HTTP smuggling analysis: Content-Length and Transfer-Encoding: chunked conflict in one request',
+                evidence: `content-length=${clSummary}; transfer-encoding=${teSummary}`,
+            }
+        }
+
         const pseudoHeaderCount = (decoded.match(/(?:^|\r?\n):(method|path|authority|scheme)\s+/gi) || []).length
         const h1MarkerCount = (decoded.match(/(?:^|\r?\n)(host|content-length|transfer-encoding|connection|user-agent|accept|cookie)\s*:/gi) || []).length
 
@@ -775,7 +802,6 @@ export function l2HttpSmuggling(input: string): DetectionLevelResult | null {
             }
         }
 
-        const teIsChunked = teHeaders.some(h => h.value.toLowerCase().split(',').some(token => token.trim() === 'chunked'))
         const clValue = clHeader ? Number.parseInt(clHeader.value, 10) : Number.NaN
         const hasValidCL = Number.isFinite(clValue) && clValue >= 0
 

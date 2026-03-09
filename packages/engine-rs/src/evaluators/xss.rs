@@ -1585,9 +1585,7 @@ mod tests {
     #[test]
     fn svg_animate_onbegin() {
         let eval = XssEvaluator;
-        let dets = eval.detect(
-            "<svg><animate onbegin=alert(1) attributeName='visibility' from='hidden'></svg>",
-        );
+        let dets = eval.detect("<svg><animate onbegin=alert(1) attributeName=x></svg>");
         assert!(has_type(&dets, "xss_svg_animate_onbegin"));
     }
 

@@ -10,8 +10,15 @@
 // ── Core Detection Layers ────────────────────────────────────────
 export { analyzeRequestBody, extractFromJson, extractFromFormEncoded, extractFromMultipart } from './body-analysis.js'
 export type { BodyAnalysisResult } from './body-analysis.js'
+export {
+    detectH2PseudoHeaderAbuse,
+    detectTrailerInjection,
+    detectWebSocketUpgradeAbuse,
+    detectHttpVerbTunneling,
+} from './header-analysis.js'
+export type { VerbTunnelingHit } from './header-analysis.js'
 
-export { ThreatScoringEngine } from './threat-scoring.js'
+export { ThreatScoringEngine, buildHeaderThreatSignals } from './threat-scoring.js'
 export type { ThreatSignal, ThreatScore, SignalContribution, ChainIndicator } from './threat-scoring.js'
 
 export { DeceptionLayer, DEFAULT_DECEPTION_CONFIG } from './deception-layer.js'

@@ -89,7 +89,7 @@ static UNC_TRAVERSAL_RE: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 static NULL_BYTE_SUFFIX_BYPASS_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)(?:\.\.[\\/]){2,}[^\\/\s]+%00\.[a-z0-9]{1,8}\b").unwrap()
+    Regex::new(r"(?i)(?:\.\.[\\/]){2,}[^\s]*%00\.[a-z0-9]{1,8}\b").unwrap()
 });
 static ZIP_SLIP_ARCHIVE_ENTRY_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:archive|zip|jar|tar|entry|filename|filepath|path)[^\n]{0,80}(?:\.\.[\\/]){2,}[^\\/\s]+\.(?:sh|bash|ps1|bat|cmd|exe|dll)\b").unwrap()

@@ -22,10 +22,10 @@
  * invariant matching. It is shared across all class modules.
  *
  * SECURITY INVARIANT: The decoder is bounded to prevent DoS.
- * Maximum recursion depth is 10. Maximum input size is 8192 bytes.
+ * Maximum recursion depth is 12. Maximum input size is 8192 bytes.
  */
 
-const MAX_DECODE_DEPTH = 10
+const MAX_DECODE_DEPTH = 12
 const MAX_INPUT_SIZE = 8192
 const NULL_BYTE_RE = /\u0000/g
 
@@ -33,7 +33,9 @@ const NULL_BYTE_RE = /\u0000/g
 // U+00AD = soft hyphen (splits keywords invisibly, e.g. sel\u00adect → select)
 // U+200B-U+200D = zero-width space/non-joiner/joiner
 // U+FEFF = zero-width no-break space (BOM)
-const ZERO_WIDTH_CHARS = /[\u200B-\u200D\uFEFF\u00AD]/g
+// U+2060 = Word Joiner, U+2061-2064 = Invisible Function/Separator/Plus/Times
+// U+206A-206F = Inhibit/Activate Symmetric/Arabic Number Shaping etc.
+const ZERO_WIDTH_CHARS = /[\u200B-\u200D\uFEFF\u00AD\u2060-\u2064\u206A-\u206F]/g
 
 // SAA-104: BIDI control characters (RTL/LTR override, isolate marks)
 // These can reorder displayed text without changing byte stream order,
@@ -311,6 +313,7 @@ export function deepDecode(input: string, depth = 0): string {
     if (input.includes('\u0000')) input = input.replace(NULL_BYTE_RE, '')
     if (depth > MAX_DECODE_DEPTH) return input
     if (input.length > MAX_INPUT_SIZE) input = input.slice(0, MAX_INPUT_SIZE)
+    const current = input
 
     function normalizeFullwidth(s: string): string {
         return s.replace(/[\uFF01-\uFF5E]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFF00 + 0x20))
@@ -342,6 +345,7 @@ export function deepDecode(input: string, depth = 0): string {
     try {
         const urlDecoded = decodeURIComponent(decoded)
         if (urlDecoded !== decoded) {
+            if (depth >= MAX_DECODE_DEPTH) return urlDecoded + '\x00ENCODING_DEPTH_EXCEEDED'
             decoded = deepDecode(urlDecoded, depth + 1)
         }
     } catch { /* invalid encoding, keep original */ }
@@ -372,6 +376,7 @@ export function deepDecode(input: string, depth = 0): string {
 
     const base32Decoded = decodeBase32IfSuspicious(decoded)
     if (base32Decoded !== decoded) {
+        if (depth >= MAX_DECODE_DEPTH) return base32Decoded + '\x00ENCODING_DEPTH_EXCEEDED'
         return deepDecode(base32Decoded, depth + 1)
     }
 
@@ -381,6 +386,7 @@ export function deepDecode(input: string, depth = 0): string {
         looksLikeAttackPayload(rot13Decoded) &&
         !looksLikeAttackPayload(decoded)
     ) {
+        if (depth >= MAX_DECODE_DEPTH) return rot13Decoded + '\x00ENCODING_DEPTH_EXCEEDED'
         return deepDecode(rot13Decoded, depth + 1)
     }
 
@@ -432,6 +438,10 @@ export function deepDecode(input: string, depth = 0): string {
 
     // SAA-104: Punycode domain decoding (SSRF homoglyph bypass via IDN)
     decoded = decodePunycodeDomains(decoded)
+
+    if (depth >= MAX_DECODE_DEPTH && decoded !== current) {
+        return decoded + '\x00ENCODING_DEPTH_EXCEEDED'
+    }
 
     return decoded
 }

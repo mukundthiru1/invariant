@@ -27,8 +27,8 @@ import { scanDependencies, type ScanResult } from './scanner/deps.js'
 import { auditConfiguration } from './scanner/config.js'
 import { type SqlRaspConfig, wrapPgModule, wrapMysqlModule } from './rasp/sql.js'
 import { type FsRaspConfig, wrapFsOperation } from './rasp/fs.js'
-import { type HttpRaspConfig, wrapFetch } from './rasp/http.js'
-import { type ExecRaspConfig, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, wrapExec } from './rasp/exec.js'
+import { type HttpRaspConfig, wrapFetch, wrapNodeHttpGet, wrapNodeHttpRequest } from './rasp/http.js'
+import { type ExecRaspConfig, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, wrapExec, wrapExecFile, wrapFork } from './rasp/exec.js'
 import { type DeserRaspConfig, wrapJsonParse } from './rasp/deser.js'
 import { type WebSocketRaspConfig, wrapWebSocketSend } from './rasp/websocket.js'
 import { type GrpcRaspConfig, wrapGrpcClient } from './rasp/grpc.js'
@@ -37,6 +37,7 @@ import { AdaptiveCalibrator, type CalibrationReport } from './calibration.js'
 import { RuntimeHealthMonitor, type RuntimeHealthSnapshot } from './runtime.js'
 import { evaluateAgentLaws, type AgentLawReport } from './laws.js'
 import { flushSignals, queueSignal } from './intel-feedback.js'
+import { recordRaspEvent } from './rasp/request-session.js'
 import { DEFAULT_HEARTBEAT_CONFIG, type HeartbeatConfig, type HeartbeatHandle, detectTamper, registerLastBreath, startHeartbeat } from './heartbeat.js'
 
 // ── Types ────────────────────────────────────────────────────────
@@ -99,6 +100,8 @@ export class InvariantAgent {
     private healthMonitor: RuntimeHealthMonitor
     private wrapped = new Set<string>()
     private processErrorHandlersInstalled = false
+    private hookTamperTimer: ReturnType<typeof setInterval> | null = null
+    private hookTamperReported = new Set<string>()
     private heartbeatHandle: HeartbeatHandle | null = null
     private lastBreathRegistered = false
     private lawReport: AgentLawReport = { stage: 'init', results: [], violations: [] }
@@ -239,6 +242,8 @@ export class InvariantAgent {
                     violation.invariantClass === 'vm_code_execution' ||
                     violation.invariantClass === 'worker_eval_execution' ||
                     violation.invariantClass === 'native_binding_access' ||
+                    violation.invariantClass === 'process_binding_access' ||
+                    violation.invariantClass === 'process_dlopen_suspicious_path' ||
                     violation.invariantClass.startsWith('inspector_')
                 this.reportViolation(
                     isVmRuntimeViolation ? 'vm_code_execution' : 'exec',
@@ -284,6 +289,21 @@ export class InvariantAgent {
         if (this.wrapped.has('global.fetch')) return
         const config = this.getHttpRaspConfig()
         globalThis.fetch = wrapFetch(globalThis.fetch, config)
+        const require = createRequire(import.meta.url)
+        const nodeHttp = require('node:http') as Record<string, unknown>
+        const nodeHttps = require('node:https') as Record<string, unknown>
+        if (typeof nodeHttp.request === 'function') {
+            nodeHttp.request = wrapNodeHttpRequest(nodeHttp.request as (...args: unknown[]) => unknown, config, 'http:')
+        }
+        if (typeof nodeHttp.get === 'function') {
+            nodeHttp.get = wrapNodeHttpGet(nodeHttp.get as (...args: unknown[]) => unknown, config, 'http:')
+        }
+        if (typeof nodeHttps.request === 'function') {
+            nodeHttps.request = wrapNodeHttpRequest(nodeHttps.request as (...args: unknown[]) => unknown, config, 'https:')
+        }
+        if (typeof nodeHttps.get === 'function') {
+            nodeHttps.get = wrapNodeHttpGet(nodeHttps.get as (...args: unknown[]) => unknown, config, 'https:')
+        }
         this.wrapped.add('global.fetch')
         this.healthMonitor.markIntegrationWrapped('global.fetch')
         this.log('Global fetch wrapped with SSRF detection')
@@ -307,7 +327,7 @@ export class InvariantAgent {
         this.log('mysql2 module wrapped with SQL injection detection')
     }
 
-    /** Auto-wrap child_process APIs (exec/execSync/spawn/spawnSync). */
+    /** Auto-wrap child_process APIs (exec/execSync/spawn/spawnSync/execFile/execFileSync/fork). */
     wrapChildProcess(): void {
         if (this.wrapped.has('child_process')) return
         const require = createRequire(import.meta.url)
@@ -318,9 +338,18 @@ export class InvariantAgent {
             if (typeof original !== 'function') continue
             childProcess[fn] = wrapExec(original as (...args: unknown[]) => unknown, cfg, fn)
         }
+        for (const fn of ['execFile', 'execFileSync'] as const) {
+            const original = childProcess[fn]
+            if (typeof original !== 'function') continue
+            childProcess[fn] = wrapExecFile(original as (...args: unknown[]) => unknown, cfg, fn)
+        }
+        if (typeof childProcess.fork === 'function') {
+            childProcess.fork = wrapFork(childProcess.fork as (...args: unknown[]) => unknown, cfg)
+        }
         this.wrapped.add('child_process')
         this.healthMonitor.markIntegrationWrapped('child_process')
         this.log('child_process module wrapped with command injection detection')
+        this.startHookTamperMonitor()
     }
 
     /** Hook VM, Worker, inspector, and native binding bypass vectors. */
@@ -332,6 +361,7 @@ export class InvariantAgent {
         this.wrapped.add('runtime_execution')
         this.healthMonitor.markIntegrationWrapped('runtime_execution')
         this.log('runtime execution bypass controls activated for vm/worker_threads/inspector/_linkedBinding')
+        this.startHookTamperMonitor()
     }
 
     /** Auto-wrap core filesystem APIs for path traversal detection. */
@@ -567,6 +597,10 @@ export class InvariantAgent {
             clearInterval(this.scanTimer)
             this.scanTimer = null
         }
+        if (this.hookTamperTimer) {
+            clearInterval(this.hookTamperTimer)
+            this.hookTamperTimer = null
+        }
         if (this.heartbeatHandle) {
             this.heartbeatHandle.stop()
             this.heartbeatHandle = null
@@ -647,6 +681,97 @@ export class InvariantAgent {
         return createHash('sha256').update(input).digest('hex').slice(0, 32)
     }
 
+    private startHookTamperMonitor(): void {
+        if (this.hookTamperTimer) return
+        this.hookTamperTimer = setInterval(() => {
+            this.safeRun('hookTamperMonitor', () => this.checkHookTampering())
+        }, 5000)
+        if (this.hookTamperTimer.unref) this.hookTamperTimer.unref()
+    }
+
+    private checkHookTampering(): void {
+        if (!this.wrapped.has('child_process') && !this.wrapped.has('runtime_execution')) return
+        const require = createRequire(import.meta.url)
+        const vm = require('node:vm') as Record<string, unknown>
+        const childProcess = require('node:child_process') as Record<string, unknown>
+        const removedHooks: string[] = []
+
+        const isNativeCode = (value: unknown): boolean => {
+            if (typeof value !== 'function') return false
+            try {
+                return Function.prototype.toString.call(value).includes('[native code]')
+            } catch {
+                return false
+            }
+        }
+
+        const wrappedFunctions: Array<[string, unknown]> = [
+            ['vm.runInContext', vm.runInContext],
+            ['vm.runInNewContext', vm.runInNewContext],
+            ['vm.runInThisContext', vm.runInThisContext],
+            ['vm.compileFunction', vm.compileFunction],
+            ['process.dlopen', (process as unknown as { dlopen?: (...args: unknown[]) => unknown }).dlopen],
+            ['child_process.execSync', childProcess.execSync],
+        ]
+        for (const [name, fn] of wrappedFunctions) {
+            if (isNativeCode(fn)) {
+                removedHooks.push(`${name}:native`)
+            }
+        }
+
+        const integrity = hookIntegrityCheck(vm)
+        for (const [name, active] of Object.entries(integrity)) {
+            if (!active) removedHooks.push(`${name}:mismatch`)
+        }
+
+        if (removedHooks.length === 0) return
+        const fingerprint = removedHooks.sort().join('|')
+        if (this.hookTamperReported.has(fingerprint)) return
+        this.hookTamperReported.add(fingerprint)
+        this.fireHookTamperAlert(removedHooks)
+    }
+
+    private fireHookTamperAlert(details: string[]): void {
+        const now = new Date().toISOString()
+        const detail = details.join(', ').slice(0, 200)
+        try {
+            recordRaspEvent('vm_code_execution', detail, ['HOOK_TAMPER'], 0.99, true)
+        } catch { /* Never break */ }
+        try {
+            this.db.insertSignal({
+                type: 'runtime_invariant_violation',
+                subtype: 'HOOK_TAMPER',
+                severity: 'critical',
+                action: 'blocked',
+                path: 'runtime.hook_integrity',
+                method: 'VM',
+                source_hash: null,
+                invariant_classes: JSON.stringify(['HOOK_TAMPER']),
+                is_novel: true,
+                timestamp: now,
+            })
+            this.db.insertFinding({
+                type: 'runtime_invariant_violation',
+                category: 'runtime_tamper',
+                severity: 'critical',
+                status: 'open',
+                title: 'Runtime hook tampering detected',
+                description: `Detected RASP hook tampering: ${detail}`,
+                location: 'runtime.hook_integrity',
+                evidence: JSON.stringify({ details }),
+                remediation: 'Reinstall runtime hooks and investigate prototype-chain or direct reassignment tampering paths.',
+                cve_id: null,
+                confidence: 0.99,
+                first_seen: now,
+                last_seen: now,
+                rasp_active: true,
+            })
+            queueSignal('HOOK_TAMPER', this.hashPayload(detail), 0.99)
+        } catch (error) {
+            this.handleInternalError('fireHookTamperAlert', error)
+        }
+    }
+
     private installHeartbeatGuards(): void {
         const heartbeatConfig = this.resolveHeartbeatConfig()
 
@@ -710,8 +835,8 @@ export { scanDependencies } from './scanner/deps.js'
 export { auditConfiguration } from './scanner/config.js'
 export { wrapSqlQuery, wrapPgModule, wrapMysqlModule } from './rasp/sql.js'
 export { wrapFsOperation } from './rasp/fs.js'
-export { wrapFetch, checkUrlInvariants } from './rasp/http.js'
-export { wrapExec, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck } from './rasp/exec.js'
+export { wrapFetch, checkUrlInvariants, wrapNodeHttpRequest, wrapNodeHttpGet } from './rasp/http.js'
+export { wrapExec, wrapExecFile, wrapFork, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck } from './rasp/exec.js'
 export { wrapJsonParse, checkDeserInvariants } from './rasp/deser.js'
 export { wrapWebSocketServer, wrapWebSocketSend } from './rasp/websocket.js'
 export { wrapGrpcClient, wrapGrpcClientMethod } from './rasp/grpc.js'

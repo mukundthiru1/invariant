@@ -47,8 +47,15 @@ export interface BodyAnalysisResult {
 
 // ── Configuration ────────────────────────────────────────────────
 
-/** Maximum body size to analyze (32KB) — larger bodies are skipped */
-const MAX_BODY_SIZE = 32_768
+/** Maximum body size to analyze fully (128KB) — increased from 32KB to prevent padding bypass */
+const MAX_BODY_SIZE = 131_072
+
+/**
+ * SAA-C003: For bodies larger than MAX_BODY_SIZE, scan the first and last
+ * OVERSIZED_TAIL_SCAN bytes. Attackers pad 32KB+ of filler then place the
+ * actual payload at the tail. Scanning only the first window would miss this.
+ */
+const OVERSIZED_TAIL_SCAN = 8_192
 
 /** Maximum number of extracted values to prevent resource exhaustion */
 const MAX_EXTRACTED_VALUES = 200
@@ -96,9 +103,9 @@ export async function analyzeRequestBody(
         }
     }
 
-    // Check content-length if available
+    // Check content-length if available — only skip if absurdly large (>10MB)
     const contentLength = parseInt(request.headers.get('content-length') ?? '0')
-    if (contentLength > MAX_BODY_SIZE) {
+    if (contentLength > 10_485_760) {
         return {
             analyzed: false,
             contentType,
@@ -125,36 +132,42 @@ export async function analyzeRequestBody(
             }
         }
 
+        // SAA-C003: For bodies larger than MAX_BODY_SIZE, scan head + tail windows
+        // to catch padding attacks where payload is placed after 32KB+ of filler.
+        // The full body is not buffered to avoid memory exhaustion.
+        let analysisBody: string
+        let oversized = false
         if (rawBody.length > MAX_BODY_SIZE) {
-            return {
-                analyzed: false,
-                contentType,
-                bodySize: rawBody.length,
-                extractedValues: [],
-                combinedText: '',
-                skipReason: 'body_too_large',
-            }
+            const head = rawBody.slice(0, MAX_BODY_SIZE)
+            const tail = rawBody.slice(-OVERSIZED_TAIL_SCAN)
+            analysisBody = head + '\n' + tail
+            oversized = true
+        } else {
+            analysisBody = rawBody
         }
 
         const ct = contentType.toLowerCase()
         let extractedValues: string[] = []
 
         if (ct.includes('application/json')) {
-            extractedValues = extractFromJson(rawBody)
+            extractedValues = oversized
+                // For oversized JSON, do a flat text extraction rather than parse
+                ? [analysisBody]
+                : extractFromJson(rawBody)
         } else if (ct.includes('application/x-www-form-urlencoded')) {
-            extractedValues = extractFromFormEncoded(rawBody)
+            extractedValues = extractFromFormEncoded(analysisBody)
         } else if (ct.includes('multipart/form-data')) {
-            extractedValues = extractFromMultipart(rawBody)
+            extractedValues = extractFromMultipart(analysisBody)
         } else if (ct.includes('xml')) {
-            extractedValues = [rawBody]
+            extractedValues = [analysisBody]
         } else if (ct.includes('text/')) {
-            extractedValues = [rawBody]
+            extractedValues = [analysisBody]
         } else if (ct.includes('graphql')) {
-            extractedValues = extractFromJson(rawBody)
+            extractedValues = oversized ? [analysisBody] : extractFromJson(rawBody)
         } else {
             // Unknown content type — analyze raw if it looks like text
-            if (isLikelyText(rawBody)) {
-                extractedValues = [rawBody]
+            if (isLikelyText(analysisBody)) {
+                extractedValues = [analysisBody]
             } else {
                 return {
                     analyzed: false,

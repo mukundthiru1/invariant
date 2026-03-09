@@ -112,6 +112,7 @@ const T1550_001 = T('T1550.001', 'Application Access Token', 'defense_evasion')
 const T1553 = T('T1553', 'Subvert Trust Controls', 'defense_evasion')
 const T1499 = T('T1499', 'Endpoint Denial of Service', 'impact')
 const T1498 = T('T1498', 'Network Denial of Service', 'impact')
+const T1027 = T('T1027', 'Obfuscated Files or Information', 'defense_evasion')
 const T1105 = T('T1105', 'Ingress Tool Transfer', 'command_and_control')
 const T1046 = T('T1046', 'Network Service Discovery', 'discovery')
 const T1552 = T('T1552', 'Unsecured Credentials', 'credential_access')
@@ -321,11 +322,12 @@ const INVARIANT_MITRE_MAP: Record<string, MitreMapping> = {
     docker_escape_indicator: { invariantClass: 'docker_escape_indicator', techniques: [T1611, T1068], rationale: 'Docker socket abuse, host PID namespace traversal, and privileged runtime flags indicate escape-to-host attempts' },
     cloud_metadata_advanced: { invariantClass: 'cloud_metadata_advanced', techniques: [T1552, T1190], rationale: 'Advanced metadata endpoint probing targets cloud identity credentials via SSRF and direct IMDS token workflows' },
 
-    // LLM Injection (3 classes)
+    // LLM Injection (5 classes)
     llm_prompt_injection: { invariantClass: 'llm_prompt_injection', techniques: [T1190, T1059], rationale: 'Prompt injection overrides LLM system instructions to alter behavior' },
     llm_data_exfiltration: { invariantClass: 'llm_data_exfiltration', techniques: [T1005, T1119], rationale: 'LLM data exfiltration extracts training data or system prompts' },
     llm_jailbreak: { invariantClass: 'llm_jailbreak', techniques: [T1553], rationale: 'LLM jailbreak bypasses safety controls to enable harmful outputs' },
     llm_indirect_injection: { invariantClass: 'llm_indirect_injection', techniques: [T1190, T1059, T1566_002], rationale: 'Indirect prompt injection embeds adversarial instructions in external content retrieved by an LLM agent' },
+    llm_token_smuggling: { invariantClass: 'llm_token_smuggling', techniques: [T1027], rationale: 'Unicode homoglyph and zero-width token smuggling obfuscates malicious instructions until normalization/tokenization' },
 
     // WebSocket (2 classes)
     ws_injection: { invariantClass: 'ws_injection', techniques: [T1190, T1059_007], rationale: 'WebSocket message injection exploits bidirectional channel for code execution' },

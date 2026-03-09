@@ -1846,6 +1846,52 @@ impl L2Evaluator for CmdInjectionEvaluator {
             });
         }
 
+        static BACKTICK_CHAIN_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+            Regex::new(r"`[^`\r\n]{0,120}(?:;|\|\||&&)[^`\r\n]{1,120}`").unwrap()
+        });
+        for m in BACKTICK_CHAIN_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_backtick_chained_exec".into(),
+                confidence: 0.93,
+                detail: "Backtick command substitution with chained command operators".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Backtick substitution wraps multiple chained commands, increasing shell injection impact"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not include chained shell control flow inside command substitution"
+                            .into(),
+                }],
+            });
+        }
+
+        static PROCESS_SUBSTITUTION_OUTPUT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)>\(\s*cat\s+/etc/passwd\s*\)").unwrap()
+            });
+        for m in PROCESS_SUBSTITUTION_OUTPUT_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "cmd_process_substitution_output_cat_passwd".into(),
+                confidence: 0.91,
+                detail: "Output process substitution using cat /etc/passwd".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Output process substitution executes file-read command and injects output stream into shell context"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Process substitution that reads sensitive files must be blocked".into(),
+                }],
+            });
+        }
+
         let tokenizer = ShellTokenizer;
         let stream = tokenizer.tokenize(&decoded);
         let tokens = stream.all().to_vec();
@@ -1912,6 +1958,8 @@ impl L2Evaluator for CmdInjectionEvaluator {
             "substitution"
             | "cmd_backtick_exec_explicit"
             | "cmd_process_substitution_cat_passwd"
+            | "cmd_backtick_chained_exec"
+            | "cmd_process_substitution_output_cat_passwd"
             | "powershell_cradle"
             | "shell_evasion_ansi_c_quote"
             | "shell_evasion_process_substitution"
@@ -2789,6 +2837,26 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "cmd_newline_command_chain")
+        );
+    }
+
+    #[test]
+    fn backtick_chained_exec_detected() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("`id;whoami`");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_backtick_chained_exec")
+        );
+    }
+
+    #[test]
+    fn process_substitution_output_cat_passwd_detected() {
+        let eval = CmdInjectionEvaluator;
+        let dets = eval.detect("cat >(cat /etc/passwd)");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "cmd_process_substitution_output_cat_passwd")
         );
     }
 }

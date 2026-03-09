@@ -120,6 +120,7 @@ const CLASS_TO_DOMAIN: Record<string, string> = {
     llm_prompt_injection: 'llm',
     llm_data_exfiltration: 'llm',
     llm_jailbreak: 'llm',
+    llm_token_smuggling: 'llm',
 
     // Supply chain
     dependency_confusion: 'supply',

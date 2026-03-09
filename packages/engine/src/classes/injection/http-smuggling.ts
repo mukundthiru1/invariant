@@ -591,13 +591,20 @@ export const http_request_smuggling: InvariantClassModule = {
         const hasTE = Boolean(teMatch)
         const teValue = teMatch?.[1]?.toLowerCase() ?? ''
         const hasChunked = /\bchunked\b/.test(teValue)
+        const hasEmbeddedRequestLine = /\r?\n\r?\n[\s\S]*\r?\n(?:GET|POST|PUT|DELETE|PATCH|HEAD|OPTIONS)\s+\//i.test(d)
 
         const clte = hasCL && hasTE && hasChunked
         const tecl = /transfer-encoding\s*:[^\r\n]*\r?\n[^\r\n]*content-length\s*:/i.test(d) && hasChunked
         const chunkedGzipCombo = /\btransfer-encoding\s*:\s*[^\r\n]*chunked[^\r\n]*gzip/i.test(d) || (hasChunked && /\bcontent-encoding\s*:\s*gzip\b/i.test(d))
         const invalidChunkSize = /\r?\n(?:ZZ|GG|INVALID|NOTHEX|0x[0-9a-f]+)\r?\n/i.test(d) && hasChunked
+        const validChunkedOnlyBody = hasTE
+            && hasChunked
+            && !hasCL
+            && !hasEmbeddedRequestLine
+            && /\r?\n\r?\n(?:[0-9a-fA-F]+\r?\n[\s\S]{0,65535}?\r?\n)*0\r?\n\r?\n?$/.test(d)
 
-        return clte || tecl || chunkedGzipCombo || invalidChunkSize
+        if (validChunkedOnlyBody) return false
+        return clte || tecl || chunkedGzipCombo || invalidChunkSize || hasEmbeddedRequestLine
     },
 
     detectL2: l2HttpRequestSmuggling,

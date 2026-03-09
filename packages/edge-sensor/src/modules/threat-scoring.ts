@@ -17,6 +17,13 @@
  *   3 prior signals → high-confidence attack chain.
  *   CrowdStrike calls this "indicator composition."
  */
+import {
+    detectH2PseudoHeaderAbuse,
+    detectHttpVerbTunneling,
+    detectTrailerInjection,
+    detectWebSocketUpgradeAbuse,
+} from './header-analysis.js'
+import type { BodyAnalysisResult } from './body-analysis.js'
 
 
 // ── Signal Input ─────────────────────────────────────────────────
@@ -130,6 +137,75 @@ const ATTACK_TYPE_MULTIPLIERS: Record<string, number> = {
     deser: 1.4,          // Deserialization = instant RCE
     injection: 1.2,
     auth: 1.1,
+    h2_pseudo_header_abuse: 1.2,
+    trailer_header_injection: 1.2,
+    websocket_upgrade_abuse: 1.2,
+    http_verb_tunneling: 1.15,
+}
+
+export function buildHeaderThreatSignals(
+    request: Request,
+    bodyResult: Pick<BodyAnalysisResult, 'contentType' | 'combinedText'>,
+): ThreatSignal[] {
+    const signals: ThreatSignal[] = []
+
+    if (detectH2PseudoHeaderAbuse(request.headers)) {
+        signals.push({
+            source: 'header',
+            type: 'h2_pseudo_header_abuse',
+            subtype: null,
+            confidence: 0.8,
+            severity: 'high',
+            linkedCves: [],
+            linkedTechniques: [],
+            isNovel: false,
+        })
+    }
+
+    if (detectTrailerInjection(request)) {
+        signals.push({
+            source: 'header',
+            type: 'trailer_header_injection',
+            subtype: null,
+            confidence: 0.75,
+            severity: 'high',
+            linkedCves: [],
+            linkedTechniques: [],
+            isNovel: false,
+        })
+    }
+
+    if (detectWebSocketUpgradeAbuse(request)) {
+        signals.push({
+            source: 'header',
+            type: 'websocket_upgrade_abuse',
+            subtype: null,
+            confidence: 0.7,
+            severity: 'medium',
+            linkedCves: [],
+            linkedTechniques: [],
+            isNovel: false,
+        })
+    }
+
+    const tunnelingHits = detectHttpVerbTunneling(request, {
+        contentType: bodyResult.contentType,
+        combinedText: bodyResult.combinedText,
+    })
+    for (const hit of tunnelingHits) {
+        signals.push({
+            source: 'header',
+            type: 'http_verb_tunneling',
+            subtype: hit,
+            confidence: hit === 'x_method_override_unusual_verb' ? 0.65 : 0.8,
+            severity: hit === 'x_method_override_unusual_verb' ? 'medium' : 'high',
+            linkedCves: [],
+            linkedTechniques: [],
+            isNovel: false,
+        })
+    }
+
+    return signals
 }
 
 

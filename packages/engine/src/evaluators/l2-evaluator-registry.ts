@@ -643,7 +643,7 @@ export const CLASS_CATEGORY: Readonly<Record<string, string>> = {
     env_exfiltration: 'injection',
     // LLM
     llm_prompt_injection: 'injection', llm_data_exfiltration: 'injection',
-    llm_jailbreak: 'injection',
+    llm_jailbreak: 'injection', llm_token_smuggling: 'injection',
     // WebSocket
     ws_injection: 'injection', ws_hijack: 'injection',
     // Cache
@@ -684,7 +684,7 @@ export const CLASS_SEVERITY: Readonly<Record<string, Severity>> = {
     cmd_argument_injection: 'high', graphql_batch_abuse: 'high',
     mass_assignment: 'high', xml_injection: 'high',
     dependency_confusion: 'high', env_exfiltration: 'high',
-    llm_prompt_injection: 'high', ws_injection: 'high', ws_hijack: 'high',
+    llm_prompt_injection: 'high', llm_token_smuggling: 'high', ws_injection: 'high', ws_hijack: 'high',
     cache_poisoning: 'high', cache_deception: 'high', bola_idor: 'high',
     json_sql_bypass: 'high', proto_pollution_gadget: 'high',
     // Medium

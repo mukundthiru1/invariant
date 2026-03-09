@@ -1339,6 +1339,53 @@ impl L2Evaluator for SsrfEvaluator {
                 }],
             });
         }
+
+        static SSRF_IMDSV2_TOKEN_PATH_RAW_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(r"(?i)\b(?:get|post|put)\s+/latest/api/token\b|/latest/api/token")
+                    .unwrap()
+            });
+        for m in SSRF_IMDSV2_TOKEN_PATH_RAW_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_imdsv2_token_path_probe".into(),
+                confidence: 0.97,
+                detail: "AWS IMDSv2 token path probe detected".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Token endpoint probing is a precursor to AWS metadata credential extraction"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Requests containing IMDSv2 token path indicators must be blocked in SSRF flows"
+                            .into(),
+                }],
+            });
+        }
+
+        static SSRF_DECIMAL_LOCALHOST_WITH_PORT_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| Regex::new(r"(?i)https?://2130706433:\d{1,5}(?:[/?#]|$)").unwrap());
+        for m in SSRF_DECIMAL_LOCALHOST_WITH_PORT_RE.find_iter(&decoded) {
+            dets.push(L2Detection {
+                detection_type: "ssrf_decimal_ip_with_port".into(),
+                confidence: 0.95,
+                detail: "Decimal localhost integer with explicit port".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Decimal host integer with port still resolves to localhost and internal service reachability"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "Numeric host canonicalization must be applied before host:port SSRF validation"
+                            .into(),
+                }],
+            });
+        }
         
         static CONTAINER_K8S_RE: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
             Regex::new(r"(?i)(?:unix:///var/run/docker\.sock|tcp://localhost:2375|localhost:2376|kubernetes\.default\.svc|localhost:2379|localhost:4001|localhost:8500|localhost:15000|localhost:9901|localhost:9001|169\.254\.76\.1)").unwrap()
@@ -1839,10 +1886,12 @@ impl L2Evaluator for SsrfEvaluator {
             | "ssrf_aws_vpc_endpoint"
             | "ssrf_ipv6_zone_localhost"
             | "ssrf_decimal_ip_loopback"
-            | "ssrf_ipv6_mapped_metadata" => Some(InvariantClass::SsrfInternalReach),
-            "cloud_metadata" | "ssrf_cloud_metadata_alt_path" | "ssrf_aws_imdsv2_token_url" => {
-                Some(InvariantClass::SsrfCloudMetadata)
-            }
+            | "ssrf_ipv6_mapped_metadata"
+            | "ssrf_decimal_ip_with_port" => Some(InvariantClass::SsrfInternalReach),
+            "cloud_metadata"
+            | "ssrf_cloud_metadata_alt_path"
+            | "ssrf_aws_imdsv2_token_url"
+            | "ssrf_imdsv2_token_path_probe" => Some(InvariantClass::SsrfCloudMetadata),
             "protocol_smuggle" => Some(InvariantClass::SsrfProtocolSmuggle),
             _ => None,
         }
@@ -2118,6 +2167,26 @@ mod tests {
         assert!(
             dets.iter()
                 .any(|d| d.detection_type == "ssrf_aws_imdsv2_token_url")
+        );
+    }
+
+    #[test]
+    fn aws_imdsv2_token_path_probe_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("GET /latest/api/token HTTP/1.1\r\nHost: 169.254.169.254\r\n");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_imdsv2_token_path_probe")
+        );
+    }
+
+    #[test]
+    fn decimal_ip_with_port_detected() {
+        let eval = SsrfEvaluator;
+        let dets = eval.detect("http://2130706433:8080/admin");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "ssrf_decimal_ip_with_port")
         );
     }
 

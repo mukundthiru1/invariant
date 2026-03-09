@@ -483,6 +483,68 @@ impl SqlStructuralEvaluator {
         detections
     }
 
+    fn detect_mysql_select_if_sleep_subquery(&self, input: &str) -> Vec<L2Detection> {
+        static MYSQL_SELECT_IF_SLEEP_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?is)\(\s*select\s+if\s*\(\s*1\s*=\s*1\s*,\s*sleep\s*\(\s*\d+(?:\.\d+)?\s*\)\s*,\s*0\s*\)\s*\)",
+                )
+                .unwrap()
+            });
+
+        let mut detections = Vec::new();
+        for m in MYSQL_SELECT_IF_SLEEP_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "mysql_select_if_sleep_subquery".into(),
+                confidence: 0.94,
+                detail: "MySQL SELECT IF(1=1,SLEEP(...),0) timing subquery payload".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::PayloadInject,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Nested SELECT IF(...,SLEEP(),0) expression leaks boolean state via timing side-channel"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "User input must not introduce nested MySQL conditional timing subqueries".into(),
+                }],
+            });
+        }
+        detections
+    }
+
+    fn detect_semicolon_whitespace_stacked_variant(&self, input: &str) -> Vec<L2Detection> {
+        static SEMICOLON_WS_STACKED_RE: std::sync::LazyLock<Regex> =
+            std::sync::LazyLock::new(|| {
+                Regex::new(
+                    r"(?is);\s*(?:/\*.*?\*/\s*|--[^\n]*\n\s*|#[^\n]*\n\s*)*(?:select|insert|update|delete|drop|alter|create|exec(?:ute)?)\b",
+                )
+                .unwrap()
+            });
+        let mut detections = Vec::new();
+        for m in SEMICOLON_WS_STACKED_RE.find_iter(input) {
+            detections.push(L2Detection {
+                detection_type: "stacked_execution_semicolon_ws".into(),
+                confidence: 0.91,
+                detail: "Semicolon-stacked query with whitespace/comment padding".into(),
+                position: m.start(),
+                evidence: vec![ProofEvidence {
+                    operation: EvidenceOperation::EncodingDecode,
+                    matched_input: m.as_str().to_owned(),
+                    interpretation:
+                        "Semicolon-delimited statement boundary survives whitespace/comment obfuscation"
+                            .into(),
+                    offset: m.start(),
+                    property:
+                        "SQL inputs must reject semicolon-separated statement chaining even when comment-padded"
+                            .into(),
+                }],
+            });
+        }
+        detections
+    }
+
     fn detect_time_oracle(&self, tokens: &[TokTuple]) -> Vec<L2Detection> {
         let mut detections = Vec::new();
         let meaningful: Vec<_> = tokens
@@ -2636,6 +2698,18 @@ impl L2Evaluator for SqlStructuralEvaluator {
                     all_detections.push(det);
                 }
             }
+            for det in self.detect_mysql_select_if_sleep_subquery(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
+            for det in self.detect_semicolon_whitespace_stacked_variant(variant) {
+                let key = format!("{}:{}", det.detection_type, det.detail);
+                if seen.insert(key) {
+                    all_detections.push(det);
+                }
+            }
             for det in self.detect_error_oracle(&tokens) {
                 let key = format!("{}:{}", det.detection_type, det.detail);
                 if seen.insert(key) {
@@ -2970,8 +3044,10 @@ impl L2Evaluator for SqlStructuralEvaluator {
             "union_extraction" => Some(InvariantClass::SqlUnionExtraction),
             "stacked_execution" => Some(InvariantClass::SqlStackedExecution),
             "stacked_execution_normalized" => Some(InvariantClass::SqlStackedExecution),
+            "stacked_execution_semicolon_ws" => Some(InvariantClass::SqlStackedExecution),
             "time_oracle" => Some(InvariantClass::SqlTimeOracle),
             "mysql_if_sleep_time_oracle" => Some(InvariantClass::SqlTimeOracle),
+            "mysql_select_if_sleep_subquery" => Some(InvariantClass::SqlTimeOracle),
             "case_time_oracle" => Some(InvariantClass::SqlTimeOracle),
             "postgres_cast_pg_sleep_oracle" => Some(InvariantClass::SqlErrorOracle),
             "error_oracle" => Some(InvariantClass::SqlErrorOracle),
@@ -3184,6 +3260,30 @@ mod tests {
             dets.iter()
                 .any(|d| d.detection_type == "stacked_execution_normalized"),
             "Should detect normalized semicolon-stacked query, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn mysql_select_if_sleep_subquery_payload() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("AND (SELECT IF(1=1,SLEEP(5),0))");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "mysql_select_if_sleep_subquery"),
+            "Should detect SELECT IF(...SLEEP...) subquery payload, got: {:?}",
+            dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn stacked_query_semicolon_comment_whitespace_variant() {
+        let eval = SqlStructuralEvaluator;
+        let dets = eval.detect("1;/**/ \n DROP TABLE audit_log");
+        assert!(
+            dets.iter()
+                .any(|d| d.detection_type == "stacked_execution_semicolon_ws"),
+            "Should detect semicolon+comment stacked execution variant, got: {:?}",
             dets.iter().map(|d| &d.detection_type).collect::<Vec<_>>()
         );
     }

@@ -9,7 +9,6 @@ const GQL_INTROSPECTION_SCHEMA_RE = /__schema\s*\{/i
 const GQL_INTROSPECTION_TYPE_CALL_RE = /__type\s*\(/i
 const GQL_INTROSPECTION_TYPE_SELECTION_RE = /__type\s*\{/i
 const GQL_INTROSPECTION_QUERYTYPE_RE = /\{\s*__schema\s*\{.*queryType/i
-const GQL_ALIAS_CALL_RE = /\b\w+\s*:\s*\w+\s*[({]/g
 const GQL_BATCH_ARRAY_RE = /^\s*\[.*\{.*query.*\}.*\{.*query.*\}/s
 const GQL_FIELD_PROBING_RE = /\b(?:usr|userr|userr|idd|iddd|namee|emal|emaill|passwrod|tokn|rolee|creditcardd|ssnn)\b/i
 
@@ -59,6 +58,11 @@ function hasCircularFragments(input: string): boolean {
         if (dfs(node)) return true
     }
     return false
+}
+
+function countAliases(input: string): number {
+    // Use a fresh regex per call so /g lastIndex state cannot leak across detections.
+    return Array.from(input.matchAll(/\b\w+\s*:\s*\w+\s*[({]/g)).length
 }
 
 export const graphqlIntrospection: InvariantClassModule = {
@@ -122,7 +126,7 @@ export const graphqlBatchAbuse: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        const aliasCount = (d.match(GQL_ALIAS_CALL_RE) || []).length
+        const aliasCount = countAliases(d)
         return aliasCount >= 5
             || GQL_BATCH_ARRAY_RE.test(d)
     },
@@ -162,7 +166,7 @@ export const graphql_injection: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         const depth = maxDepth(d)
-        const aliasCount = (d.match(GQL_ALIAS_CALL_RE) || []).length
+        const aliasCount = countAliases(d)
         const typoCount = (d.match(/\b(?:usr|userr|userr|idd|iddd|namee|emal|emaill|passwrod|tokn|rolee|creditcardd|ssnn)\b/gi) || []).length
 
         return GQL_INTROSPECTION_SCHEMA_RE.test(d)
@@ -215,7 +219,7 @@ export const graphql_dos: InvariantClassModule = {
     detect: (input: string): boolean => {
         const d = deepDecode(input)
         const depth = maxDepth(d)
-        const aliasCount = (d.match(GQL_ALIAS_CALL_RE) || []).length
+        const aliasCount = countAliases(d)
 
         return depth > 15 || aliasCount >= 15 || hasCircularFragments(d)
     },

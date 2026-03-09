@@ -187,6 +187,7 @@ export type InvariantClass =
     | 'llm_data_exfiltration'
     | 'llm_jailbreak'
     | 'llm_indirect_injection'
+    | 'llm_token_smuggling'
     // WebSocket threats
     | 'ws_injection'
     | 'ws_hijack'

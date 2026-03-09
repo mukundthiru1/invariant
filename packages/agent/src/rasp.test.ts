@@ -11,11 +11,11 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import { InvariantDB } from './db.js'
-import { wrapExec, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, type ExecRaspConfig } from './rasp/exec.js'
+import { wrapExec, wrapExecFile, wrapFork, installVmRuntimeHooks, uninstallVmRuntimeHooks, hookIntegrityCheck, type ExecRaspConfig } from './rasp/exec.js'
 
 const require = createRequire(import.meta.url)
 import { wrapFsOperation, type FsRaspConfig } from './rasp/fs.js'
-import { wrapFetch, type HttpRaspConfig } from './rasp/http.js'
+import { wrapFetch, wrapNodeHttpGet, wrapNodeHttpRequest, type HttpRaspConfig } from './rasp/http.js'
 import { wrapJsonParse, checkDeserInvariants, type DeserRaspConfig } from './rasp/deser.js'
 
 // ── Command Execution RASP ──────────────────────────────────────
@@ -234,6 +234,21 @@ describe('HTTP RASP — wrapFetch', () => {
         await wrapped('http://10.0.0.1/internal')
         expect(called).toBe(true)
     })
+
+    it('wrapNodeHttpRequest blocks metadata endpoints in defend mode', () => {
+        const config: HttpRaspConfig = { mode: 'defend', db }
+        const original = ((..._args: unknown[]) => 'ok') as (...args: unknown[]) => unknown
+        const wrapped = wrapNodeHttpRequest(original, config, 'http:')
+        expect(() => wrapped('http://169.254.169.254/latest/meta-data/')).toThrow(/INVARIANT/)
+    })
+
+    it('wrapNodeHttpGet monitors private IPs in observe mode', () => {
+        const config: HttpRaspConfig = { mode: 'observe', db }
+        const original = ((..._args: unknown[]) => 'ok') as (...args: unknown[]) => unknown
+        const wrapped = wrapNodeHttpGet(original, config, 'https:')
+        expect(wrapped({ hostname: '127.0.0.1', path: '/admin' })).toBe('ok')
+        expect(db.getSignals(10).length).toBeGreaterThanOrEqual(1)
+    })
 })
 
 // ── Deserialization RASP ─────────────────────────────────────────
@@ -345,6 +360,16 @@ describe('VM runtime hooks (vm, Function, Module._resolveFilename)', () => {
         expect(signals.length).toBeGreaterThanOrEqual(1)
     })
 
+    it('vm.compileFunction inspects code', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        installVmRuntimeHooks(config, vm)
+        const compileFunction = vm['compileFunction'] as ((code: string, params: string[]) => (...args: unknown[]) => unknown) | undefined
+        if (!compileFunction) return
+        compileFunction('return require("child_process")', [])
+        const signals = db.getSignals(10)
+        expect(signals.length).toBeGreaterThanOrEqual(1)
+    })
+
     it('Function constructor hook inspects body in observe mode', () => {
         const config: ExecRaspConfig = { mode: 'observe', db }
         installVmRuntimeHooks(config, vm)
@@ -362,6 +387,29 @@ describe('VM runtime hooks (vm, Function, Module._resolveFilename)', () => {
         const check = hookIntegrityCheck(vm)
         expect(check.vmRunInContext).toBe(false)
         expect(check.vmRunInNewContext).toBe(false)
+        expect(check.vmCompileFunction).toBe(false)
         expect(check.vmScript).toBe(false)
+    })
+})
+
+describe('Exec RASP additional hooks', () => {
+    let db: InvariantDB
+
+    beforeEach(() => { db = new InvariantDB(':memory:') })
+    afterEach(() => { db.close() })
+
+    it('wrapExecFile scans file argument like exec', () => {
+        const config: ExecRaspConfig = { mode: 'defend', db }
+        const original = ((file: string) => file) as (...args: unknown[]) => unknown
+        const wrapped = wrapExecFile(original, config, 'execFile')
+        expect(() => wrapped('; cat /etc/passwd')).toThrow(/INVARIANT/)
+    })
+
+    it('wrapFork monitors suspicious module paths in observe mode', () => {
+        const config: ExecRaspConfig = { mode: 'observe', db }
+        const original = ((modulePath: string) => modulePath) as (...args: unknown[]) => unknown
+        const wrapped = wrapFork(original, config)
+        expect(wrapped('/tmp/untrusted.js')).toBe('/tmp/untrusted.js')
+        expect(db.getSignals(10).length).toBeGreaterThanOrEqual(1)
     })
 })

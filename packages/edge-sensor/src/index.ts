@@ -58,7 +58,9 @@ import {
     analyzeRequestBody,
     type BodyAnalysisResult,
     ThreatScoringEngine,
+    buildHeaderThreatSignals,
     type ThreatSignal,
+    detectWebSocketUpgradeAbuse,
     ResponseAuditor,
     InternalProber,
     ApplicationModel,
@@ -589,6 +591,7 @@ export default {
         const path = url.pathname
         const query = url.search
         const sourceIpForPolicy = request.headers.get('cf-connecting-ip') ?? '0.0.0.0'
+        const hasQueryParams = query.length > 1
 
         const [pathRulesConfig, ipRulesConfig, geoRulesConfig, rateLimitsConfig, responseHeadersConfig] = await Promise.all([
             getPathRulesConfig(env),
@@ -841,8 +844,9 @@ export default {
 
         // WebSocket upgrade interception — validate handshake before proxy.
         const wsUpgrade = analyzeWebSocketUpgrade(request, env)
+        const wsUpgradeAbuse = detectWebSocketUpgradeAbuse(request)
         if (wsUpgrade.isWebSocketUpgrade) {
-            if (wsUpgrade.shouldBlock) {
+            if (wsUpgrade.shouldBlock || wsUpgradeAbuse) {
                 return withHeaders(blockResponse('high'))
             }
 
@@ -901,7 +905,8 @@ export default {
         // /../../../etc/passwd.js bypasses all detection if we only check extension.
         const isStaticAsset = /\.(?:css|js|mjs|png|jpg|jpeg|gif|svg|ico|webp|avif|woff2?|ttf|eot|otf|map|mp4|webm|ogg|mp3|wav|flac|pdf|zip|gz|br|wasm)$/i.test(path)
         const hasTraversal = /(?:\.\.|%2e%2e|%252e|\.\.%2f|%2f\.\.|%2f%2e%2e|\.\.%5c|%c0%ae|%c0%2e|%e0%40%ae|%00|\/\.\.\.\/|\/{2,})/i.test(path)
-        if (isStaticAsset && !hasTraversal) {
+        const skipStaticBodyScan = isStaticAsset && !hasTraversal
+        if (skipStaticBodyScan && !hasQueryParams) {
             return withHeaders(await fetch(request))
         }
 
@@ -917,7 +922,16 @@ export default {
         const contentType = request.headers.get('content-type') ?? ''
 
         // L3b: Request body analysis
-        const bodyResult: BodyAnalysisResult = await analyzeRequestBody(request)
+        const bodyResult: BodyAnalysisResult = skipStaticBodyScan
+            ? {
+                analyzed: false,
+                contentType: request.headers.get('content-type'),
+                bodySize: 0,
+                extractedValues: [],
+                combinedText: '',
+                skipReason: 'static_asset_shortcut',
+            }
+            : await analyzeRequestBody(request)
         const bodyText = bodyResult.combinedText || null
         const bodyValues = bodyResult.extractedValues
 
@@ -1142,6 +1156,13 @@ export default {
                 isNovel: false,
             })
         }
+
+        threatSignals.push(
+            ...buildHeaderThreatSignals(request, {
+                contentType: bodyResult.contentType,
+                combinedText: bodyResult.combinedText,
+            }),
+        )
 
         // Behavioral: high error rate — scanner-like probe pattern
         if (behaviorTracker.hasHighErrorRate(sourceHash)) {
