@@ -139,6 +139,10 @@ export const openRedirectBypass: InvariantClassModule = {
         '?url=https://evil.com',
         '?next=%2F%2Fevil.com',
         '?redirect=\\\\evil.com\\path',
+        // HIGH-008: javascript: and data: scheme bypass + backslash protocol-relative
+        '?redirect=javascript:eval(atob("YWxlcnQoMSk="))',
+        '?url=data:text/html,<script>alert(1)</script>',
+        '?next=/\\evil.com',
     ],
 
     knownBenign: [
@@ -150,9 +154,14 @@ export const openRedirectBypass: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        return (/\/\/[^/]+\.[^/]+/.test(d) && /(?:redirect|url|next|return|goto|dest|target|rurl|forward)\s*[=:]/i.test(d))
+        const hasRedirectParam = /(?:redirect|url|next|return|goto|dest|target|rurl|forward)\s*[=:]/i.test(d)
+        return (hasRedirectParam && /\/\/[^/]+\.[^/]+/.test(d))
             || /\\\\[^\\]+\\/.test(d)
             || /(?:redirect|url|next|goto)=(?:\/\/|https?:|%2[fF]%2[fF])/i.test(input)
+            // HIGH-008: javascript: and data: scheme in redirect parameters
+            || (hasRedirectParam && /(?:javascript|data|vbscript)\s*:/i.test(d))
+            // HIGH-008: backslash protocol-relative URLs (/\evil.com bypasses some regex checks)
+            || (hasRedirectParam && /\/\\+[a-z0-9.-]+\.[a-z]{2,}/i.test(d))
     },
     detectL2: l2OpenRedirect,
     generateVariants: (count: number): string[] => {

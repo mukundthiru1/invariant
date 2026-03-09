@@ -29,6 +29,12 @@ const TAUTOLOGY_COMMENT_OPEN_CLOSE_PATTERN = /\/\*!\d*\s*([\s\S]*?)\*\//g
 const TAUTOLOGY_BLOCK_COMMENT_PATTERN = /\/\*[\s\S]*?\*\//g
 const TAUTOLOGY_LINE_COMMENT_PATTERN = /--[^\n]*/g
 const TAUTOLOGY_WHITESPACE_PATTERN = /\s+/g
+// CRIT-002: Boolean blind extraction — AND/OR followed by a string/character
+// function with a SELECT subquery. Canonical pattern:
+//   admin' AND SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a'--
+// The tautology pattern only detects OR/||; this catches AND-based blind SQLi.
+// Bounded to [^(]{0,60} to avoid ReDoS on adversarial inputs.
+const BLIND_EXTRACT_PATTERN = /['"`]\s*(?:AND|OR|\|\|)\s+(?:SUBSTRING|SUBSTR|MID|ASCII|ORD|CHAR_LENGTH|LENGTH|UPPER|LOWER|LEFT|RIGHT|TRIM|HEX|UNHEX|CONV|INET_ATON|BIN|CAST|CONVERT|IF|CASE)\s*\(/i
 
 export const sqlTautology: InvariantClassModule = {
     id: 'sql_tautology',
@@ -50,7 +56,8 @@ export const sqlTautology: InvariantClassModule = {
             'api_json': 0.7,
         },
         falsePositivePatterns: [
-            /\bx=x\b.*\bcss\b/i,
+            // Bounded to prevent ReDoS on adversarial inputs with many x=x occurrences.
+            /\bx=x\b[^\n]{0,300}\bcss\b/i,
         ],
         minInputLength: 5,
     },
@@ -73,6 +80,10 @@ export const sqlTautology: InvariantClassModule = {
         `' OR 'a'::jsonb = '"a"'::jsonb--`,
         "' OR JSON_VALID('[]')--",
         `' OR 'a' MEMBER OF('["a"]')--`,
+        // CRIT-002: Boolean blind extraction payloads
+        "admin' AND SUBSTRING((SELECT password FROM users LIMIT 1),1,1)='a'--",
+        "' AND ASCII(SUBSTRING((SELECT secret FROM vault),1,1))>64--",
+        "' OR MID((SELECT version()),1,1)='5'--",
     ],
 
     knownBenign: [
@@ -104,7 +115,9 @@ export const sqlTautology: InvariantClassModule = {
         const match7 = TAUTOLOGY_JSONB_EQUAL_PATTERN.test(d) || TAUTOLOGY_JSONB_EQUAL_PATTERN.test(stripped)
         const match8 = TAUTOLOGY_JSON_VALID_PATTERN.test(d) || TAUTOLOGY_JSON_VALID_PATTERN.test(stripped)
         const match9 = TAUTOLOGY_MEMBER_OF_PATTERN.test(d) || TAUTOLOGY_MEMBER_OF_PATTERN.test(stripped)
-        return match1 || match2 || match3 || match4 || match5 || match6 || match7 || match8 || match9
+        // CRIT-002: Boolean blind extraction — AND/OR with string function
+        const match10 = BLIND_EXTRACT_PATTERN.test(d) || BLIND_EXTRACT_PATTERN.test(stripped)
+        return match1 || match2 || match3 || match4 || match5 || match6 || match7 || match8 || match9 || match10
     },
 
     /**

@@ -5,8 +5,20 @@ import type { InvariantClassModule, DetectionLevelResult } from '../types.js'
 import { deepDecode } from '../encoding.js'
 import { detectSqlStructural } from '../../evaluators/sql-structural-evaluator.js'
 
-const ERROR_ORACLE_CLASSIC_PATTERN = /(?:EXTRACTVALUE|UPDATEXML|XMLTYPE|CONVERT\s*\(.*USING|EXP\s*\(\s*~|POLYGON\s*\(|GTID_SUBSET|FLOOR\s*\(\s*RAND|GROUP\s+BY\s+.*FLOOR)/i
+// CRITICAL-010 fix: replaced `.*` with `[^)]{0,200}` to prevent catastrophic
+// backtracking (ReDoS) on adversarial inputs with deeply nested parentheses.
+const ERROR_ORACLE_CLASSIC_PATTERN = /(?:EXTRACTVALUE|UPDATEXML|XMLTYPE|CONVERT\s*\([^)]{0,200}USING|EXP\s*\(\s*~|POLYGON\s*\(|GTID_SUBSET|FLOOR\s*\(\s*RAND|GROUP\s+BY\s+[^\n]{0,200}FLOOR)/i
 const ERROR_ORACLE_OBFUSCATED_PATTERN = /(?:^|['"`;\s)])(?:AND|OR)?\s*(?:E\s*X\s*T\s*R\s*A\s*C\s*T\s*V\s*A\s*L\s*U\s*E|U\s*P\s*D\s*A\s*T\s*E\s*X\s*M\s*L|G\s*T\s*I\s*D\s*_?\s*S\s*U\s*B\s*S\s*E\s*T)\s*\(/i
+// C-015: Oracle, MSSQL, PostgreSQL error-based injection patterns
+// Oracle: CTXSYS/ORDSYS package functions that trigger ORA-xxxx errors when
+//   called with controlled data. PostgreSQL: CAST of a subquery to INTEGER
+//   forces a type error that leaks the subquery value. MSSQL: HASHBYTES/
+//   CONVERT variations that surface data through error messages.
+const ERROR_ORACLE_ORACLE_PATTERN = /(?:CTXSYS\s*\.\s*DRITHSX\s*\.\s*SN|ORDSYS\s*\.\s*ORD_DICOM\s*\.\s*GETMAPPINGXPATH|XMLTYPE\s*\(\s*['"`]|UTL_INADDR\s*\.\s*GET_HOST_(?:NAME|ADDRESS))/i
+// Lazy bounded [\s\S]{0,200}? safely handles nested parentheses (e.g. version())
+// that would break a [^)] character class.
+const ERROR_ORACLE_POSTGRES_PATTERN = /CAST\s*\([\s\S]{0,200}?\bSELECT\b[\s\S]{0,200}?\bAS\s+(?:INTEGER|INT|NUMERIC|FLOAT|BIGINT|REAL)\b/i
+const ERROR_ORACLE_MSSQL_PATTERN = /(?:HASHBYTES\s*\(\s*'(?:MD5|SHA1|SHA2_256|SHA2_512)'\s*,\s*\(\s*SELECT|CONVERT\s*\(\s*(?:INT|INTEGER|BIGINT)\s*,\s*\(\s*SELECT)/i
 
 export const sqlErrorOracle: InvariantClassModule = {
     id: 'sql_error_oracle',
@@ -26,6 +38,12 @@ export const sqlErrorOracle: InvariantClassModule = {
         "' AND EXTR/**/ACTVALUE(1,CONCAT(0x7e,(SELECT version())))--",
         "' AND UPDAT/**/EXML(1,CONCAT(0x7e,(SELECT user())),1)--",
         "' AND GTID/**/_SUBSET(CONCAT(0x7e,(SELECT version())),1)--",
+        // C-015: Oracle, PostgreSQL, MSSQL error-based
+        "' AND 1=CTXSYS.DRITHSX.SN(1,'aaa')--",
+        "' AND 1=ORDSYS.ORD_DICOM.GETMAPPINGXPATH(1,'a','b')--",
+        "' AND 1=UTL_INADDR.GET_HOST_NAME('localhost')--",
+        "' AND CAST((SELECT version()) AS INTEGER)--",
+        "' AND HASHBYTES('MD5',(SELECT TOP 1 password FROM users)) > 0x0--",
     ],
 
     knownBenign: [
@@ -38,9 +56,12 @@ export const sqlErrorOracle: InvariantClassModule = {
 
     detect: (input: string): boolean => {
         const d = deepDecode(input)
-        const classic = ERROR_ORACLE_CLASSIC_PATTERN.test(d)
-        const obfuscated = ERROR_ORACLE_OBFUSCATED_PATTERN.test(d)
-        return classic || obfuscated
+        return ERROR_ORACLE_CLASSIC_PATTERN.test(d)
+            || ERROR_ORACLE_OBFUSCATED_PATTERN.test(d)
+            // C-015: Oracle/PostgreSQL/MSSQL error-based
+            || ERROR_ORACLE_ORACLE_PATTERN.test(d)
+            || ERROR_ORACLE_POSTGRES_PATTERN.test(d)
+            || ERROR_ORACLE_MSSQL_PATTERN.test(d)
     },
 
     detectL2: (input: string): DetectionLevelResult | null => {

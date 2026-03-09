@@ -131,7 +131,11 @@ function extractJwtLikeHeaders(input: string): Record<string, unknown>[] {
 }
 
 function isKidPathTraversal(kid: string): boolean {
-    return /\.\.[\\/]/.test(kid) || /(?:^|[\\/])(?:etc[\\/]passwd|dev[\\/]null)\b/i.test(kid)
+    // HIGH-019: Extend to catch file:// protocol references and absolute paths
+    return /\.\.[\\/]/.test(kid)
+        || /(?:^|[\\/])(?:etc[\\/]passwd|dev[\\/]null)\b/i.test(kid)
+        || /^(?:file|ftp|gopher):\/\//i.test(kid.trim())
+        || /^[\\/](?:etc|proc|dev|sys|tmp|var|usr|bin|home)[\\/]/i.test(kid)
 }
 
 function isKidSqlInjection(kid: string): boolean {
@@ -166,10 +170,18 @@ function hasJwtBombingShape(token: ParsedJwtToken): boolean {
 function hasAlgConfusionSignal(header: Record<string, unknown>, fullInput: string): boolean {
     const alg = String(header.alg ?? '').toUpperCase()
     if (!/^HS(?:256|384|512)$/.test(alg)) return false
+    // RSA key confusion
     if (typeof header.kid === 'string' && /(?:rsa|public|pub[_-]?key|asymmetric|rs256)/i.test(header.kid)) return true
     if (/(?:rs(?:256|384|512)\s*(?:-|=)?>\s*hs(?:256|384|512)|from\s+rs(?:256|384|512)\s+to\s+hs(?:256|384|512))/i.test(fullInput)) return true
     if (/-----BEGIN\s+(?:RSA\s+)?PUBLIC\s+KEY-----/i.test(fullInput)) return true
     if (/(?:rsa\s+)?public\s+key\s+(?:as|for|used\s+as)\s+(?:hmac|secret|symmetric)/i.test(fullInput)) return true
+    // CRITICAL-008: EdDSA (Ed25519/Ed448) and ECDSA (ES256/ES384/ES512) key confusion
+    // — changing from asymmetric EdDSA/ECDSA to symmetric HS256 is the same attack as
+    //   RS256→HS256 but missed because kid patterns only checked for RSA keywords.
+    if (typeof header.kid === 'string' && /(?:ed25519|ed448|eddsa|es256|es384|es512|ec256|p-256|prime256v1|secp256r1|secp384r1)/i.test(header.kid)) return true
+    if (/(?:es(?:256|384|512)|ed(?:dsa|25519|448))\s*(?:-|=)?>\s*hs(?:256|384|512)/i.test(fullInput)) return true
+    if (/-----BEGIN\s+EC\s+(?:PRIVATE|PUBLIC)\s+KEY-----/i.test(fullInput)) return true
+    if (/ecdsa\s+(?:public\s+)?key\s+(?:as|for|used\s+as)\s+(?:hmac|secret|symmetric)/i.test(fullInput)) return true
     return false
 }
 
@@ -196,6 +208,9 @@ export const jwtKidInjection: InvariantClassModule = {
         '{"kid":"../../dev/null"}',
         '{"kid":"../../../etc/passwd"}',
         'kid=1 UNION SELECT password FROM users--',
+        // HIGH-019: file:// protocol and absolute path injection
+        '{"kid":"file:///etc/passwd"}',
+        '{"kid":"/etc/shadow"}',
     ],
 
     knownBenign: [
