@@ -138,6 +138,7 @@ let stateManager: SensorStateManager | null = null
 let initialized = false
 let streamInitialized = false
 let streamTask: Promise<void> | null = null
+let initializationPromise: Promise<void> | null = null
 
 // ── Encrypted collective intelligence state ───────────────────────
 // Instantiated once per Worker process. Survives across requests.
@@ -457,7 +458,7 @@ function isIpv6InCidr(ip: string, cidr: string): boolean {
     const [baseIp, prefixRaw] = cidr.split('/')
     if (!baseIp || !prefixRaw) return false
     const prefix = Number.parseInt(prefixRaw, 10)
-    
+
     const ipToBigInt = (ipv6: string): bigint | null => {
         let fullIp = ipv6
         if (fullIp.includes('::')) {
@@ -469,10 +470,10 @@ function isIpv6InCidr(ip: string, cidr: string): boolean {
             if (missing < 0) return null
             fullIp = [...left, ...Array(missing).fill('0'), ...right].join(':')
         }
-        
+
         const segments = fullIp.split(':')
         if (segments.length !== 8) return null
-        
+
         let result = 0n
         for (const segment of segments) {
             if (!/^[0-9a-fA-F]{1,4}$/.test(segment)) return null
@@ -483,11 +484,11 @@ function isIpv6InCidr(ip: string, cidr: string): boolean {
 
     const ipNum = ipToBigInt(ip)
     const baseNum = ipToBigInt(baseIp)
-    
+
     if (ipNum === null || baseNum === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 128) return false
-    
+
     const mask = prefix === 0 ? 0n : ((1n << 128n) - 1n) << (128n - BigInt(prefix))
-    
+
     return (ipNum & mask) === (baseNum & mask)
 }
 
@@ -561,13 +562,15 @@ export default {
 
         // Lazy initialization from KV (once per Worker lifecycle)
         if (!initialized && stateManager) {
-            try {
-                await stateManager.initialize()
-                initialized = true
-            } catch {
-                // KV failure must not block traffic
-                initialized = true
+            if (!initializationPromise) {
+                initializationPromise = stateManager.initialize().then(() => {
+                    initialized = true
+                }).catch(() => {
+                    // KV failure must not block traffic
+                    initialized = true
+                })
             }
+            await initializationPromise
         }
 
         // Push-based rule distribution: connect to intel SSE stream once per isolate.
@@ -812,12 +815,12 @@ export default {
                 message: 'KV rate limit check failed, falling back to memory',
                 details: error instanceof Error ? error.message : String(error)
             }))
-            
+
             const currentMinute = Math.floor(Date.now() / 60000)
             const fallbackKey = `${sourceIpForPolicy}`
             const record = inMemoryRateLimitFallback.get(fallbackKey)
             const fallbackLimit = typeof rateLimitsConfig === 'object' && rateLimitsConfig.requests_per_minute ? rateLimitsConfig.requests_per_minute : 100
-            
+
             if (!record || record.minute !== currentMinute) {
                 inMemoryRateLimitFallback.set(fallbackKey, { count: 1, minute: currentMinute })
             } else {
@@ -1785,4 +1788,3 @@ export default {
         }
     },
 }
-
