@@ -54,6 +54,9 @@ function countLeadingZeroBits(hash: Uint8Array): number {
  * on a Cloudflare Worker isolate. Well within CPU budget.
  */
 async function solveChallenge(challenge: string, difficulty: number): Promise<string> {
+    if (difficulty > 26) {
+        throw new Error(`PoW solve difficulty ${difficulty} is too high`)
+    }
     const encoder = new TextEncoder()
     let nonce = 0
 
@@ -146,6 +149,7 @@ export class SignalBuffer {
 
             const resp = await fetch(challengeUrl, {
                 headers: { 'Authorization': `Bearer ${this.apiKey}` },
+                signal: AbortSignal.timeout(5000),
             })
 
             if (!resp.ok) {
