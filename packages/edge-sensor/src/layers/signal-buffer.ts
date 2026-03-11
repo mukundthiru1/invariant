@@ -54,6 +54,10 @@ function countLeadingZeroBits(hash: Uint8Array): number {
  * on a Cloudflare Worker isolate. Well within CPU budget.
  */
 async function solveChallenge(challenge: string, difficulty: number): Promise<string> {
+    if (difficulty > 26) {
+        throw new Error(`Invalid difficulty ${difficulty} (max 26)`)
+    }
+
     const encoder = new TextEncoder()
     let nonce = 0
 

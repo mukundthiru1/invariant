@@ -1,0 +1,4 @@
+## 2024-05-17 - Missing Bounds Check on Nonce Iteration
+**Vulnerability:** A missing bounds check on the difficulty parameter in the `solveChallenge` function in `packages/edge-sensor/src/layers/signal-buffer.ts` could allow an attacker to cause the edge sensor to hang indefinitely, resulting in a Denial of Service (DoS) condition.
+**Learning:** Functions performing computationally expensive operations (like Proof-of-Work hashing) must have strict bounds on their input parameters to prevent CPU exhaustion.
+**Prevention:** Always validate and bound parameters that control loop iterations or computational complexity, especially when the parameters originate from external sources or external challenge endpoints.
