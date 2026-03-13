@@ -135,6 +135,7 @@ let evidenceSealer: EvidenceSealer | null = null
 
 let signalBuffer: SignalBuffer | null = null
 let stateManager: SensorStateManager | null = null
+let initPromise: Promise<void> | null = null
 let initialized = false
 let streamInitialized = false
 let streamTask: Promise<void> | null = null
@@ -561,13 +562,15 @@ export default {
 
         // Lazy initialization from KV (once per Worker lifecycle)
         if (!initialized && stateManager) {
-            try {
-                await stateManager.initialize()
-                initialized = true
-            } catch {
-                // KV failure must not block traffic
-                initialized = true
+            if (!initPromise) {
+                initPromise = stateManager.initialize().then(() => {
+                    initialized = true
+                }).catch(() => {
+                    // KV failure must not block traffic
+                    initialized = true
+                })
             }
+            await initPromise
         }
 
         // Push-based rule distribution: connect to intel SSE stream once per isolate.
