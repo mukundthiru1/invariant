@@ -1,0 +1,4 @@
+## 2025-03-07 - Race Condition in Module-Level State Initialization (Cloudflare Worker)
+**Vulnerability:** A module-level `let initialized = false` flag was used to track initialization state (`await stateManager.initialize()`). Multiple concurrent requests during a cold start could bypass this check simultaneously before the first promise resolved, causing parallel initialization and potential state corruption/duplicate KV reads.
+**Learning:** In Cloudflare Workers or similar serverless environments where isolates handle concurrent requests, lazy initialization of shared async state must use a Promise-based lock (e.g., storing the initialization Promise itself) rather than a simple boolean flag.
+**Prevention:** Use a `let initializePromise: Promise<void> | null` pattern. Check if the promise exists; if not, create it and assign it to the variable, then `await initializePromise` on all concurrent requests.
